@@ -182,7 +182,7 @@ describe('GoogleProvider', () => {
           candidates: [{
             content: {
               parts: [{
-                thought_signature: 'sig_123',
+                thoughtSignature: 'sig_123',
                 functionCall: {
                   id: 'call_123',
                   name: 'get_weather',
@@ -227,7 +227,7 @@ describe('GoogleProvider', () => {
     );
 
     const assistantEntry = capturedBody.contents.find((c: any) => c.role === 'model');
-    expect(assistantEntry.parts[0].thought_signature).toBe('sig_123');
+    expect(assistantEntry.parts[0].thoughtSignature).toBe('sig_123');
     expect(assistantEntry.parts[0].functionCall.name).toBe('get_weather');
   });
 });
