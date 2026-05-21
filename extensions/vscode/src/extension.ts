@@ -25,6 +25,7 @@ interface ChatMessage {
 let chatPanel: vscode.WebviewPanel | undefined;
 const chatHistory: ChatMessage[] = [];
 let lastTextEditor: vscode.TextEditor | undefined;
+let pinnedChatContext: { path: string; content: string } | undefined;
 
 function getConfig() {
   const config = vscode.workspace.getConfiguration('llmChatbotAgent');
@@ -99,6 +100,10 @@ function appendInlineFileContext(message: string, context?: { path: string; cont
     context.content,
     '```',
   ].join('\n');
+}
+
+function getChatContext(): { path: string; content: string } | undefined {
+  return pinnedChatContext ?? getActiveDocumentContext();
 }
 
 function showMarkdown(title: string, reply: AgentReply) {
@@ -224,7 +229,10 @@ async function openWebApp() {
 
 function getChatHtml(webview: vscode.Webview): string {
   const nonce = getNonce();
-  const initialState = JSON.stringify({ messages: chatHistory });
+  const initialState = JSON.stringify({
+    messages: chatHistory,
+    attachedPath: getChatContext()?.path,
+  });
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -265,6 +273,20 @@ function getChatHtml(webview: vscode.Webview): string {
       gap: 8px;
       font-size: 12px;
       color: var(--vscode-descriptionForeground);
+    }
+    .attachment {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--vscode-panel-border);
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+    .attachment strong {
+      color: var(--vscode-foreground);
+      font-weight: 500;
     }
     .messages {
       overflow-y: auto;
@@ -357,14 +379,16 @@ function getChatHtml(webview: vscode.Webview): string {
       <h1>LLM Chatbot Agent</h1>
       <div class="toolbar">
         <span id="status">Ready</span>
+        <button class="secondary" id="attach" type="button">Attach active file</button>
         <button class="secondary" id="clear" type="button">Clear</button>
       </div>
     </header>
+    <div class="attachment" id="attachment"></div>
     <main class="messages" id="messages"></main>
     <form id="form">
       <textarea id="input" placeholder="Chat with your local coding agent..."></textarea>
       <div class="actions">
-        <label><input id="includeFile" type="checkbox" checked> Include active file</label>
+        <label><input id="includeFile" type="checkbox" checked> Include attached/active file</label>
         <button id="send" type="submit">Send</button>
       </div>
     </form>
@@ -377,6 +401,7 @@ function getChatHtml(webview: vscode.Webview): string {
     const includeFileEl = document.getElementById('includeFile');
     const sendEl = document.getElementById('send');
     const statusEl = document.getElementById('status');
+    const attachmentEl = document.getElementById('attachment');
 
     function escapeHtml(value) {
       return value
@@ -388,6 +413,9 @@ function getChatHtml(webview: vscode.Webview): string {
     }
 
     function render() {
+      attachmentEl.innerHTML = state.attachedPath
+        ? '<span>Attached: <strong>' + escapeHtml(state.attachedPath) + '</strong></span><span>Included when checked</span>'
+        : '<span>No file attached. Click "Attach active file" from an editor tab.</span>';
       if (!state.messages.length) {
         messagesEl.innerHTML = '<div class="empty">Ask a question about your codebase, a selected file, or the current task.</div>';
         return;
@@ -413,6 +441,10 @@ function getChatHtml(webview: vscode.Webview): string {
 
     document.getElementById('clear').addEventListener('click', () => {
       vscode.postMessage({ type: 'clear' });
+    });
+
+    document.getElementById('attach').addEventListener('click', () => {
+      vscode.postMessage({ type: 'attachActiveFile' });
     });
 
     window.addEventListener('message', event => {
@@ -443,10 +475,23 @@ function getChatHtml(webview: vscode.Webview): string {
 }
 
 function postChatState() {
-  chatPanel?.webview.postMessage({ type: 'state', state: { messages: chatHistory } });
+  chatPanel?.webview.postMessage({
+    type: 'state',
+    state: {
+      messages: chatHistory,
+      attachedPath: getChatContext()?.path,
+    },
+  });
 }
 
-async function openChatCommand() {
+async function openChatCommand(pinCurrentFile = false) {
+  if (pinCurrentFile) {
+    pinnedChatContext = getActiveDocumentContext();
+    if (!pinnedChatContext) {
+      vscode.window.showWarningMessage('Open a workspace file first.');
+    }
+  }
+
   if (chatPanel) {
     chatPanel.reveal(vscode.ViewColumn.Beside);
     postChatState();
@@ -473,10 +518,20 @@ async function openChatCommand() {
       postChatState();
       return;
     }
+    if (message.type === 'attachActiveFile') {
+      const context = getActiveDocumentContext();
+      if (!context) {
+        chatPanel?.webview.postMessage({ type: 'error', message: 'No active workspace file to attach. Click an editor tab first, then attach again.' });
+        return;
+      }
+      pinnedChatContext = context;
+      postChatState();
+      return;
+    }
     if (message.type !== 'ask') return;
     const text = String(message.text ?? '').trim();
     if (!text) return;
-    const inlineContext = message.includeFile ? getActiveDocumentContext() : undefined;
+    const inlineContext = message.includeFile ? getChatContext() : undefined;
     chatHistory.push({ role: 'user', content: text, meta: inlineContext ? `context: ${inlineContext.path}` : undefined });
     chatPanel?.webview.postMessage({ type: 'busy' });
     postChatState();
@@ -495,9 +550,13 @@ export function activate(context: vscode.ExtensionContext) {
   lastTextEditor = vscode.window.activeTextEditor;
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor(editor => {
-      if (editor) lastTextEditor = editor;
+      if (editor) {
+        lastTextEditor = editor;
+        if (!pinnedChatContext) postChatState();
+      }
     }),
-    vscode.commands.registerCommand('llmChatbotAgent.openChat', () => runSafely(openChatCommand)),
+    vscode.commands.registerCommand('llmChatbotAgent.openChat', () => runSafely(() => openChatCommand(false))),
+    vscode.commands.registerCommand('llmChatbotAgent.openChatWithCurrentFile', () => runSafely(() => openChatCommand(true))),
     vscode.commands.registerCommand('llmChatbotAgent.checkStatus', () => runSafely(checkStatus)),
     vscode.commands.registerCommand('llmChatbotAgent.ask', () => runSafely(askCommand)),
     vscode.commands.registerCommand('llmChatbotAgent.explainSelection', () => runSafely(explainSelectionCommand)),

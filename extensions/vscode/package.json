@@ -14,6 +14,7 @@
   ],
   "activationEvents": [
     "onCommand:llmChatbotAgent.openChat",
+    "onCommand:llmChatbotAgent.openChatWithCurrentFile",
     "onCommand:llmChatbotAgent.ask",
     "onCommand:llmChatbotAgent.explainSelection",
     "onCommand:llmChatbotAgent.reviewFile",
@@ -42,6 +43,10 @@
       {
         "command": "llmChatbotAgent.openChat",
         "title": "LLM Chatbot Agent: Open Chat"
+      },
+      {
+        "command": "llmChatbotAgent.openChatWithCurrentFile",
+        "title": "LLM Chatbot Agent: Open Chat With Current File"
       },
       {
         "command": "llmChatbotAgent.ask",

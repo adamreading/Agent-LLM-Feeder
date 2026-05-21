@@ -21,6 +21,7 @@ You can change this in VS Code settings with `llmChatbotAgent.serverUrl`.
 ## Commands
 
 - `LLM Chatbot Agent: Open Chat`
+- `LLM Chatbot Agent: Open Chat With Current File`
 - `LLM Chatbot Agent: Check Server Status`
 - `LLM Chatbot Agent: Ask Agent`
 - `LLM Chatbot Agent: Explain Selection`
@@ -28,6 +29,8 @@ You can change this in VS Code settings with `llmChatbotAgent.serverUrl`.
 - `LLM Chatbot Agent: Open Web App`
 
 Use `Open Chat` for the ChatGPT-like experience inside VS Code. The chat panel keeps a local conversation history and can include the active file as context for each message.
+
+Use `Open Chat With Current File` when you want to discuss a specific open file such as `README.md`. The chat panel will show `Attached: <file>` so you can verify what is being sent.
 
 ## Build
 
