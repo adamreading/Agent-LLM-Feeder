@@ -102,6 +102,68 @@ function appendInlineFileContext(message: string, context?: { path: string; cont
   ].join('\n');
 }
 
+function extractFirstCodeBlock(content: string): string | undefined {
+  const match = content.match(/```(?:\w+)?\s*\r?\n([\s\S]*?)```/);
+  return match?.[1]?.trim();
+}
+
+function extractLikelyFileName(...values: Array<string | undefined>): string | undefined {
+  for (const value of values) {
+    if (!value) continue;
+    const match = value.match(/(?:^|[\s`"'])([\w./\\-]+\.(?:bat|cmd|ps1|md|txt|json|ts|tsx|js|jsx|css|html|yml|yaml|env|example))(?:$|[\s`"'])/i);
+    if (match?.[1]) return match[1].replace(/\\/g, '/').replace(/^\/+/, '');
+  }
+  return undefined;
+}
+
+async function createFileFromLastAnswer() {
+  const lastAssistant = [...chatHistory].reverse().find(message => message.role === 'assistant');
+  const lastUser = [...chatHistory].reverse().find(message => message.role === 'user');
+  if (!lastAssistant) {
+    vscode.window.showWarningMessage('No assistant answer available yet.');
+    return;
+  }
+
+  const content = extractFirstCodeBlock(lastAssistant.content);
+  if (!content) {
+    vscode.window.showWarningMessage('No fenced code block found in the last assistant answer.');
+    return;
+  }
+
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  if (!workspace) {
+    vscode.window.showWarningMessage('Open a workspace folder first.');
+    return;
+  }
+
+  const suggested = extractLikelyFileName(lastUser?.content, lastAssistant.content) ?? 'launch.bat';
+  const fileName = await vscode.window.showInputBox({
+    title: 'Create file from last answer',
+    prompt: 'Relative path to create or replace',
+    value: suggested,
+    ignoreFocusOut: true,
+  });
+  if (!fileName) return;
+
+  const target = vscode.Uri.joinPath(workspace.uri, ...fileName.replace(/\\/g, '/').split('/').filter(Boolean));
+  try {
+    await vscode.workspace.fs.stat(target);
+    const overwrite = await vscode.window.showWarningMessage(
+      `${fileName} already exists. Replace it?`,
+      { modal: true },
+      'Replace',
+    );
+    if (overwrite !== 'Replace') return;
+  } catch {
+    // File does not exist.
+  }
+
+  await vscode.workspace.fs.writeFile(target, Buffer.from(content, 'utf8'));
+  const document = await vscode.workspace.openTextDocument(target);
+  await vscode.window.showTextDocument(document);
+  vscode.window.showInformationMessage(`Created ${fileName}`);
+}
+
 function getChatContext(): { path: string; content: string } | undefined {
   return pinnedChatContext ?? getActiveDocumentContext();
 }
@@ -380,6 +442,7 @@ function getChatHtml(webview: vscode.Webview): string {
       <div class="toolbar">
         <span id="status">Ready</span>
         <button class="secondary" id="attach" type="button">Attach active file</button>
+        <button class="secondary" id="create" type="button">Create file from last answer</button>
         <button class="secondary" id="clear" type="button">Clear</button>
       </div>
     </header>
@@ -445,6 +508,10 @@ function getChatHtml(webview: vscode.Webview): string {
 
     document.getElementById('attach').addEventListener('click', () => {
       vscode.postMessage({ type: 'attachActiveFile' });
+    });
+
+    document.getElementById('create').addEventListener('click', () => {
+      vscode.postMessage({ type: 'createFromLastAnswer' });
     });
 
     window.addEventListener('message', event => {
@@ -526,6 +593,10 @@ async function openChatCommand(pinCurrentFile = false) {
       }
       pinnedChatContext = context;
       postChatState();
+      return;
+    }
+    if (message.type === 'createFromLastAnswer') {
+      await createFileFromLastAnswer();
       return;
     }
     if (message.type !== 'ask') return;

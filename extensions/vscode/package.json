@@ -2,7 +2,7 @@
   "name": "llm-chatbot-agent",
   "displayName": "LLM Chatbot Agent",
   "description": "Connect VS Code to the local LLM Chatbot agent server.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "pmarmotte2",
   "license": "MIT",
   "engines": {

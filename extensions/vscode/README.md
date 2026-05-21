@@ -32,6 +32,8 @@ Use `Open Chat` for the ChatGPT-like experience inside VS Code. The chat panel k
 
 Use `Open Chat With Current File` when you want to discuss a specific open file such as `README.md`. The chat panel will show `Attached: <file>` so you can verify what is being sent.
 
+When the assistant answers with a fenced code block, use `Create file from last answer` in the chat toolbar to create the suggested file without copying and pasting.
+
 If the command does not appear after reinstalling the `.vsix`, run `Developer: Reload Window` in VS Code.
 
 ## Build
@@ -50,5 +52,5 @@ npm.cmd run package -w llm-chatbot-agent
 Install the generated package with:
 
 ```powershell
-code --install-extension extensions\vscode\llm-chatbot-agent-0.1.1.vsix --force
+code --install-extension extensions\vscode\llm-chatbot-agent-0.1.2.vsix --force
 ```
