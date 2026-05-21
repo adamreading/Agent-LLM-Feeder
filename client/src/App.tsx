@@ -8,6 +8,7 @@ import KeysPage from '@/pages/KeysPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import FallbackPage from '@/pages/FallbackPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
+import AgentPage from '@/pages/AgentPage'
 
 const queryClient = new QueryClient()
 
@@ -112,6 +113,7 @@ function AppShell() {
             <nav className="flex items-center gap-6 ml-10">
               <NavItem to="/onboarding">{t('navOnboarding')}</NavItem>
               <NavItem to="/playground">{t('navChatbot')}</NavItem>
+              <NavItem to="/agent">{t('navAgent')}</NavItem>
               <NavItem to="/keys">{t('navKeys')}</NavItem>
               <NavItem to="/fallback">{t('navFallback')}</NavItem>
               <NavItem to="/analytics">{t('navAnalytics')}</NavItem>
@@ -127,6 +129,7 @@ function AppShell() {
             <Route path="/" element={<Navigate to="/onboarding" replace />} />
             <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/playground" element={<PlaygroundPage />} />
+            <Route path="/agent" element={<AgentPage />} />
             <Route path="/keys" element={<KeysPage />} />
             <Route path="/fallback" element={<FallbackPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />

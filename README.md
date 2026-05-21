@@ -93,6 +93,16 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 You do not need to manually call an API, use `curl`, use an OpenAI SDK, or configure tool calling. Those technical capabilities remain in the FreeLLMAPI-based engine, but this project is meant to be used through the web interface.
 
+`Agent` turns the running app into a local coding-agent server for the current workspace. It can search files, read selected files as context, and ask the configured LLM router for coding help. It also exposes guarded local endpoints that a Visual Studio or VS Code extension can consume later:
+
+- `GET /api/agent/status`
+- `GET /api/agent/files?q=...`
+- `POST /api/agent/read`
+- `POST /api/agent/chat`
+- `POST /api/agent/replace`
+
+The replacement endpoint is intentionally conservative: it only edits text files inside the workspace, blocks sensitive paths such as `.env`, skips generated/vendor directories, and requires exactly one text match.
+
 `Fallback` lets you edit the model priority order. When a request fails or a provider is rate-limited, the router tries the next model.
 
 `Keys` lets you directly manage provider keys: add, remove, verify, and inspect status.
@@ -105,9 +115,9 @@ You do not need to manually call an API, use `curl`, use an OpenAI SDK, or confi
 |---|---|
 | ![Onboarding screen](docs/screenshots/onboarding.png) | ![Chatbot screen](docs/screenshots/chatbot.png) |
 
-| Keys | Fallback | Analytics |
-|---|---|---|
-| ![Keys screen](docs/screenshots/keys.png) | ![Fallback screen](docs/screenshots/fallback.png) | ![Analytics screen](docs/screenshots/analytics.png) |
+| Agent | Keys | Fallback | Analytics |
+|---|---|---|---|
+| ![Agent screen](docs/screenshots/agent.png) | ![Keys screen](docs/screenshots/keys.png) | ![Fallback screen](docs/screenshots/fallback.png) | ![Analytics screen](docs/screenshots/analytics.png) |
 
 ### Production Build
 
@@ -230,6 +240,16 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, un SDK OpenAI, ou de manipuler du tool calling. Ces capacites restent dans le moteur technique herite de FreeLLMAPI, mais ce projet s'utilise depuis l'interface web.
 
+`Agent` transforme l'application lancee en serveur agentique local pour le workspace courant. Il peut chercher des fichiers, lire les fichiers selectionnes comme contexte, puis interroger le routeur LLM configure pour aider au code. Il expose aussi des endpoints locaux qu'une extension Visual Studio ou VS Code pourra consommer ensuite :
+
+- `GET /api/agent/status`
+- `GET /api/agent/files?q=...`
+- `POST /api/agent/read`
+- `POST /api/agent/chat`
+- `POST /api/agent/replace`
+
+L'endpoint de remplacement est volontairement prudent : il n'edite que des fichiers texte dans le workspace, bloque les chemins sensibles comme `.env`, ignore les dossiers generes/vendor, et exige une seule correspondance exacte.
+
 `Fallback` permet de modifier l'ordre de priorite des modeles. Quand une requete echoue ou qu'un fournisseur est rate limite, le routeur essaye le modele suivant.
 
 `Keys` permet d'administrer directement les cles : ajouter, supprimer, verifier et consulter l'etat.
@@ -242,9 +262,9 @@ L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, 
 |---|---|
 | ![Ecran d'embarquement](docs/screenshots/onboarding.png) | ![Ecran chatbot](docs/screenshots/chatbot.png) |
 
-| Cles | Fallback | Analytics |
-|---|---|---|
-| ![Ecran des cles](docs/screenshots/keys.png) | ![Ecran fallback](docs/screenshots/fallback.png) | ![Ecran analytics](docs/screenshots/analytics.png) |
+| Agent | Cles | Fallback | Analytics |
+|---|---|---|---|
+| ![Ecran agent](docs/screenshots/agent.png) | ![Ecran des cles](docs/screenshots/keys.png) | ![Ecran fallback](docs/screenshots/fallback.png) | ![Ecran analytics](docs/screenshots/analytics.png) |
 
 ### Build Production
 
@@ -367,6 +387,16 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de OpenAI ni configurar tool calling. Esas capacidades tecnicas siguen existiendo en el motor basado en FreeLLMAPI, pero este proyecto esta pensado para usarse desde la interfaz web.
 
+`Agente` convierte la app en ejecucion en un servidor agentico local para el workspace actual. Puede buscar archivos, leer archivos seleccionados como contexto y consultar el router LLM configurado para ayudar con codigo. Tambien expone endpoints locales que una extension de Visual Studio o VS Code podra consumir despues:
+
+- `GET /api/agent/status`
+- `GET /api/agent/files?q=...`
+- `POST /api/agent/read`
+- `POST /api/agent/chat`
+- `POST /api/agent/replace`
+
+El endpoint de reemplazo es deliberadamente prudente: solo edita archivos de texto dentro del workspace, bloquea rutas sensibles como `.env`, ignora carpetas generadas/vendor y exige una unica coincidencia exacta.
+
 `Fallback` permite modificar el orden de prioridad de los modelos. Cuando una peticion falla o un proveedor esta limitado por cuota, el router intenta con el siguiente modelo.
 
 `Keys` permite administrar directamente las claves: agregar, eliminar, verificar y consultar su estado.
@@ -379,9 +409,9 @@ El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de O
 |---|---|
 | ![Pantalla de onboarding](docs/screenshots/onboarding.png) | ![Pantalla del chatbot](docs/screenshots/chatbot.png) |
 
-| Claves | Fallback | Analitica |
-|---|---|---|
-| ![Pantalla de claves](docs/screenshots/keys.png) | ![Pantalla de fallback](docs/screenshots/fallback.png) | ![Pantalla de analitica](docs/screenshots/analytics.png) |
+| Agente | Claves | Fallback | Analitica |
+|---|---|---|---|
+| ![Pantalla del agente](docs/screenshots/agent.png) | ![Pantalla de claves](docs/screenshots/keys.png) | ![Pantalla de fallback](docs/screenshots/fallback.png) | ![Pantalla de analitica](docs/screenshots/analytics.png) |
 
 ### Build De Produccion
 
