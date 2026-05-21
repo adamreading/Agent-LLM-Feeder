@@ -2,7 +2,7 @@
   "name": "llm-chatbot-agent",
   "displayName": "LLM Chatbot Agent",
   "description": "Connect VS Code to the local LLM Chatbot agent server.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "pmarmotte2",
   "license": "MIT",
   "engines": {
@@ -71,6 +71,11 @@
     ],
     "menus": {
       "editor/context": [
+        {
+          "command": "llmChatbotAgent.openChatWithCurrentFile",
+          "when": "editorTextFocus",
+          "group": "navigation@49"
+        },
         {
           "command": "llmChatbotAgent.explainSelection",
           "when": "editorHasSelection",
