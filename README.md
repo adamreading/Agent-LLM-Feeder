@@ -103,6 +103,20 @@ You do not need to manually call an API, use `curl`, use an OpenAI SDK, or confi
 
 The replacement endpoint is intentionally conservative: it only edits text files inside the workspace, blocks sensitive paths such as `.env`, skips generated/vendor directories, and requires exactly one text match.
 
+`extensions/vscode` contains a first VS Code extension that consumes these local endpoints. It adds commands to check server status, ask the agent, explain a code selection, review the current file, and open the web Agent page.
+
+Build it with:
+
+```powershell
+npm.cmd run build -w llm-chatbot-agent
+```
+
+Package it as a `.vsix` with:
+
+```powershell
+npm.cmd run package -w llm-chatbot-agent
+```
+
 `Fallback` lets you edit the model priority order. When a request fails or a provider is rate-limited, the router tries the next model.
 
 `Keys` lets you directly manage provider keys: add, remove, verify, and inspect status.
@@ -250,6 +264,20 @@ L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, 
 
 L'endpoint de remplacement est volontairement prudent : il n'edite que des fichiers texte dans le workspace, bloque les chemins sensibles comme `.env`, ignore les dossiers generes/vendor, et exige une seule correspondance exacte.
 
+`extensions/vscode` contient une premiere extension VS Code qui consomme ces endpoints locaux. Elle ajoute des commandes pour verifier le serveur, interroger l'agent, expliquer une selection de code, relire le fichier courant et ouvrir la page web Agent.
+
+Pour la compiler :
+
+```powershell
+npm.cmd run build -w llm-chatbot-agent
+```
+
+Pour generer un paquet `.vsix` :
+
+```powershell
+npm.cmd run package -w llm-chatbot-agent
+```
+
 `Fallback` permet de modifier l'ordre de priorite des modeles. Quand une requete echoue ou qu'un fournisseur est rate limite, le routeur essaye le modele suivant.
 
 `Keys` permet d'administrer directement les cles : ajouter, supprimer, verifier et consulter l'etat.
@@ -396,6 +424,20 @@ El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de O
 - `POST /api/agent/replace`
 
 El endpoint de reemplazo es deliberadamente prudente: solo edita archivos de texto dentro del workspace, bloquea rutas sensibles como `.env`, ignora carpetas generadas/vendor y exige una unica coincidencia exacta.
+
+`extensions/vscode` contiene una primera extension de VS Code que consume estos endpoints locales. Agrega comandos para verificar el servidor, preguntar al agente, explicar una seleccion de codigo, revisar el archivo actual y abrir la pagina web Agent.
+
+Para compilarla:
+
+```powershell
+npm.cmd run build -w llm-chatbot-agent
+```
+
+Para generar un paquete `.vsix`:
+
+```powershell
+npm.cmd run package -w llm-chatbot-agent
+```
 
 `Fallback` permite modificar el orden de prioridad de los modelos. Cuando una peticion falla o un proveedor esta limitado por cuota, el router intenta con el siguiente modelo.
 

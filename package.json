@@ -4,7 +4,8 @@
   "workspaces": [
     "shared",
     "server",
-    "client"
+    "client",
+    "extensions/vscode"
   ],
   "scripts": {
     "dev": "concurrently \"npm run dev -w server\" \"npm run dev -w client\"",

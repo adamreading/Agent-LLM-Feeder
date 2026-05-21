@@ -1,0 +1,88 @@
+{
+  "name": "llm-chatbot-agent",
+  "displayName": "LLM Chatbot Agent",
+  "description": "Connect VS Code to the local LLM Chatbot agent server.",
+  "version": "0.1.0",
+  "publisher": "pmarmotte2",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:llmChatbotAgent.ask",
+    "onCommand:llmChatbotAgent.explainSelection",
+    "onCommand:llmChatbotAgent.reviewFile",
+    "onCommand:llmChatbotAgent.checkStatus",
+    "onCommand:llmChatbotAgent.openWebApp"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "LLM Chatbot Agent",
+      "properties": {
+        "llmChatbotAgent.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:3001",
+          "description": "Base URL of the local LLM Chatbot server."
+        },
+        "llmChatbotAgent.language": {
+          "type": "string",
+          "enum": ["en", "fr", "es"],
+          "default": "en",
+          "description": "Language used for agent answers."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "llmChatbotAgent.ask",
+        "title": "LLM Chatbot Agent: Ask Agent"
+      },
+      {
+        "command": "llmChatbotAgent.explainSelection",
+        "title": "LLM Chatbot Agent: Explain Selection"
+      },
+      {
+        "command": "llmChatbotAgent.reviewFile",
+        "title": "LLM Chatbot Agent: Review Current File"
+      },
+      {
+        "command": "llmChatbotAgent.checkStatus",
+        "title": "LLM Chatbot Agent: Check Server Status"
+      },
+      {
+        "command": "llmChatbotAgent.openWebApp",
+        "title": "LLM Chatbot Agent: Open Web App"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "llmChatbotAgent.explainSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@50"
+        },
+        {
+          "command": "llmChatbotAgent.reviewFile",
+          "when": "editorTextFocus",
+          "group": "navigation@51"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.2",
+    "typescript": "^5.8.3"
+  }
+}
