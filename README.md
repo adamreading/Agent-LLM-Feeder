@@ -12,6 +12,8 @@ LLM Chatbot is a local web application that helps you create free-tier accounts 
 
 This project is based on the open-source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) repository. It reuses its multi-provider router, encrypted API-key storage, health checks, and fallback chain. This version focuses on a simpler workflow: everything is done from the web interface.
 
+The interface is localized in English, French, and Spanish. Use the `EN` / `FR` / `ES` selector in the header, or open a page with `?lang=en`, `?lang=fr`, or `?lang=es`.
+
 ### How It Works
 
 1. Open the app.
@@ -97,6 +99,16 @@ You do not need to manually call an API, use `curl`, use an OpenAI SDK, or confi
 
 `Analytics` shows local activity: request volume, latency, errors, and provider distribution.
 
+### Screenshots
+
+| Onboarding | Chatbot |
+|---|---|
+| ![Onboarding screen](docs/screenshots/onboarding.png) | ![Chatbot screen](docs/screenshots/chatbot.png) |
+
+| Keys | Fallback | Analytics |
+|---|---|---|
+| ![Keys screen](docs/screenshots/keys.png) | ![Fallback screen](docs/screenshots/fallback.png) | ![Analytics screen](docs/screenshots/analytics.png) |
+
 ### Production Build
 
 ```powershell
@@ -136,6 +148,8 @@ MIT, same as the original project.
 LLM Chatbot est une application web locale pour creer des comptes free tier chez des fournisseurs LLM, enregistrer leurs cles API, puis discuter avec un modele choisi automatiquement par le routeur.
 
 Ce projet s'appuie sur le depot open source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). Il en reutilise le routeur multi-fournisseurs, le stockage chiffre des cles API, les controles de sante et la chaine de fallback. Cette version vise un parcours plus simple : tout se fait depuis l'interface web.
+
+L'interface est localisee en anglais, francais et espagnol. Utilisez le selecteur `EN` / `FR` / `ES` dans l'en-tete, ou ouvrez une page avec `?lang=en`, `?lang=fr` ou `?lang=es`.
 
 ### Fonctionnement
 
@@ -222,6 +236,16 @@ L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, 
 
 `Analytics` affiche l'activite locale : volumes de requetes, latence, erreurs et repartition par fournisseur.
 
+### Captures D'ecran
+
+| Embarquement | Chatbot |
+|---|---|
+| ![Ecran d'embarquement](docs/screenshots/onboarding.png) | ![Ecran chatbot](docs/screenshots/chatbot.png) |
+
+| Cles | Fallback | Analytics |
+|---|---|---|
+| ![Ecran des cles](docs/screenshots/keys.png) | ![Ecran fallback](docs/screenshots/fallback.png) | ![Ecran analytics](docs/screenshots/analytics.png) |
+
 ### Build Production
 
 ```powershell
@@ -261,6 +285,8 @@ MIT, comme le projet d'origine.
 LLM Chatbot es una aplicacion web local para crear cuentas free tier con proveedores LLM, guardar sus claves API y conversar con un modelo elegido automaticamente por el router.
 
 Este proyecto se basa en el repositorio open source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). Reutiliza su router multi-proveedor, el almacenamiento cifrado de claves API, los chequeos de salud y la cadena de fallback. Esta version se centra en un flujo mas simple: todo se hace desde la interfaz web.
+
+La interfaz esta localizada en ingles, frances y espanol. Usa el selector `EN` / `FR` / `ES` del encabezado, o abre una pagina con `?lang=en`, `?lang=fr` o `?lang=es`.
 
 ### Como Funciona
 
@@ -346,6 +372,16 @@ El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de O
 `Keys` permite administrar directamente las claves: agregar, eliminar, verificar y consultar su estado.
 
 `Analytics` muestra la actividad local: volumen de peticiones, latencia, errores y distribucion por proveedor.
+
+### Capturas
+
+| Onboarding | Chatbot |
+|---|---|
+| ![Pantalla de onboarding](docs/screenshots/onboarding.png) | ![Pantalla del chatbot](docs/screenshots/chatbot.png) |
+
+| Claves | Fallback | Analitica |
+|---|---|---|
+| ![Pantalla de claves](docs/screenshots/keys.png) | ![Pantalla de fallback](docs/screenshots/fallback.png) | ![Pantalla de analitica](docs/screenshots/analytics.png) |
 
 ### Build De Produccion
 
