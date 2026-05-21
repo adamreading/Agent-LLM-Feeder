@@ -1,6 +1,8 @@
 <div align="center">
 
-# FreeLLMAPI
+# LLM Chatbot
+
+Application web d'embarquement et de chatbot construite a partir du depot open source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). Le projet conserve son routeur OpenAI-compatible, son stockage chiffre des cles API et sa chaine de fallback multi-fournisseurs, avec une interface adaptee pour guider la creation des comptes free tier puis tester un chatbot.
 
 **One OpenAI-compatible endpoint. Eleven free LLM providers. ~1B+ tokens per month.**
 

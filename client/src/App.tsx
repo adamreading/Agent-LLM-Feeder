@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
+import OnboardingPage from '@/pages/OnboardingPage'
 import KeysPage from '@/pages/KeysPage'
 import PlaygroundPage from '@/pages/PlaygroundPage'
 import FallbackPage from '@/pages/FallbackPage'
@@ -61,7 +62,7 @@ function Brand() {
   return (
     <div className="flex items-center gap-2">
       <span className="inline-block size-2 rounded-full bg-foreground" />
-      <span className="font-semibold tracking-tight text-sm">FreeLLMAPI</span>
+      <span className="font-semibold tracking-tight text-sm">LLM Chatbot</span>
     </div>
   )
 }
@@ -75,7 +76,8 @@ function App() {
             <div className="max-w-6xl mx-auto px-6 flex items-center">
               <Brand />
               <nav className="flex items-center gap-6 ml-10">
-                <NavItem to="/playground">Playground</NavItem>
+                <NavItem to="/onboarding">Onboarding</NavItem>
+                <NavItem to="/playground">Chatbot</NavItem>
                 <NavItem to="/keys">Keys</NavItem>
                 <NavItem to="/fallback">Fallback</NavItem>
                 <NavItem to="/analytics">Analytics</NavItem>
@@ -87,7 +89,8 @@ function App() {
           </header>
           <main className="max-w-6xl mx-auto px-6 py-8">
             <Routes>
-              <Route path="/" element={<Navigate to="/playground" replace />} />
+              <Route path="/" element={<Navigate to="/onboarding" replace />} />
+              <Route path="/onboarding" element={<OnboardingPage />} />
               <Route path="/playground" element={<PlaygroundPage />} />
               <Route path="/keys" element={<KeysPage />} />
               <Route path="/fallback" element={<FallbackPage />} />
