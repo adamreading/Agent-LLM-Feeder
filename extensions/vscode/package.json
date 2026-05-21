@@ -13,6 +13,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onCommand:llmChatbotAgent.openChat",
     "onCommand:llmChatbotAgent.ask",
     "onCommand:llmChatbotAgent.explainSelection",
     "onCommand:llmChatbotAgent.reviewFile",
@@ -38,6 +39,10 @@
       }
     },
     "commands": [
+      {
+        "command": "llmChatbotAgent.openChat",
+        "title": "LLM Chatbot Agent: Open Chat"
+      },
       {
         "command": "llmChatbotAgent.ask",
         "title": "LLM Chatbot Agent: Ask Agent"

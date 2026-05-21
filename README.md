@@ -103,7 +103,7 @@ You do not need to manually call an API, use `curl`, use an OpenAI SDK, or confi
 
 The replacement endpoint is intentionally conservative: it only edits text files inside the workspace, blocks sensitive paths such as `.env`, skips generated/vendor directories, and requires exactly one text match.
 
-`extensions/vscode` contains a first VS Code extension that consumes these local endpoints. It adds commands to check server status, ask the agent, explain a code selection, review the current file, and open the web Agent page.
+`extensions/vscode` contains a first VS Code extension that consumes these local endpoints. It adds a ChatGPT-like chat panel inside VS Code, plus commands to check server status, ask the agent, explain a code selection, review the current file, and open the web Agent page.
 
 Build it with:
 
@@ -264,7 +264,7 @@ L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, 
 
 L'endpoint de remplacement est volontairement prudent : il n'edite que des fichiers texte dans le workspace, bloque les chemins sensibles comme `.env`, ignore les dossiers generes/vendor, et exige une seule correspondance exacte.
 
-`extensions/vscode` contient une premiere extension VS Code qui consomme ces endpoints locaux. Elle ajoute des commandes pour verifier le serveur, interroger l'agent, expliquer une selection de code, relire le fichier courant et ouvrir la page web Agent.
+`extensions/vscode` contient une premiere extension VS Code qui consomme ces endpoints locaux. Elle ajoute un panneau de chat type ChatGPT directement dans VS Code, ainsi que des commandes pour verifier le serveur, interroger l'agent, expliquer une selection de code, relire le fichier courant et ouvrir la page web Agent.
 
 Pour la compiler :
 
@@ -425,7 +425,7 @@ El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de O
 
 El endpoint de reemplazo es deliberadamente prudente: solo edita archivos de texto dentro del workspace, bloquea rutas sensibles como `.env`, ignora carpetas generadas/vendor y exige una unica coincidencia exacta.
 
-`extensions/vscode` contiene una primera extension de VS Code que consume estos endpoints locales. Agrega comandos para verificar el servidor, preguntar al agente, explicar una seleccion de codigo, revisar el archivo actual y abrir la pagina web Agent.
+`extensions/vscode` contiene una primera extension de VS Code que consume estos endpoints locales. Agrega un panel de chat tipo ChatGPT dentro de VS Code, ademas de comandos para verificar el servidor, preguntar al agente, explicar una seleccion de codigo, revisar el archivo actual y abrir la pagina web Agent.
 
 Para compilarla:
 

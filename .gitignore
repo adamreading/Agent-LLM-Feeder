@@ -5,6 +5,7 @@ server/data/
 *.db-wal
 *.db-shm
 *.bak
+*.vsix
 .env
 .env.local
 .DS_Store

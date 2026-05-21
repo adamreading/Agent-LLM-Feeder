@@ -20,11 +20,14 @@ You can change this in VS Code settings with `llmChatbotAgent.serverUrl`.
 
 ## Commands
 
+- `LLM Chatbot Agent: Open Chat`
 - `LLM Chatbot Agent: Check Server Status`
 - `LLM Chatbot Agent: Ask Agent`
 - `LLM Chatbot Agent: Explain Selection`
 - `LLM Chatbot Agent: Review Current File`
 - `LLM Chatbot Agent: Open Web App`
+
+Use `Open Chat` for the ChatGPT-like experience inside VS Code. The chat panel keeps a local conversation history and can include the active file as context for each message.
 
 ## Build
 
