@@ -24,6 +24,7 @@ interface ChatMessage {
 
 let chatPanel: vscode.WebviewPanel | undefined;
 const chatHistory: ChatMessage[] = [];
+let lastTextEditor: vscode.TextEditor | undefined;
 
 function getConfig() {
   const config = vscode.workspace.getConfiguration('llmChatbotAgent');
@@ -65,15 +66,39 @@ function getWorkspaceRelativePath(uri: vscode.Uri): string | undefined {
 }
 
 function getActiveRelativePath(): string | undefined {
-  const editor = vscode.window.activeTextEditor;
+  const editor = vscode.window.activeTextEditor ?? lastTextEditor;
   if (!editor) return undefined;
   return getWorkspaceRelativePath(editor.document.uri);
 }
 
 function getSelectedText(): string | undefined {
-  const editor = vscode.window.activeTextEditor;
+  const editor = vscode.window.activeTextEditor ?? lastTextEditor;
   if (!editor || editor.selection.isEmpty) return undefined;
   return editor.document.getText(editor.selection);
+}
+
+function getActiveDocumentContext(): { path: string; content: string } | undefined {
+  const editor = vscode.window.activeTextEditor ?? lastTextEditor;
+  if (!editor) return undefined;
+  const relativePath = getWorkspaceRelativePath(editor.document.uri);
+  if (!relativePath) return undefined;
+  return {
+    path: relativePath,
+    content: editor.document.getText(),
+  };
+}
+
+function appendInlineFileContext(message: string, context?: { path: string; content: string }): string {
+  if (!context) return message;
+  return [
+    message,
+    '',
+    'Active file context:',
+    `File: ${context.path}`,
+    '```',
+    context.content,
+    '```',
+  ].join('\n');
 }
 
 function showMarkdown(title: string, reply: AgentReply) {
@@ -155,7 +180,8 @@ async function askCommand() {
     ignoreFocusOut: true,
   });
   if (!prompt) return;
-  const reply = await askAgent(prompt, includeFile === 'Yes' && activePath ? [activePath] : []);
+  const inlineContext = includeFile === 'Yes' ? getActiveDocumentContext() : undefined;
+  const reply = await askAgent(appendInlineFileContext(prompt, inlineContext));
   showMarkdown('LLM Chatbot Agent', reply);
 }
 
@@ -172,13 +198,13 @@ async function explainSelectionCommand() {
     'Selection:',
     selectedText,
   ].filter(Boolean).join('\n\n');
-  const reply = await askAgent(prompt, activePath ? [activePath] : []);
+  const reply = await askAgent(prompt);
   showMarkdown('Explain Selection', reply);
 }
 
 async function reviewFileCommand() {
-  const activePath = getActiveRelativePath();
-  if (!activePath) {
+  const context = getActiveDocumentContext();
+  if (!context) {
     vscode.window.showWarningMessage('Open a workspace file first.');
     return;
   }
@@ -187,8 +213,8 @@ async function reviewFileCommand() {
     'Prioritize bugs, correctness risks, security issues, and missing tests.',
     'Return concise findings with file references.',
   ].join('\n');
-  const reply = await askAgent(prompt, [activePath]);
-  showMarkdown(`Review ${activePath}`, reply);
+  const reply = await askAgent(appendInlineFileContext(prompt, context));
+  showMarkdown(`Review ${context.path}`, reply);
 }
 
 async function openWebApp() {
@@ -450,12 +476,12 @@ async function openChatCommand() {
     if (message.type !== 'ask') return;
     const text = String(message.text ?? '').trim();
     if (!text) return;
-    const activePath = message.includeFile ? getActiveRelativePath() : undefined;
-    chatHistory.push({ role: 'user', content: text, meta: activePath ? `context: ${activePath}` : undefined });
+    const inlineContext = message.includeFile ? getActiveDocumentContext() : undefined;
+    chatHistory.push({ role: 'user', content: text, meta: inlineContext ? `context: ${inlineContext.path}` : undefined });
     chatPanel?.webview.postMessage({ type: 'busy' });
     postChatState();
     try {
-      const reply = await askAgentSilent(text, activePath ? [activePath] : []);
+      const reply = await askAgentSilent(appendInlineFileContext(text, inlineContext));
       const meta = reply.routedVia ? `${reply.routedVia.platform}/${reply.routedVia.model}` : undefined;
       chatHistory.push({ role: 'assistant', content: reply.content, meta });
       postChatState();
@@ -466,7 +492,11 @@ async function openChatCommand() {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  lastTextEditor = vscode.window.activeTextEditor;
   context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor) lastTextEditor = editor;
+    }),
     vscode.commands.registerCommand('llmChatbotAgent.openChat', () => runSafely(openChatCommand)),
     vscode.commands.registerCommand('llmChatbotAgent.checkStatus', () => runSafely(checkStatus)),
     vscode.commands.registerCommand('llmChatbotAgent.ask', () => runSafely(askCommand)),
