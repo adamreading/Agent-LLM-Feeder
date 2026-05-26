@@ -28,9 +28,37 @@ interface ChatMessage {
   }
 }
 
+const CHAT_SESSION_KEY = 'llm-chatbot:chat-session'
+
+function loadChatSession(): ChatMessage[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = sessionStorage.getItem(CHAT_SESSION_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(message =>
+      (message.role === 'user' || message.role === 'assistant') &&
+      typeof message.content === 'string'
+    )
+  } catch {
+    return []
+  }
+}
+
+function saveChatSession(messages: ChatMessage[]) {
+  if (typeof window === 'undefined') return
+  sessionStorage.setItem(CHAT_SESSION_KEY, JSON.stringify(messages))
+}
+
+function clearChatSession() {
+  if (typeof window === 'undefined') return
+  sessionStorage.removeItem(CHAT_SESSION_KEY)
+}
+
 export default function PlaygroundPage() {
   const { t } = useI18n()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>(() => loadChatSession())
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('auto')
@@ -51,6 +79,10 @@ export default function PlaygroundPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages])
+
+  useEffect(() => {
+    saveChatSession(messages)
   }, [messages])
 
   const handleSend = async () => {
@@ -130,6 +162,7 @@ export default function PlaygroundPage() {
   }
 
   const handleClear = () => {
+    clearChatSession()
     setMessages([])
     inputRef.current?.focus()
   }
