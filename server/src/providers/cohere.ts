@@ -3,13 +3,16 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig } from './base.js';
 
 const API_BASE = 'https://api.cohere.ai/compatibility/v1';
 
 export class CohereProvider extends BaseProvider {
   readonly platform = 'cohere' as const;
   readonly name = 'Cohere';
+  // Cohere's compatibility endpoint mirrors the OpenAI request shape,
+  // including response_format. No confirmed reasoning-control dialect.
+  readonly dialect: DialectConfig = { jsonMode: true };
 
   async chatCompletion(
     apiKey: string,
@@ -25,6 +28,7 @@ export class CohereProvider extends BaseProvider {
       top_p: options?.top_p,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
+      ...(options?.response_format ? { response_format: options.response_format } : {}),
     };
 
     const res = await this.fetchWithTimeout(`${API_BASE}/chat/completions`, {
@@ -60,6 +64,7 @@ export class CohereProvider extends BaseProvider {
       top_p: options?.top_p,
       tools: options?.tools,
       tool_choice: options?.tool_choice,
+      ...(options?.response_format ? { response_format: options.response_format } : {}),
       stream: true,
     };
 

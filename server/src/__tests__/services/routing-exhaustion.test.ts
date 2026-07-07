@@ -76,7 +76,7 @@ describe('Routing Key Exhaustion', () => {
     (ratelimit.canUseTokens as any).mockReturnValue(true);
 
     // Act: Route request
-    const result = await routeRequest(100);
+    const result = await routeRequest({ estimatedTokens: 100 });
 
     // Assert: It should have picked the Pro model despite Key B being exhausted
     expect(result.modelId).toBe('gemini-1.5-pro');
@@ -84,9 +84,9 @@ describe('Routing Key Exhaustion', () => {
     expect(ratelimit.canMakeRequest).toHaveBeenCalled();
   });
 
-  it('should throw 429 when every key on every model is exhausted', async () => {
+  it('should throw ALL_RATE_LIMITED when every key on every model is exhausted', async () => {
     (ratelimit.canMakeRequest as any).mockReturnValue(false);
-    await expect(routeRequest(100)).rejects.toThrow(/All models exhausted/);
+    await expect(routeRequest({ estimatedTokens: 100 })).rejects.toThrow(/All eligible models exhausted/);
   });
 
   it('should fall back to Flash when Pro is exhausted but Flash has quota', async () => {
@@ -97,7 +97,7 @@ describe('Routing Key Exhaustion', () => {
     });
     (ratelimit.canUseTokens as any).mockReturnValue(true);
 
-    const result = await routeRequest(100);
+    const result = await routeRequest({ estimatedTokens: 100 });
     expect(result.modelId).toBe('gemini-1.5-flash');
   });
 });

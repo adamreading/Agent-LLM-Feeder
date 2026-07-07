@@ -3,7 +3,7 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig } from './base.js';
 
 /**
  * Cloudflare Workers AI provider.
@@ -13,6 +13,9 @@ import { BaseProvider, type CompletionOptions } from './base.js';
 export class CloudflareProvider extends BaseProvider {
   readonly platform = 'cloudflare' as const;
   readonly name = 'Cloudflare Workers AI';
+  // Workers AI's OpenAI-compat endpoint accepts response_format. No confirmed
+  // reasoning-control dialect across its heterogeneous @cf/* model catalog.
+  readonly dialect: DialectConfig = { jsonMode: true };
 
   private parseKey(apiKey: string): { accountId: string; token: string } {
     const sep = apiKey.indexOf(':');
@@ -52,6 +55,7 @@ export class CloudflareProvider extends BaseProvider {
         tools: options?.tools,
         tool_choice: options?.tool_choice,
         parallel_tool_calls: options?.parallel_tool_calls,
+        ...(options?.response_format ? { response_format: options.response_format } : {}),
       }),
     });
 
@@ -89,6 +93,7 @@ export class CloudflareProvider extends BaseProvider {
         tools: options?.tools,
         tool_choice: options?.tool_choice,
         parallel_tool_calls: options?.parallel_tool_calls,
+        ...(options?.response_format ? { response_format: options.response_format } : {}),
         stream: true,
       }),
     });

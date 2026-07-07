@@ -4,12 +4,21 @@ import type {
   ChatCompletionChunk,
   Platform,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig, type ReasoningDialect } from './base.js';
+
+function applyReasoningDialect(body: Record<string, unknown>, effort: string, dialect?: ReasoningDialect): void {
+  if (!dialect) return; // no known dialect — caller-level capability filtering must have already excluded this model
+  if (dialect === 'openai_reasoning_effort') body.reasoning_effort = effort;
+  else if (dialect === 'nested_reasoning_effort') body.reasoning = { effort };
+  else if (dialect === 'chat_template_enable_thinking') {
+    body.chat_template_kwargs = { enable_thinking: effort !== 'none' };
+  }
+}
 
 /**
  * Generic provider for platforms that use an OpenAI-compatible API.
  * Covers: Groq, Cerebras, SambaNova, NVIDIA NIM, Mistral, OpenRouter,
- * GitHub Models, Fireworks AI.
+ * GitHub Models, Zhipu, Ollama, Kilo, Pollinations, LLM7.
  */
 export class OpenAICompatProvider extends BaseProvider {
   readonly platform: Platform;
@@ -20,6 +29,7 @@ export class OpenAICompatProvider extends BaseProvider {
   /** Per-provider HTTP timeout override. Cloud APIs finish in ~15s; locally-hosted
    * inference (llama.cpp / vLLM on CPU) can take 30-120s for long prompts. Default 15000. */
   private readonly timeoutMs: number;
+  readonly dialect: DialectConfig;
 
   constructor(opts: {
     platform: Platform;
@@ -28,6 +38,7 @@ export class OpenAICompatProvider extends BaseProvider {
     extraHeaders?: Record<string, string>;
     validateUrl?: string;
     timeoutMs?: number;
+    dialect?: DialectConfig;
   }) {
     super();
     this.platform = opts.platform;
@@ -36,6 +47,30 @@ export class OpenAICompatProvider extends BaseProvider {
     this.extraHeaders = opts.extraHeaders ?? {};
     this.validateUrl = opts.validateUrl;
     this.timeoutMs = opts.timeoutMs ?? 15000;
+    this.dialect = opts.dialect ?? {};
+  }
+
+  private buildBody(messages: ChatMessage[], modelId: string, options: CompletionOptions | undefined, stream: boolean): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: modelId,
+      messages,
+      temperature: options?.temperature,
+      max_tokens: options?.max_tokens,
+      top_p: options?.top_p,
+      tools: options?.tools,
+      tool_choice: options?.tool_choice,
+      parallel_tool_calls: options?.parallel_tool_calls,
+    };
+    if (stream) body.stream = true;
+    // Dialect-gated: only emitted when this instance declares support. Router-
+    // level capability filtering is the actual gate; this is defense in depth.
+    if (options?.response_format && this.dialect.jsonMode) {
+      body.response_format = options.response_format;
+    }
+    if (options?.reasoning_effort) {
+      applyReasoningDialect(body, options.reasoning_effort, this.dialect.reasoning);
+    }
+    return body;
   }
 
   async chatCompletion(
@@ -51,16 +86,7 @@ export class OpenAICompatProvider extends BaseProvider {
         'Content-Type': 'application/json',
         ...this.extraHeaders,
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-      }),
+      body: JSON.stringify(this.buildBody(messages, modelId, options, false)),
     }, this.timeoutMs);
 
     if (!res.ok) {
@@ -87,17 +113,7 @@ export class OpenAICompatProvider extends BaseProvider {
         'Content-Type': 'application/json',
         ...this.extraHeaders,
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages,
-        temperature: options?.temperature,
-        max_tokens: options?.max_tokens,
-        top_p: options?.top_p,
-        tools: options?.tools,
-        tool_choice: options?.tool_choice,
-        parallel_tool_calls: options?.parallel_tool_calls,
-        stream: true,
-      }),
+      body: JSON.stringify(this.buildBody(messages, modelId, options, true)),
     }, this.timeoutMs);
 
     if (!res.ok) {

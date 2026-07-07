@@ -1,0 +1,1 @@
+ALTER TABLE "models" ADD COLUMN "cost_tier" text DEFAULT 'free' NOT NULL;

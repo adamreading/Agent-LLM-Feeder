@@ -31,6 +31,10 @@ export const models = pgTable(
     monthlyTokenBudget: text('monthly_token_budget').notNull().default(''),
     contextWindow: integer('context_window'),
     enabled: boolean('enabled').notNull().default(true),
+    // P2 two-gate inner enforcement: policy_matrix.cost_tier_ceiling compares
+    // against this. All current catalog models are free-tier; paid models
+    // (e.g. a future Codex integration) would be seeded with 'paid'.
+    costTier: text('cost_tier').notNull().default('free'),
   },
   (table) => [unique('models_platform_model_id_unique').on(table.platform, table.modelId)]
 );

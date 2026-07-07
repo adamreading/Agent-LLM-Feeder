@@ -14,6 +14,8 @@ interface ModelRow {
   rpd_limit: number | null;
   tpm_limit: number | null;
   tpd_limit: number | null;
+  context_window: number | null;
+  cost_tier: string;
 }
 
 interface KeyRow {
@@ -40,6 +42,47 @@ export interface RouteResult {
   keyId: number;
   platform: string;
   displayName: string;
+}
+
+// Capability need derived from the request itself (tier-0 heuristic — no LLM,
+// no task_class tuple required). A model whose provider doesn't declare
+// support for a needed capability is excluded from routing eligibility,
+// never silently sent the field anyway. See providers/base.ts DialectConfig.
+export type CapabilityNeed = 'json_mode' | 'reasoning_control';
+
+export interface RouteOptions {
+  estimatedTokens?: number;
+  /** set of "platform:modelId:keyId" to skip (failed earlier in this request) */
+  skipKeys?: Set<string>;
+  /** try this model first (sticky session) */
+  preferredModelDbId?: number;
+  /** L8: never route to these platforms (e.g. the one that just failed) */
+  excludeProviders?: Set<string>;
+  /** capabilities this request needs; candidates whose provider can't honor them are excluded */
+  needs?: CapabilityNeed[];
+  /** two-gate INNER enforcement: caps the cost tier this call may reach, independent of caller trust */
+  costTierCeiling?: 'free' | 'paid';
+  /** L2: caller's declared latency ceiling (ms) — candidates whose historical p95 exceeds it are excluded */
+  latencyCeilingMs?: number;
+}
+
+// L11: typed error contract. NO_ELIGIBLE_MODEL means no candidate matched
+// structural needs (capability/cost-tier/context/latency) regardless of
+// quota — a caller-visible signal to fall back to its own local/pinned
+// option, never a silently substituted wrong model. ALL_RATE_LIMITED means
+// eligible candidates existed but every key on every one is currently
+// exhausted/on cooldown.
+export type RoutingErrorCode = 'NO_ELIGIBLE_MODEL' | 'ALL_RATE_LIMITED';
+
+export class RoutingError extends Error {
+  readonly code: RoutingErrorCode;
+  readonly status: number;
+  constructor(code: RoutingErrorCode, message: string) {
+    super(message);
+    this.name = 'RoutingError';
+    this.code = code;
+    this.status = code === 'NO_ELIGIBLE_MODEL' ? 422 : 429;
+  }
 }
 
 // Round-robin index per platform
@@ -120,6 +163,15 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
   return result.sort((a, b) => b.penalty - a.penalty);
 }
 
+async function getP95LatencyMs(pool: ReturnType<typeof getPool>, platform: string, modelId: string): Promise<number | null> {
+  const row = await get<{ p95: string | null }>(pool, `
+    SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95
+    FROM requests
+    WHERE platform = ? AND model_id = ? AND status = 'success' AND is_probe = false
+  `, [platform, modelId]);
+  return row?.p95 != null ? Number(row.p95) : null;
+}
+
 /**
  * Route a request to the best available model.
  * Models are sorted by (base_priority + rate_limit_penalty) so frequently
@@ -128,11 +180,21 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * If preferredModelDbId is set, that model gets tried FIRST (sticky sessions).
  * This prevents hallucination from model switching mid-conversation.
  *
- * @param estimatedTokens - estimated total tokens for rate limit check
- * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
- * @param preferredModelDbId - try this model first (sticky session)
+ * Capability/cost-tier/context/latency checks are evaluated fresh per
+ * candidate on every call (never a stale pre-filtered snapshot) — a model's
+ * eligibility can only be assessed against current DB + in-memory state.
  */
-export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): Promise<RouteResult> {
+export async function routeRequest(options: RouteOptions = {}): Promise<RouteResult> {
+  const {
+    estimatedTokens = 1000,
+    skipKeys,
+    preferredModelDbId,
+    excludeProviders,
+    needs,
+    costTierCeiling,
+    latencyCeilingMs,
+  } = options;
+
   const pool = getPool();
 
   // Get fallback chain ordered by priority
@@ -157,16 +219,46 @@ export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string
     }
   }
 
+  // L11: tracks whether ANY candidate ever cleared the structural checks
+  // (capability/cost-tier/context/latency), independent of key/quota
+  // availability — distinguishes "nothing can ever satisfy this" from
+  // "eligible candidates exist but are all rate-limited right now."
+  let anyStructurallyEligible = false;
+
   for (const entry of sortedChain) {
     if (!entry.enabled) continue;
 
-    // Get model details
+    // Get model details — fresh per candidate, per call (L9).
     const model = await get<ModelRow>(pool, 'SELECT * FROM models WHERE id = ? AND enabled = true', [entry.model_db_id]);
     if (!model) continue;
+
+    // L8: caller-excluded platform (e.g. the one that just failed upstream).
+    if (excludeProviders?.has(model.platform)) continue;
 
     // Check if we have a provider for this platform
     const provider = getProvider(model.platform as any);
     if (!provider) continue;
+
+    // Capability/dialect gate: never send a field a provider can't honor.
+    if (needs?.includes('json_mode') && !provider.dialect.jsonMode) continue;
+    if (needs?.includes('reasoning_control') && !provider.dialect.reasoning) continue;
+
+    // Two-gate INNER enforcement: cost-tier ceiling (independent of the
+    // outer per-key trust gate applied by the caller before routeRequest
+    // is even invoked).
+    if (costTierCeiling === 'free' && model.cost_tier !== 'free') continue;
+
+    // Context-length awareness: don't route a request the model's window
+    // can't hold, derived from the same token estimate used for rate limits.
+    if (model.context_window != null && estimatedTokens > model.context_window) continue;
+
+    // Latency ceiling: exclude candidates whose historical p95 exceeds the
+    // caller's declared budget. No history yet ("null") does not exclude —
+    // an unmeasured model isn't known to be slow.
+    if (latencyCeilingMs != null) {
+      const p95 = await getP95LatencyMs(pool, model.platform, model.model_id);
+      if (p95 != null && p95 > latencyCeilingMs) continue;
+    }
 
     // Get all healthy, enabled keys for this platform
     const keys = await all<KeyRow>(pool,
@@ -175,6 +267,13 @@ export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string
     );
 
     if (keys.length === 0) continue;
+
+    // "Structurally eligible" = matches every capability/tier/context/latency
+    // requirement AND has at least one configured key — i.e. there is some
+    // real path to serving this request right now, even if that path is
+    // currently rate-limited. A capability match with zero keys configured
+    // isn't a usable option, so it must not suppress NO_ELIGIBLE_MODEL.
+    anyStructurallyEligible = true;
 
     // Get limits once for this model
     const limits = {
@@ -219,13 +318,21 @@ export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string
     // If we reach here, this specific model has NO available keys.
     // Update round-robin index even if we failed so we don't get stuck.
     roundRobinIndex.set(rrKey, idx);
-    
-    // We don't explicitly penalize the model here because the fact that we 
-    // couldn't find a key means we will naturally move to the next model 
+
+    // We don't explicitly penalize the model here because the fact that we
+    // couldn't find a key means we will naturally move to the next model
     // in the `sortedChain` for THIS specific request.
   }
 
-  const err = new Error('All models exhausted. Add more API keys or wait for rate limits to reset.') as any;
-  err.status = 429;
-  throw err;
+  if (!anyStructurallyEligible) {
+    throw new RoutingError(
+      'NO_ELIGIBLE_MODEL',
+      'No usable model exists for this request: either nothing in the catalog satisfies the declared requirements ' +
+      '(capability, cost tier, context length, or latency ceiling), or no API key is configured for any model that does.',
+    );
+  }
+  throw new RoutingError(
+    'ALL_RATE_LIMITED',
+    'All eligible models exhausted. Add more API keys or wait for rate limits to reset.',
+  );
 }

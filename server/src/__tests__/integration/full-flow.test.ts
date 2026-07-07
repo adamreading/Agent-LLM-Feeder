@@ -67,12 +67,13 @@ describe('Full Integration Flow', () => {
     expect(body[0]).toHaveProperty('enabled');
   });
 
-  it('Step 3: Proxy returns 429 with no keys', async () => {
+  it('Step 3: Proxy returns a routing error with no keys', async () => {
     const { status, body } = await req(app, 'POST', '/v1/chat/completions', {
       messages: [{ role: 'user', content: 'hello' }],
     });
-    // 429 (all exhausted) or 502 (provider error) or 503 (no route)
-    expect([429, 502, 503]).toContain(status);
+    // 422 NO_ELIGIBLE_MODEL (P2: no key configured for anything) or, if keys
+    // exist from a prior test in this suite, 429 (all exhausted) / 502 (provider error).
+    expect([422, 429, 502, 503]).toContain(status);
     expect(body.error).toBeDefined();
   });
 

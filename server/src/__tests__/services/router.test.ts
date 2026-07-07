@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { initDb, closeDb, getPool } from '../../db/index.js';
 import { all, run } from '../../db/pgCompat.js';
 import { encrypt } from '../../lib/crypto.js';
-import { routeRequest } from '../../services/router.js';
+import { routeRequest, RoutingError } from '../../services/router.js';
 import { createTestDb } from '../testDb.js';
 
 describe('Router', () => {
@@ -30,8 +30,8 @@ describe('Router', () => {
     }
   });
 
-  it('should throw when no keys are configured', async () => {
-    await expect(routeRequest()).rejects.toThrow(/exhausted/i);
+  it('should throw NO_ELIGIBLE_MODEL when no keys are configured for anything', async () => {
+    await expect(routeRequest()).rejects.toMatchObject({ code: 'NO_ELIGIBLE_MODEL' });
   });
 
   it('should route to highest priority model with available key', async () => {

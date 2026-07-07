@@ -7,7 +7,7 @@ import type {
   ChatToolDefinition,
   TokenUsage,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig } from './base.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -77,6 +77,26 @@ function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclaratio
       parameters: t.function.parameters,
     })),
   }];
+}
+
+// Gemini's native JSON mode: responseMimeType (+ optional responseSchema for
+// the json_schema variant). Reasoning control is NOT implemented here — no
+// confirmed dialect for Gemini's thinking-budget controls yet; requests
+// declaring reasoning_effort are capability-filtered away from Google models
+// until that's verified (see providers/index.ts).
+function toGeminiGenerationConfig(options?: CompletionOptions): Record<string, unknown> {
+  const config: Record<string, unknown> = {
+    temperature: options?.temperature,
+    maxOutputTokens: options?.max_tokens,
+    topP: options?.top_p,
+  };
+  if (options?.response_format?.type === 'json_object') {
+    config.responseMimeType = 'application/json';
+  } else if (options?.response_format?.type === 'json_schema' && options.response_format.json_schema) {
+    config.responseMimeType = 'application/json';
+    config.responseSchema = options.response_format.json_schema.schema;
+  }
+  return config;
 }
 
 function toGeminiToolConfig(toolChoice?: ChatToolChoice): { functionCallingConfig: Record<string, unknown> } | undefined {
@@ -209,6 +229,9 @@ function extractText(parts: GeminiPart[] | undefined): string | null {
 export class GoogleProvider extends BaseProvider {
   readonly platform = 'google' as const;
   readonly name = 'Google AI Studio';
+  // Gemini's native responseMimeType is wired below. No confirmed reasoning
+  // (thinking-budget) dialect yet — left unset.
+  readonly dialect: DialectConfig = { jsonMode: true };
 
   async chatCompletion(
     apiKey: string,
@@ -220,11 +243,7 @@ export class GoogleProvider extends BaseProvider {
 
     const body: Record<string, unknown> = {
       contents,
-      generationConfig: {
-        temperature: options?.temperature,
-        maxOutputTokens: options?.max_tokens,
-        topP: options?.top_p,
-      },
+      generationConfig: toGeminiGenerationConfig(options),
       tools: toGeminiTools(options?.tools),
       toolConfig: toGeminiToolConfig(options?.tool_choice),
     };
@@ -283,11 +302,7 @@ export class GoogleProvider extends BaseProvider {
 
     const body: Record<string, unknown> = {
       contents,
-      generationConfig: {
-        temperature: options?.temperature,
-        maxOutputTokens: options?.max_tokens,
-        topP: options?.top_p,
-      },
+      generationConfig: toGeminiGenerationConfig(options),
       tools: toGeminiTools(options?.tools),
       toolConfig: toGeminiToolConfig(options?.tool_choice),
     };

@@ -185,7 +185,7 @@ agentRouter.post('/chat', async (req: Request, res: Response) => {
   const estimatedTokens = Math.ceil((system.length + user.length) / 4) + 1200;
 
   try {
-    const route = await routeRequest(estimatedTokens);
+    const route = await routeRequest({ estimatedTokens });
     const result = await route.provider.chatCompletion(route.apiKey, messages, route.modelId, {
       temperature: 0.2,
       max_tokens: 1800,

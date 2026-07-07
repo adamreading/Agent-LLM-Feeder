@@ -14,11 +14,18 @@ function register(provider: BaseProvider) {
 // Google - unique Gemini API format
 register(new GoogleProvider());
 
-// Groq - OpenAI-compatible
+// Groq - OpenAI-compatible. gpt-oss models on Groq accept the flat
+// `reasoning_effort` field, BUT a live P2 demo proved it's an intensity
+// SCALE, not an on/off toggle: "400: reasoning_effort must be one of low,
+// medium, or high" — it rejects our neutral 'none' value outright. Reasoning
+// dialect left UNDECLARED (never silently reinterpret 'none' as 'low' —
+// that's a real behavior change, not a wire-format translation) pending a
+// P3/P4 decision on whether 'none' maps to something at all for this dialect.
 register(new OpenAICompatProvider({
   platform: 'groq',
   name: 'Groq',
   baseUrl: 'https://api.groq.com/openai/v1',
+  dialect: { jsonMode: true },
 }));
 
 // Cerebras - OpenAI-compatible
@@ -26,6 +33,7 @@ register(new OpenAICompatProvider({
   platform: 'cerebras',
   name: 'Cerebras',
   baseUrl: 'https://api.cerebras.ai/v1',
+  dialect: { jsonMode: true },
 }));
 
 // SambaNova - OpenAI-compatible
@@ -33,13 +41,25 @@ register(new OpenAICompatProvider({
   platform: 'sambanova',
   name: 'SambaNova',
   baseUrl: 'https://api.sambanova.ai/v1',
+  dialect: { jsonMode: true },
 }));
 
-// NVIDIA NIM - OpenAI-compatible
+// NVIDIA NIM - OpenAI-compatible. wsl-claude confirmed chat_template_kwargs
+// reasoning control live against Hermes's specific configured model
+// (2026-07-07) — but a live P2 demo against a DIFFERENT NIM model
+// (Mistral Large 3) proved that dialect is NOT universal across NIM's
+// catalog: "400: chat_template is not supported for Mistral tokenizers."
+// NIM fronts many unrelated model families (Llama/Mistral/DeepSeek/MiniMax),
+// each with its own tokenizer/chat-template — reasoning support is a
+// per-MODEL fact, not a per-provider one. Left UNDECLARED at the provider
+// level pending P3 per-model probes; the chat_template_enable_thinking
+// translation code stays available in openai-compat.ts for whichever
+// specific NIM model(s) P3 confirms actually support it.
 register(new OpenAICompatProvider({
   platform: 'nvidia',
   name: 'NVIDIA NIM',
   baseUrl: 'https://integrate.api.nvidia.com/v1',
+  dialect: { jsonMode: true },
 }));
 
 // Mistral - OpenAI-compatible
@@ -47,9 +67,13 @@ register(new OpenAICompatProvider({
   platform: 'mistral',
   name: 'Mistral',
   baseUrl: 'https://api.mistral.ai/v1',
+  dialect: { jsonMode: true },
 }));
 
-// OpenRouter - OpenAI-compatible with extra headers
+// OpenRouter - OpenAI-compatible with extra headers. Aggregates many upstream
+// models with heterogeneous reasoning support — no single reliable dialect,
+// left unset (capability-filtered out for reasoning_effort requests) until
+// P3 probes a per-model answer.
 register(new OpenAICompatProvider({
   platform: 'openrouter',
   name: 'OpenRouter',
@@ -58,6 +82,7 @@ register(new OpenAICompatProvider({
     'HTTP-Referer': 'http://localhost:3001',
     'X-Title': 'FreeLLMAPI',
   },
+  dialect: { jsonMode: true },
 }));
 
 // GitHub Models — OpenAI-compatible. Catalog uses `<publisher>/<model>` ids
@@ -67,6 +92,7 @@ register(new OpenAICompatProvider({
   platform: 'github',
   name: 'GitHub Models',
   baseUrl: 'https://models.github.ai/inference',
+  dialect: { jsonMode: true },
 }));
 
 // Cohere - OpenAI-compatible via Cohere compatibility endpoint
@@ -80,6 +106,7 @@ register(new OpenAICompatProvider({
   platform: 'zhipu',
   name: 'Zhipu AI',
   baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+  dialect: { jsonMode: true },
 }));
 
 // Hugging Face, Moonshot, MiniMax direct integrations were dropped in V4 —
@@ -96,17 +123,24 @@ register(new OpenAICompatProvider({
 // regularly take 30-90s on Ollama Cloud Free, so the timeout is bumped from
 // the default 15s. Ollama returns reasoning in `message.reasoning` (not
 // `reasoning_content`) — handled by normalizeChoices.
+// Reasoning control is the nested `reasoning:{effort}` shape (confirmed live
+// against Hermes — wsl-claude, 2026-07-07: reasoning:{effort:'none'} => 0
+// reasoning chars @0.49s; the WRONG dialect silently still thinks).
 register(new OpenAICompatProvider({
   platform: 'ollama',
   name: 'Ollama Cloud',
   baseUrl: 'https://ollama.com/v1',
   timeoutMs: 120000,
+  dialect: { jsonMode: true, reasoning: 'nested_reasoning_effort' },
 }));
 
 // Kilo AI Gateway — OpenAI-compatible aggregator. Anonymous access works
 // (200 req/hr per IP) for the few :free routes still active; a Kilo API key
 // raises the limit. Most named "free" routes in the docs have transitioned to
-// paid ("free period ended") — probe before adding catalog rows.
+// paid ("free period ended") — probe before adding catalog rows. Dialect left
+// UNDECLARED: it fronts unknown/rotating upstream models, so "does response_format
+// actually work" is exactly the kind of claim P3's probes should confirm
+// first — capability-filtered out of json_mode/reasoning requests until then.
 register(new OpenAICompatProvider({
   platform: 'kilo',
   name: 'Kilo Gateway',
@@ -116,7 +150,8 @@ register(new OpenAICompatProvider({
 // Pollinations — OpenAI-compatible, anonymous tier. The chat completions
 // endpoint lives at `/openai/v1/chat/completions` (NOT `/v1/...` — the
 // `/openai` prefix is mandatory). Public model list returns one anonymous
-// model (`openai-fast` = GPT-OSS 20B on OVH, tools=true).
+// model (`openai-fast` = GPT-OSS 20B on OVH, tools=true). Dialect left
+// UNDECLARED pending P3 probe verification (same reasoning as Kilo above).
 register(new OpenAICompatProvider({
   platform: 'pollinations',
   name: 'Pollinations',
@@ -126,7 +161,8 @@ register(new OpenAICompatProvider({
 // LLM7.io — OpenAI-compatible aggregator. 100 req/hr free; anonymous access
 // also works for basic models. Wraps a handful of upstream models behind one
 // token (GPT-OSS, Llama 3.1 Turbo via Meta, Codestral via Mistral, Ministral,
-// GLM-4.6V-Flash).
+// GLM-4.6V-Flash). Dialect left UNDECLARED pending P3 probe verification
+// (same reasoning as Kilo/Pollinations above).
 register(new OpenAICompatProvider({
   platform: 'llm7',
   name: 'LLM7',

@@ -12,10 +12,15 @@ import dotenv from 'dotenv';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
-const MIGRATION_SQL = fs.readFileSync(
-  path.resolve(__dirname, '../../drizzle/0000_square_jetstream.sql'),
-  'utf8'
-);
+// Apply every migration file in order (0000, 0001, ...) — not just the
+// first — so new test databases always reflect the current full schema.
+const MIGRATIONS_DIR = path.resolve(__dirname, '../../drizzle');
+const MIGRATION_FILES = fs.readdirSync(MIGRATIONS_DIR)
+  .filter(f => f.endsWith('.sql'))
+  .sort();
+const MIGRATION_SQL = MIGRATION_FILES
+  .map(f => fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'))
+  .join('\n--> statement-breakpoint\n');
 
 function baseConnectionParts() {
   const url = new URL(process.env.DATABASE_URL!);
