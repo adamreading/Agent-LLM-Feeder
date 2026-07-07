@@ -2,12 +2,13 @@
  * Probe every enabled model with a minimal request to find broken model IDs.
  * Usage: npx tsx src/scripts/test-all-models.ts
  */
-import { initDb, getDb } from '../db/index.js';
+import { initDb, getPool } from '../db/index.js';
+import { all, get } from '../db/pgCompat.js';
 import { decrypt } from '../lib/crypto.js';
 import { getProvider } from '../providers/index.js';
 
-initDb();
-const db = getDb();
+await initDb();
+const pool = getPool();
 
 interface Row {
   id: number;
@@ -21,23 +22,21 @@ interface Key {
   auth_tag: string;
 }
 
-const models = db.prepare(`
+const models = await all<Row>(pool, `
   SELECT m.id, m.platform, m.model_id, m.display_name
     FROM models m
-   WHERE m.enabled = 1
-     AND EXISTS (SELECT 1 FROM api_keys k WHERE k.platform = m.platform AND k.enabled = 1)
+   WHERE m.enabled = true
+     AND EXISTS (SELECT 1 FROM api_keys k WHERE k.platform = m.platform AND k.enabled = true)
    ORDER BY m.intelligence_rank, m.platform
-`).all() as Row[];
-
-const keyStmt = db.prepare(`
-  SELECT encrypted_key, iv, auth_tag FROM api_keys
-   WHERE platform = ? AND enabled = 1 ORDER BY id LIMIT 1
 `);
 
 const results: { row: Row; ok: boolean; ms: number; error?: string; reply?: string }[] = [];
 
 for (const row of models) {
-  const keyRow = keyStmt.get(row.platform) as Key | undefined;
+  const keyRow = await get<Key>(pool, `
+    SELECT encrypted_key, iv, auth_tag FROM api_keys
+     WHERE platform = ? AND enabled = true ORDER BY id LIMIT 1
+  `, [row.platform]);
   if (!keyRow) { results.push({ row, ok: false, ms: 0, error: 'no key' }); continue; }
   const apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
   const provider = getProvider(row.platform as any);

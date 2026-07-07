@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb } from '../../db/index.js';
+import { initDb, closeDb } from '../../db/index.js';
+import { createTestDb } from '../testDb.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -21,11 +22,19 @@ async function request(app: Express, method: string, path: string, body?: any) {
 
 describe('Fallback API', () => {
   let app: Express;
+  let drop: () => Promise<void>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    initDb(':memory:');
+    const testDb = await createTestDb();
+    drop = testDb.drop;
+    await initDb(testDb.connectionString);
     app = createApp();
+  });
+
+  afterAll(async () => {
+    await closeDb();
+    await drop();
   });
 
   it('GET /api/fallback returns fallback chain', async () => {

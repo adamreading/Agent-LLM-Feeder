@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { getDb } from '../db/index.js';
+import { getPool } from '../db/index.js';
+import { all, run, runReturningId } from '../db/pgCompat.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
 
 export const keysRouter = Router();
@@ -22,9 +23,8 @@ const addKeySchema = z.object({
 });
 
 // List all keys (masked)
-keysRouter.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
-  const rows = db.prepare('SELECT * FROM api_keys ORDER BY created_at DESC').all() as any[];
+keysRouter.get('/', async (_req: Request, res: Response) => {
+  const rows = await all<any>(getPool(), 'SELECT * FROM api_keys ORDER BY created_at DESC');
 
   const keys = rows.map(row => {
     let maskedKey = '****';
@@ -40,7 +40,7 @@ keysRouter.get('/', (_req: Request, res: Response) => {
       label: row.label,
       maskedKey,
       status: row.status,
-      enabled: row.enabled === 1,
+      enabled: row.enabled,
       createdAt: row.created_at,
       lastCheckedAt: row.last_checked_at,
     };
@@ -50,7 +50,7 @@ keysRouter.get('/', (_req: Request, res: Response) => {
 });
 
 // Add a key
-keysRouter.post('/', (req: Request, res: Response) => {
+keysRouter.post('/', async (req: Request, res: Response) => {
   const parsed = addKeySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } });
@@ -60,14 +60,13 @@ keysRouter.post('/', (req: Request, res: Response) => {
   const { platform, key, label } = parsed.data;
   const { encrypted, iv, authTag } = encrypt(key);
 
-  const db = getDb();
-  const result = db.prepare(`
+  const id = await runReturningId(getPool(), `
     INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
-    VALUES (?, ?, ?, ?, ?, 'unknown', 1)
-  `).run(platform, label ?? '', encrypted, iv, authTag);
+    VALUES (?, ?, ?, ?, ?, 'unknown', true)
+  `, [platform, label ?? '', encrypted, iv, authTag]);
 
   res.status(201).json({
-    id: result.lastInsertRowid,
+    id,
     platform,
     label: label ?? '',
     maskedKey: maskKey(key),
@@ -77,15 +76,14 @@ keysRouter.post('/', (req: Request, res: Response) => {
 });
 
 // Delete a key
-keysRouter.delete('/:id', (req: Request, res: Response) => {
+keysRouter.delete('/:id', async (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
     return;
   }
 
-  const db = getDb();
-  const result = db.prepare('DELETE FROM api_keys WHERE id = ?').run(id);
+  const result = await run(getPool(), 'DELETE FROM api_keys WHERE id = ?', [id]);
 
   if (result.changes === 0) {
     res.status(404).json({ error: { message: 'Key not found' } });
@@ -96,7 +94,7 @@ keysRouter.delete('/:id', (req: Request, res: Response) => {
 });
 
 // Toggle enable/disable
-keysRouter.patch('/:id', (req: Request, res: Response) => {
+keysRouter.patch('/:id', async (req: Request, res: Response) => {
   const id = parseInt(req.params.id as string, 10);
   if (isNaN(id)) {
     res.status(400).json({ error: { message: 'Invalid key ID' } });
@@ -109,8 +107,7 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
     return;
   }
 
-  const db = getDb();
-  const result = db.prepare('UPDATE api_keys SET enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
+  const result = await run(getPool(), 'UPDATE api_keys SET enabled = ? WHERE id = ?', [enabled, id]);
 
   if (result.changes === 0) {
     res.status(404).json({ error: { message: 'Key not found' } });

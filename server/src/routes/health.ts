@@ -1,16 +1,17 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getDb } from '../db/index.js';
+import { getPool } from '../db/index.js';
+import { all } from '../db/pgCompat.js';
 import { checkKeyHealth, checkAllKeys } from '../services/health.js';
 import { hasProvider } from '../providers/index.js';
 
 export const healthRouter = Router();
 
 // Get health status for all platforms
-healthRouter.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
+healthRouter.get('/', async (_req: Request, res: Response) => {
+  const pool = getPool();
 
-  const platforms = db.prepare(`
+  const platforms = await all<any>(pool, `
     SELECT
       platform,
       COUNT(*) as total_keys,
@@ -19,35 +20,35 @@ healthRouter.get('/', (_req: Request, res: Response) => {
       SUM(CASE WHEN status = 'invalid' THEN 1 ELSE 0 END) as invalid_keys,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_keys,
       SUM(CASE WHEN status = 'unknown' THEN 1 ELSE 0 END) as unknown_keys,
-      SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled_keys
+      SUM(CASE WHEN enabled = true THEN 1 ELSE 0 END) as enabled_keys
     FROM api_keys
     GROUP BY platform
-  `).all() as any[];
+  `);
 
-  const keys = db.prepare(`
+  const keys = await all<any>(pool, `
     SELECT id, platform, label, status, enabled, created_at, last_checked_at
     FROM api_keys
     ORDER BY platform, created_at DESC
-  `).all() as any[];
+  `);
 
   res.json({
     platforms: platforms.map(p => ({
       platform: p.platform,
       hasProvider: hasProvider(p.platform),
-      totalKeys: p.total_keys,
-      healthyKeys: p.healthy_keys,
-      rateLimitedKeys: p.rate_limited_keys,
-      invalidKeys: p.invalid_keys,
-      errorKeys: p.error_keys,
-      unknownKeys: p.unknown_keys,
-      enabledKeys: p.enabled_keys,
+      totalKeys: Number(p.total_keys),
+      healthyKeys: Number(p.healthy_keys),
+      rateLimitedKeys: Number(p.rate_limited_keys),
+      invalidKeys: Number(p.invalid_keys),
+      errorKeys: Number(p.error_keys),
+      unknownKeys: Number(p.unknown_keys),
+      enabledKeys: Number(p.enabled_keys),
     })),
     keys: keys.map(k => ({
       id: k.id,
       platform: k.platform,
       label: k.label,
       status: k.status,
-      enabled: k.enabled === 1,
+      enabled: k.enabled,
       createdAt: k.created_at,
       lastCheckedAt: k.last_checked_at,
     })),

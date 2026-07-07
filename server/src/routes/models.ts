@@ -1,29 +1,30 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getDb } from '../db/index.js';
+import { getPool } from '../db/index.js';
+import { all } from '../db/pgCompat.js';
 import { hasProvider } from '../providers/index.js';
 
 export const modelsRouter = Router();
 
 // List all models with availability info
-modelsRouter.get('/', (_req: Request, res: Response) => {
-  const db = getDb();
-  const models = db.prepare(`
+modelsRouter.get('/', async (_req: Request, res: Response) => {
+  const pool = getPool();
+  const models = await all<any>(pool, `
     SELECT m.*, fc.priority, fc.enabled as fallback_enabled
     FROM models m
     LEFT JOIN fallback_config fc ON fc.model_db_id = m.id
     ORDER BY COALESCE(fc.priority, m.intelligence_rank) ASC
-  `).all() as any[];
+  `);
 
   // Count keys per platform
-  const keyCounts = db.prepare(`
+  const keyCounts = await all<{ platform: string; count: string }>(pool, `
     SELECT platform, COUNT(*) as count
     FROM api_keys
-    WHERE enabled = 1
+    WHERE enabled = true
     GROUP BY platform
-  `).all() as { platform: string; count: number }[];
+  `);
 
-  const keyCountMap = new Map(keyCounts.map(k => [k.platform, k.count]));
+  const keyCountMap = new Map(keyCounts.map(k => [k.platform, Number(k.count)]));
 
   const result = models.map(m => ({
     id: m.id,
@@ -39,9 +40,9 @@ modelsRouter.get('/', (_req: Request, res: Response) => {
     tpdLimit: m.tpd_limit,
     monthlyTokenBudget: m.monthly_token_budget,
     contextWindow: m.context_window,
-    enabled: m.enabled === 1,
+    enabled: m.enabled,
     priority: m.priority,
-    fallbackEnabled: m.fallback_enabled === 1,
+    fallbackEnabled: m.fallback_enabled,
     hasProvider: hasProvider(m.platform),
     keyCount: keyCountMap.get(m.platform) ?? 0,
   }));

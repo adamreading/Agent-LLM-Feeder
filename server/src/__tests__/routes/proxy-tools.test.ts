@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb, getDb } from '../../db/index.js';
+import { initDb, closeDb, getPool } from '../../db/index.js';
+import { run } from '../../db/pgCompat.js';
+import { createTestDb } from '../testDb.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -25,17 +27,25 @@ async function request(app: Express, method: string, path: string, body?: any) {
 
 describe('Proxy tool-calling support', () => {
   let app: Express;
+  let drop: () => Promise<void>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    initDb(':memory:');
+    const testDb = await createTestDb();
+    drop = testDb.drop;
+    await initDb(testDb.connectionString);
     app = createApp();
   });
 
+  afterAll(async () => {
+    await closeDb();
+    await drop();
+  });
+
   beforeEach(async () => {
-    const db = getDb();
-    db.prepare('DELETE FROM api_keys').run();
-    db.prepare('DELETE FROM requests').run();
+    const pool = getPool();
+    await run(pool, 'DELETE FROM api_keys');
+    await run(pool, 'DELETE FROM requests');
 
     const addKey = await request(app, 'POST', '/api/keys', {
       platform: 'groq',

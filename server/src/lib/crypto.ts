@@ -1,5 +1,6 @@
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
+import type pg from 'pg';
+import { get, run } from '../db/pgCompat.js';
 
 const ALGORITHM = 'aes-256-gcm';
 
@@ -29,7 +30,7 @@ function parseHexKey(value: string, source: 'env' | 'db'): Buffer {
  * Initialize encryption key from env, DB, or generate a new one.
  * Must be called after DB is initialized.
  */
-export function initEncryptionKey(db: Database.Database): void {
+export async function initEncryptionKey(pool: pg.Pool): Promise<void> {
   // 1. Check env var
   const envKey = process.env.ENCRYPTION_KEY;
   if (envKey && envKey !== 'your-64-char-hex-key-here') {
@@ -38,7 +39,7 @@ export function initEncryptionKey(db: Database.Database): void {
   }
 
   // 2. Check DB for persisted key
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'encryption_key'").get() as { value: string } | undefined;
+  const row = await get<{ value: string }>(pool, "SELECT value FROM settings WHERE key = 'encryption_key'");
   if (row) {
     cachedKey = parseHexKey(row.value, 'db');
     return;
@@ -46,7 +47,7 @@ export function initEncryptionKey(db: Database.Database): void {
 
   // 3. Generate and persist
   cachedKey = crypto.randomBytes(KEY_BYTES);
-  db.prepare("INSERT INTO settings (key, value) VALUES ('encryption_key', ?)").run(cachedKey.toString('hex'));
+  await run(pool, "INSERT INTO settings (key, value) VALUES ('encryption_key', ?)", [cachedKey.toString('hex')]);
 }
 
 function getEncryptionKey(): Buffer {

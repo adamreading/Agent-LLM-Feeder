@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getDb } from '../db/index.js';
+import { getPool } from '../db/index.js';
+import { all, get } from '../db/pgCompat.js';
 
 export const analyticsRouter = Router();
 
@@ -20,12 +21,11 @@ function getSinceTimestamp(range: string): string {
 }
 
 // Summary stats
-analyticsRouter.get('/summary', (req: Request, res: Response) => {
+analyticsRouter.get('/summary', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
-  const db = getDb();
 
-  const stats = db.prepare(`
+  const stats = await get<any>(getPool(), `
     SELECT
       COUNT(*) as total_requests,
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
@@ -34,33 +34,34 @@ analyticsRouter.get('/summary', (req: Request, res: Response) => {
       AVG(latency_ms) as avg_latency_ms
     FROM requests
     WHERE created_at >= ?
-  `).get(since) as any;
+  `, [since]);
 
-  const totalRequests = stats.total_requests ?? 0;
-  const successRate = totalRequests > 0 ? (stats.success_count / totalRequests) * 100 : 0;
-  const totalTokens = (stats.total_input_tokens ?? 0) + (stats.total_output_tokens ?? 0);
+  const totalRequests = Number(stats.total_requests ?? 0);
+  const successCount = Number(stats.success_count ?? 0);
+  const totalInputTokens = Number(stats.total_input_tokens ?? 0);
+  const totalOutputTokens = Number(stats.total_output_tokens ?? 0);
+  const successRate = totalRequests > 0 ? (successCount / totalRequests) * 100 : 0;
 
   // Estimate cost savings: average ~$3/M input + $15/M output tokens (GPT-4o pricing)
-  const inputCost = ((stats.total_input_tokens ?? 0) / 1_000_000) * 3;
-  const outputCost = ((stats.total_output_tokens ?? 0) / 1_000_000) * 15;
+  const inputCost = (totalInputTokens / 1_000_000) * 3;
+  const outputCost = (totalOutputTokens / 1_000_000) * 15;
 
   res.json({
     totalRequests,
     successRate: Math.round(successRate * 10) / 10,
-    totalInputTokens: stats.total_input_tokens ?? 0,
-    totalOutputTokens: stats.total_output_tokens ?? 0,
-    avgLatencyMs: Math.round(stats.avg_latency_ms ?? 0),
+    totalInputTokens,
+    totalOutputTokens,
+    avgLatencyMs: Math.round(Number(stats.avg_latency_ms ?? 0)),
     estimatedCostSavings: Math.round((inputCost + outputCost) * 100) / 100,
   });
 });
 
 // Stats grouped by model
-analyticsRouter.get('/by-model', (req: Request, res: Response) => {
+analyticsRouter.get('/by-model', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
-  const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await all<any>(getPool(), `
     SELECT
       r.platform,
       r.model_id,
@@ -73,29 +74,28 @@ analyticsRouter.get('/by-model', (req: Request, res: Response) => {
     FROM requests r
     LEFT JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
     WHERE r.created_at >= ?
-    GROUP BY r.platform, r.model_id
+    GROUP BY r.platform, r.model_id, m.display_name
     ORDER BY requests DESC
-  `).all(since) as any[];
+  `, [since]);
 
   res.json(rows.map(r => ({
     platform: r.platform,
     modelId: r.model_id,
     displayName: r.display_name ?? r.model_id,
-    requests: r.requests,
-    successRate: Math.round(r.success_rate * 10) / 10,
-    avgLatencyMs: Math.round(r.avg_latency_ms),
-    totalInputTokens: r.total_input_tokens ?? 0,
-    totalOutputTokens: r.total_output_tokens ?? 0,
+    requests: Number(r.requests),
+    successRate: Math.round(Number(r.success_rate) * 10) / 10,
+    avgLatencyMs: Math.round(Number(r.avg_latency_ms)),
+    totalInputTokens: Number(r.total_input_tokens ?? 0),
+    totalOutputTokens: Number(r.total_output_tokens ?? 0),
   })));
 });
 
 // Stats grouped by platform
-analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
+analyticsRouter.get('/by-platform', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
-  const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await all<any>(getPool(), `
     SELECT
       platform,
       COUNT(*) as requests,
@@ -107,56 +107,55 @@ analyticsRouter.get('/by-platform', (req: Request, res: Response) => {
     WHERE created_at >= ?
     GROUP BY platform
     ORDER BY requests DESC
-  `).all(since) as any[];
+  `, [since]);
 
   res.json(rows.map(r => ({
     platform: r.platform,
-    requests: r.requests,
-    successRate: Math.round(r.success_rate * 10) / 10,
-    avgLatencyMs: Math.round(r.avg_latency_ms),
-    totalInputTokens: r.total_input_tokens ?? 0,
-    totalOutputTokens: r.total_output_tokens ?? 0,
+    requests: Number(r.requests),
+    successRate: Math.round(Number(r.success_rate) * 10) / 10,
+    avgLatencyMs: Math.round(Number(r.avg_latency_ms)),
+    totalInputTokens: Number(r.total_input_tokens ?? 0),
+    totalOutputTokens: Number(r.total_output_tokens ?? 0),
   })));
 });
 
 // Timeline data
-analyticsRouter.get('/timeline', (req: Request, res: Response) => {
+analyticsRouter.get('/timeline', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const interval = (req.query.interval as string) ?? (range === '24h' ? 'hour' : 'day');
   const since = getSinceTimestamp(range);
-  const db = getDb();
 
   // dateFormat is a hardcoded whitelist — never user-controlled.
-  const dateFormat = interval === 'hour' ? '%Y-%m-%dT%H:00:00' : '%Y-%m-%d';
+  const dateFormat = interval === 'hour' ? 'YYYY-MM-DD"T"HH24:00:00' : 'YYYY-MM-DD';
 
-  const rows = db.prepare(`
+  const rows = await all<any>(getPool(), `
     SELECT
-      strftime('${dateFormat}', created_at) as timestamp,
+      to_char(created_at, '${dateFormat}') as timestamp,
       COUNT(*) as requests,
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failure_count
     FROM requests
     WHERE created_at >= ?
-    GROUP BY strftime('${dateFormat}', created_at)
+    GROUP BY to_char(created_at, '${dateFormat}')
     ORDER BY timestamp ASC
-  `).all(since) as any[];
+  `, [since]);
 
   res.json(rows.map(r => ({
     timestamp: r.timestamp,
-    requests: r.requests,
-    successCount: r.success_count,
-    failureCount: r.failure_count,
+    requests: Number(r.requests),
+    successCount: Number(r.success_count),
+    failureCount: Number(r.failure_count),
   })));
 });
 
 // Error distribution (grouped by error type and platform)
-analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
+analyticsRouter.get('/error-distribution', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
-  const db = getDb();
+  const pool = getPool();
 
   // Group errors by category (extract the key part of the error message)
-  const rows = db.prepare(`
+  const rows = await all<any>(pool, `
     SELECT
       platform,
       model_id,
@@ -173,12 +172,12 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
       COUNT(*) as count
     FROM requests
     WHERE status = 'error' AND created_at >= ?
-    GROUP BY platform, error_category
+    GROUP BY platform, model_id, error_category
     ORDER BY count DESC
-  `).all(since) as any[];
+  `, [since]);
 
   // Also get totals by category
-  const byCategory = db.prepare(`
+  const byCategory = await all<any>(pool, `
     SELECT
       CASE
         WHEN error LIKE '%429%' OR error LIKE '%rate limit%' OR error LIKE '%too many%' OR error LIKE '%quota%' THEN 'Rate Limited (429)'
@@ -195,37 +194,36 @@ analyticsRouter.get('/error-distribution', (req: Request, res: Response) => {
     WHERE status = 'error' AND created_at >= ?
     GROUP BY category
     ORDER BY count DESC
-  `).all(since) as any[];
+  `, [since]);
 
   // Errors by platform
-  const byPlatform = db.prepare(`
+  const byPlatform = await all<any>(pool, `
     SELECT platform, COUNT(*) as count
     FROM requests
     WHERE status = 'error' AND created_at >= ?
     GROUP BY platform
     ORDER BY count DESC
-  `).all(since) as any[];
+  `, [since]);
 
   res.json({
-    byCategory,
-    byPlatform,
-    detailed: rows,
+    byCategory: byCategory.map(r => ({ category: r.category, count: Number(r.count) })),
+    byPlatform: byPlatform.map(r => ({ platform: r.platform, count: Number(r.count) })),
+    detailed: rows.map(r => ({ platform: r.platform, model_id: r.model_id, error_category: r.error_category, count: Number(r.count) })),
   });
 });
 
 // Recent errors
-analyticsRouter.get('/errors', (req: Request, res: Response) => {
+analyticsRouter.get('/errors', async (req: Request, res: Response) => {
   const range = (req.query.range as string) ?? '7d';
   const since = getSinceTimestamp(range);
-  const db = getDb();
 
-  const rows = db.prepare(`
+  const rows = await all<any>(getPool(), `
     SELECT id, platform, model_id, error, latency_ms, created_at
     FROM requests
     WHERE status = 'error' AND created_at >= ?
     ORDER BY created_at DESC
     LIMIT 50
-  `).all(since) as any[];
+  `, [since]);
 
   res.json(rows.map(r => ({
     id: r.id,

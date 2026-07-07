@@ -1,7 +1,9 @@
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
-import { initDb, getDb } from '../../db/index.js';
+import { initDb, closeDb, getPool } from '../../db/index.js';
+import { run } from '../../db/pgCompat.js';
+import { createTestDb } from '../testDb.js';
 
 async function req(app: Express, method: string, path: string, body?: any) {
   const server = app.listen(0);
@@ -25,15 +27,22 @@ async function req(app: Express, method: string, path: string, body?: any) {
 
 describe('Full Integration Flow', () => {
   let app: Express;
+  let drop: () => Promise<void>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    initDb(':memory:');
+    const testDb = await createTestDb();
+    drop = testDb.drop;
+    const pool = await initDb(testDb.connectionString);
     app = createApp();
     // Clean
-    const db = getDb();
-    db.prepare('DELETE FROM api_keys').run();
-    db.prepare('DELETE FROM requests').run();
+    await run(pool, 'DELETE FROM api_keys');
+    await run(pool, 'DELETE FROM requests');
+  });
+
+  afterAll(async () => {
+    await closeDb();
+    await drop();
   });
 
   it('Step 1: Verify models are seeded', async () => {

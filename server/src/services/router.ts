@@ -1,4 +1,5 @@
-import { getDb } from '../db/index.js';
+import { getPool } from '../db/index.js';
+import { all, get } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
@@ -22,13 +23,13 @@ interface KeyRow {
   iv: string;
   auth_tag: string;
   status: string;
-  enabled: number;
+  enabled: boolean;
 }
 
 interface FallbackRow {
   model_db_id: number;
   priority: number;
-  enabled: number;
+  enabled: boolean;
 }
 
 export interface RouteResult {
@@ -131,15 +132,15 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
  * @param skipKeys - set of "platform:modelId:keyId" to skip (failed on this request)
  * @param preferredModelDbId - try this model first (sticky session)
  */
-export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): RouteResult {
-  const db = getDb();
+export async function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, preferredModelDbId?: number): Promise<RouteResult> {
+  const pool = getPool();
 
   // Get fallback chain ordered by priority
-  const fallbackChain = db.prepare(`
+  const fallbackChain = await all<FallbackRow>(pool, `
     SELECT fc.model_db_id, fc.priority, fc.enabled
     FROM fallback_config fc
     ORDER BY fc.priority ASC
-  `).all() as FallbackRow[];
+  `);
 
   // Apply dynamic penalties: sort by (base priority + penalty)
   const sortedChain = fallbackChain.map(entry => ({
@@ -160,7 +161,7 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     if (!entry.enabled) continue;
 
     // Get model details
-    const model = db.prepare('SELECT * FROM models WHERE id = ? AND enabled = 1').get(entry.model_db_id) as ModelRow | undefined;
+    const model = await get<ModelRow>(pool, 'SELECT * FROM models WHERE id = ? AND enabled = true', [entry.model_db_id]);
     if (!model) continue;
 
     // Check if we have a provider for this platform
@@ -168,9 +169,10 @@ export function routeRequest(estimatedTokens = 1000, skipKeys?: Set<string>, pre
     if (!provider) continue;
 
     // Get all healthy, enabled keys for this platform
-    const keys = db.prepare(
-      'SELECT * FROM api_keys WHERE platform = ? AND enabled = 1 AND status != ?'
-    ).all(model.platform, 'invalid') as KeyRow[];
+    const keys = await all<KeyRow>(pool,
+      'SELECT * FROM api_keys WHERE platform = ? AND enabled = true AND status != ?',
+      [model.platform, 'invalid']
+    );
 
     if (keys.length === 0) continue;
 

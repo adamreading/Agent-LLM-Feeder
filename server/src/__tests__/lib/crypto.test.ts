@@ -1,11 +1,23 @@
-import { describe, it, expect, beforeAll } from 'vitest';
-import { initDb } from '../../db/index.js';
-import { encrypt, decrypt, maskKey } from '../../lib/crypto.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import pg from 'pg';
+import { initEncryptionKey, encrypt, decrypt, maskKey } from '../../lib/crypto.js';
+import { createTestDb } from '../testDb.js';
 
 describe('Crypto', () => {
-  beforeAll(() => {
+  let pool: pg.Pool;
+  let drop: () => Promise<void>;
+
+  beforeAll(async () => {
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
-    initDb(':memory:');
+    const testDb = await createTestDb();
+    drop = testDb.drop;
+    pool = new pg.Pool({ connectionString: testDb.connectionString });
+    await initEncryptionKey(pool);
+  });
+
+  afterAll(async () => {
+    await pool.end();
+    await drop();
   });
 
   it('should encrypt and decrypt a key round-trip', () => {

@@ -5,7 +5,8 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, type RouteResult } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
-import { getDb, getUnifiedApiKey } from '../db/index.js';
+import { getPool, getUnifiedApiKey } from '../db/index.js';
+import { all, get, run } from '../db/pgCompat.js';
 
 export const proxyRouter = Router();
 
@@ -72,9 +73,8 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number) {
 }
 
 // OpenAI-compatible /models endpoint (used by Hermes for metadata)
-proxyRouter.get('/models', (_req: Request, res: Response) => {
-  const db = getDb();
-  const models = db.prepare('SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = 1 ORDER BY intelligence_rank').all() as any[];
+proxyRouter.get('/models', async (_req: Request, res: Response) => {
+  const models = await all<any>(getPool(), 'SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = true ORDER BY intelligence_rank');
   res.json({
     object: 'list',
     data: models.map(m => ({
@@ -193,7 +193,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
   if (!isLocal) {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-    const unifiedKey = getUnifiedApiKey();
+    const unifiedKey = await getUnifiedApiKey();
     if (!token || !timingSafeStringEqual(token, unifiedKey)) {
       res.status(401).json({
         error: { message: 'Invalid API key', type: 'authentication_error' },
@@ -264,12 +264,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // Sticky-session is the fallback when no `model` field was sent at all.
   let preferredModel: number | undefined;
   if (requestedModel) {
-    const db = getDb();
-    const enabled = db.prepare('SELECT id FROM models WHERE model_id = ? AND enabled = 1').get(requestedModel) as { id: number } | undefined;
+    const pool = getPool();
+    const enabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ? AND enabled = true', [requestedModel]);
     if (enabled) {
       preferredModel = enabled.id;
     } else {
-      const disabled = db.prepare('SELECT id FROM models WHERE model_id = ?').get(requestedModel) as { id: number } | undefined;
+      const disabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ?', [requestedModel]);
       const reason = disabled ? 'is disabled' : 'is not in the catalog';
       res.status(400).json({
         error: {
@@ -291,7 +291,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     let route: RouteResult;
     try {
-      route = routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
+      route = await routeRequest(estimatedTotal, skipKeys.size > 0 ? skipKeys : undefined, preferredModel);
     } catch (err: any) {
       // No more models available
       if (lastError) {
@@ -425,7 +425,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   });
 });
 
-function logRequest(
+// Fire-and-forget: callers don't await this (logging must never block the
+// response), so all errors are caught internally rather than rejecting.
+async function logRequest(
   platform: string,
   modelId: string,
   status: string,
@@ -435,11 +437,10 @@ function logRequest(
   error: string | null,
 ) {
   try {
-    const db = getDb();
-    db.prepare(`
+    await run(getPool(), `
       INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(platform, modelId, status, inputTokens, outputTokens, latencyMs, error);
+    `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }
