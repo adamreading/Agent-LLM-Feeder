@@ -6,6 +6,7 @@ import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
+import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -225,7 +226,21 @@ function isRetryableError(err: any): boolean {
     || msg.includes('aborted') || msg.includes('timeout') || msg.includes('etimedout')
     || msg.includes('econnrefused') || msg.includes('econnreset')
     || msg.includes('503') || msg.includes('unavailable')
-    || msg.includes('500') || msg.includes('internal server error');
+    || msg.includes('500') || msg.includes('internal server error')
+    || isToolCapabilityMismatchError(err);
+}
+
+// L9 runtime feedback: a live provider error explicitly saying tool-calling
+// isn't supported (real observed shape, groq/compound: "`tool calling` is
+// not supported with this model") means a MEASURED-true capability just
+// regressed — the underlying model behind this platform/model_id changed,
+// or the original measurement was wrong. Treated as retryable (try the next
+// tools-capable candidate rather than hard-failing the whole request) AND
+// flagged suspect so the probe scheduler re-verifies it, instead of letting
+// stale measured=true data silently keep winning this gate forever.
+function isToolCapabilityMismatchError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return /tool.{0,40}not.{0,10}support/.test(msg) || /does\s*not\s*support.{0,20}tool/.test(msg);
 }
 
 // 'auto' or 'auto/<task_class>' enters orchestration mode (task_class is
@@ -478,6 +493,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         setCooldown(route.platform, route.modelId, route.keyId, 120_000);
         recordRateLimitHit(route.modelDbId);
         lastError = err;
+        if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
+          void markCapabilitySuspect(route.modelDbId, 'tools');
+          console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);
+        }
         console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${maxRetries})`);
         continue;
       }

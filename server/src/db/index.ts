@@ -170,14 +170,19 @@ async function migrateModels(pool: pg.Pool) {
     ON CONFLICT (platform, model_id) DO NOTHING
   `;
 
+  // 6 entries removed from this list 2026-07-07 (cerebras/qwen-3-coder-480b,
+  // cerebras/llama-4-maverick-17b-128e-instruct, openrouter/deepseek-v3.1:free,
+  // openrouter/moonshotai/kimi-k2:free, moonshot/kimi-latest, minimax/MiniMax-M1):
+  // each was later deliberately removed by migrateModelsV2/V4's removals lists,
+  // but this unconditional seed insert kept recreating them every startup right
+  // before the later migration deleted them again in the same pass — real but
+  // harmless dead weight (resolves before any request traffic, unlike the
+  // cerebras/gpt-oss-120b bug), just burning a serial id + fallback_config row
+  // every restart for no purpose. Pruned rather than left to rot.
   const newModels: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
     // Cerebras — same free pool as qwen3-235b
-    ['cerebras', 'qwen-3-coder-480b', 'Qwen3-Coder 480B', 2, 1, 'Frontier', 30, null, 60000, 1000000, '~30M', 131072],
-    ['cerebras', 'llama-4-maverick-17b-128e-instruct', 'Llama 4 Maverick', 3, 1, 'Frontier', 30, null, 60000, 1000000, '~30M', 131072],
     ['cerebras', 'gpt-oss-120b', 'GPT-OSS 120B', 3, 1, 'Large', 30, null, 60000, 1000000, '~30M', 131072],
     // OpenRouter free tier
-    ['openrouter', 'deepseek/deepseek-v3.1:free', 'DeepSeek V3.1 (free)', 2, 10, 'Frontier', 20, 200, null, null, '~6M', 131072],
-    ['openrouter', 'moonshotai/kimi-k2:free', 'Kimi K2 (free)', 2, 9, 'Frontier', 20, 200, null, null, '~6M', 131072],
     ['openrouter', 'qwen/qwen3-coder:free', 'Qwen3 Coder (free)', 3, 9, 'Frontier', 20, 200, null, null, '~6M', 262144],
     ['openrouter', 'z-ai/glm-4.5-air:free', 'GLM-4.5 Air (free)', 4, 9, 'Large', 20, 200, null, null, '~6M', 131072],
     // Mistral Experiment pool — shared ~1B/mo across models
@@ -185,8 +190,6 @@ async function migrateModels(pool: pg.Pool) {
     ['mistral', 'codestral-latest', 'Codestral', 6, 6, 'Medium', 2, null, 500000, null, '~50-100M', 32000],
     // New providers
     ['zhipu', 'glm-4.5-flash', 'GLM-4.5 Flash', 5, 4, 'Large', null, null, null, 1000000, '~30M', 131072],
-    ['moonshot', 'kimi-latest', 'Kimi Latest', 4, 8, 'Large', 60, null, null, 500000, '~15M', 200000],
-    ['minimax', 'MiniMax-M1', 'MiniMax M1', 5, 8, 'Large', 20, null, 1000000, null, '~30M', 200000],
   ];
 
   await transaction(pool, async (client) => {
@@ -519,7 +522,14 @@ async function migrateModelsV6(pool: pg.Pool) {
     ['google', 'gemini-3-flash-preview', 'Gemini 3 Flash Preview', 11, 5, 'Large', 10, 20, 250000, null, '~3M', 1048576],
     ['google', 'gemini-3.1-pro-preview', 'Gemini 3.1 Pro Preview', 1, 8, 'Frontier', 5, 20, 250000, null, '~3M', 1048576],
     // OpenRouter :free pool — 20 RPM / 50 RPD (1000 once $10 credits bought).
-    ['openrouter', 'google/gemma-4-31b-it:free', 'Gemma 4 31B (free)', 19, 9, 'Medium', 20, 200, null, null, '~6M', 262144],
+    // NOTE: google/gemma-4-31b-it:free deliberately NOT re-added here — it was
+    // removed in migrateModelsV4 for being "weak at tool use". An earlier
+    // version of this list re-added it (no comment, apparent oversight from
+    // batch-adding OpenRouter free models), which created the exact same
+    // delete/re-insert fight as the cerebras/gpt-oss-120b bug found and fixed
+    // 2026-07-07 (V4 deletes every startup, this insert immediately
+    // recreated it with a fresh id, cascading away accumulated capability
+    // data). V4's reasoned removal wins here, unlike that case.
     ['openrouter', 'liquid/lfm-2.5-1.2b-instruct:free', 'Liquid LFM 2.5 1.2B (free)', 30, 10, 'Small', 20, 200, null, null, '~6M', 32768],
   ];
   await transaction(pool, async (client) => {

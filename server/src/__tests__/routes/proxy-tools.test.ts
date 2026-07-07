@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import type { Express } from 'express';
 import { createApp } from '../../app.js';
 import { initDb, closeDb, getPool } from '../../db/index.js';
-import { run } from '../../db/pgCompat.js';
+import { run, get } from '../../db/pgCompat.js';
 import { createTestDb } from '../testDb.js';
 
 async function request(app: Express, method: string, path: string, body?: any) {
@@ -192,5 +192,71 @@ describe('Proxy tool-calling support', () => {
     expect(providerBody.messages[2].role).toBe('tool');
     expect(providerBody.messages[2].tool_call_id).toBe('call_weather_1');
     expect(body.choices[0].message.content).toContain('30C');
+  });
+
+  it('L9: falls back on a live tool-capability regression and marks it suspect', async () => {
+    const pool = getPool();
+    // Narrow eligibility to exactly two models so the fallback sequence
+    // is deterministic (order-independent assertions below cover whichever
+    // of the two the router tries first).
+    await run(pool, `DELETE FROM model_capabilities`);
+    await run(pool, `
+      INSERT INTO model_capabilities (model_db_id, capability, supported, source)
+      SELECT id, 'tools', true, 'measured' FROM models
+      WHERE platform = 'groq' AND model_id IN ('openai/gpt-oss-120b', 'llama-3.3-70b-versatile')
+    `);
+
+    const origFetch = global.fetch;
+    const calledModels: string[] = [];
+
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        const reqBody = JSON.parse((init as any).body);
+        calledModels.push(reqBody.model);
+        if (reqBody.model === 'llama-3.3-70b-versatile') {
+          return {
+            ok: false,
+            status: 400,
+            statusText: 'Bad Request',
+            json: () => Promise.resolve({ error: { message: '`tool calling` is not supported with this model' } }),
+          } as any;
+        }
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-fallback',
+            object: 'chat.completion',
+            created: 123,
+            model: reqBody.model,
+            choices: [{
+              index: 0,
+              message: { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Lagos"}' } }] },
+              finish_reason: 'tool_calls',
+            }],
+            usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const { status, body } = await request(app, 'POST', '/v1/chat/completions', {
+      messages: [{ role: 'user', content: 'Weather in Lagos?' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', description: 'Get weather', parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] } } }],
+      tool_choice: 'required',
+    });
+
+    expect(status).toBe(200);
+    expect(calledModels).toContain('openai/gpt-oss-120b');
+    expect(calledModels).toContain('llama-3.3-70b-versatile');
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe('get_weather');
+
+    const suspectRow = await get<{ suspect: boolean }>(pool, `
+      SELECT mc.suspect FROM model_capabilities mc
+      JOIN models m ON m.id = mc.model_db_id
+      WHERE m.platform = 'groq' AND m.model_id = 'llama-3.3-70b-versatile' AND mc.capability = 'tools'
+    `);
+    expect(suspectRow?.suspect).toBe(true);
   });
 });
