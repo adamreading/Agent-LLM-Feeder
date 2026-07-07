@@ -1,5 +1,13 @@
 import type { ProbeContext, ProbeOutcome } from './runner.js';
 
+// A probe call failed for a reason unrelated to the model's actual
+// capability (rate limit, transport timeout, upstream 5xx) — recording a
+// false negative here would poison measured data with an infra artifact
+// indistinguishable from "genuinely doesn't support this."
+function isTransientError(message: string): boolean {
+  return /429|rate.?limit|too many requests|timeout|aborted|ECONNRESET|ETIMEDOUT|5\d\d\b/i.test(message);
+}
+
 // --- tools -------------------------------------------------------------
 // Offer a function, assert a REAL tool_calls response comes back with the
 // right function name — not just "the call didn't error."
@@ -31,7 +39,12 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
         : `no valid get_weather tool_call in response: ${JSON.stringify(result.choices?.[0]?.message)}`,
     };
   } catch (err: any) {
-    return { passed: false, latencyMs: Date.now() - start, evidence: `error: ${err.message}` };
+    return {
+      passed: false,
+      latencyMs: Date.now() - start,
+      evidence: `error: ${err.message}`,
+      transient: isTransientError(err.message ?? ''),
+    };
   }
 }
 
@@ -66,7 +79,12 @@ export async function probeJsonMode(ctx: ProbeContext): Promise<ProbeOutcome> {
       evidence: passed ? `parsed correctly: ${content.slice(0, 100)}` : `wrong shape: ${content.slice(0, 200)}`,
     };
   } catch (err: any) {
-    return { passed: false, latencyMs: Date.now() - start, evidence: `error: ${err.message}` };
+    return {
+      passed: false,
+      latencyMs: Date.now() - start,
+      evidence: `error: ${err.message}`,
+      transient: isTransientError(err.message ?? ''),
+    };
   }
 }
 
@@ -102,7 +120,7 @@ export async function probeReasoningControl(
       dialect,
     };
   } catch (err: any) {
-    return { passed: false, latencyMs: 0, evidence: `error: ${err.message}`, dialect };
+    return { passed: false, latencyMs: 0, evidence: `error: ${err.message}`, dialect, transient: isTransientError(err.message ?? '') };
   }
 }
 
@@ -137,6 +155,11 @@ export async function probeLongContext(ctx: ProbeContext, targetTokens: number):
         : `marker NOT recalled — response: ${content.slice(0, 200)}`,
     };
   } catch (err: any) {
-    return { passed: false, latencyMs: Date.now() - start, evidence: `error: ${err.message}` };
+    return {
+      passed: false,
+      latencyMs: Date.now() - start,
+      evidence: `error: ${err.message}`,
+      transient: isTransientError(err.message ?? ''),
+    };
   }
 }

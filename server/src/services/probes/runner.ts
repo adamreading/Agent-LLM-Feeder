@@ -17,6 +17,11 @@ export interface ProbeOutcome {
   latencyMs: number;
   evidence: string;
   dialect?: string;
+  // Set when the probe couldn't reach a real verdict (429/timeout/5xx/abort)
+  // — this is a fact about THIS call, not the model. recordProbeResult skips
+  // writing a capability row on a transient outcome rather than persisting
+  // a false negative; the model stays unprobed until a clean attempt runs.
+  transient?: boolean;
 }
 
 export type ProbeFn = (ctx: ProbeContext) => Promise<ProbeOutcome>;
@@ -58,6 +63,7 @@ export async function recordProbeResult(
   outcome: ProbeOutcome,
   isPaidProbe: boolean,
 ): Promise<void> {
+  if (outcome.transient) return;
   const pool = getPool();
 
   // probe_bank row: one per capability, versioned as data (not hardcoded
