@@ -315,6 +315,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const needs: CapabilityNeed[] = [];
   if (response_format) needs.push('json_mode');
   if (reasoning_effort) needs.push('reasoning_control');
+  if (tools && tools.length > 0) needs.push('tools');
 
   const explicitSessionId = session_id ?? user;
   const { taskClass, isAuto } = parseModelField(requestedModel);

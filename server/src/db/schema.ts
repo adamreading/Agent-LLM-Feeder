@@ -98,18 +98,33 @@ export const modelCapabilities = pgTable(
   'model_capabilities',
   {
     id: serial('id').primaryKey(),
+    // cascade: the existing idempotent catalog migrations (db/index.ts
+    // migrateModelsV2 etc.) routinely DELETE and re-add models as the free-
+    // tier catalog drifts — without cascade, any model with capability data
+    // becomes permanently undeletable and crashes server startup (hit this
+    // live during P3, 2026-07-07: cerebras/gpt-oss-120b had a fresh probe
+    // row when V2's unconditional delete tried to remove it).
     modelDbId: integer('model_db_id')
       .notNull()
-      .references(() => models.id),
-    capability: text('capability').notNull(), // 'json_mode' | 'tools' | 'vision' | 'reasoning_control' | 'embeddings' | ...
+      .references(() => models.id, { onDelete: 'cascade' }),
+    capability: text('capability').notNull(), // 'json_mode' | 'tools' | 'vision' | 'reasoning_control' | 'embeddings' | 'long_context' | ...
     supported: boolean('supported').notNull().default(false),
     dialect: text('dialect'), // wire-format variant when supported varies by provider (e.g. reasoning_control dialects)
     score: real('score'), // measured 0-1 score from probe_results, null until probed
+    // 'declared' (research cron: web-search-sourced claim) vs 'measured'
+    // (probe bank: actually tested on the wire). Measured should always be
+    // trusted over declared where both exist for the same capability — a
+    // probe result is ground truth, a search result is a claim.
+    source: text('source').notNull().default('declared'),
     measuredAt: timestamp('measured_at', { withTimezone: true }),
     evidence: text('evidence'), // doc URL / probe note
     suspect: boolean('suspect').notNull().default(false), // L9: set true on a runtime capability failure, triggers re-probe
   },
-  (table) => [unique('model_capabilities_model_capability_unique').on(table.modelDbId, table.capability)]
+  // One declared row AND one measured row can coexist per (model, capability)
+  // — the router/consumers prefer 'measured' when present, fall back to
+  // 'declared'. Distinct from P1's original (modelDbId, capability)-only
+  // constraint, which could only ever hold one fact per capability.
+  (table) => [unique('model_capabilities_model_capability_source_unique').on(table.modelDbId, table.capability, table.source)]
 );
 
 // Outbound provider accounts (distinct from api_keys, which store the actual
@@ -148,7 +163,7 @@ export const quotaSnapshots = pgTable(
     id: serial('id').primaryKey(),
     platform: text('platform').notNull(),
     modelId: text('model_id'),
-    apiKeyId: integer('api_key_id').references(() => apiKeys.id),
+    apiKeyId: integer('api_key_id').references(() => apiKeys.id, { onDelete: 'cascade' }), // same cascade reasoning as model_capabilities above
     quotaRemaining: real('quota_remaining'),
     quotaLimit: real('quota_limit'),
     resetAt: timestamp('reset_at', { withTimezone: true }),
@@ -180,10 +195,10 @@ export const probeResults = pgTable('probe_results', {
   id: serial('id').primaryKey(),
   probeId: integer('probe_id')
     .notNull()
-    .references(() => probeBank.id),
+    .references(() => probeBank.id, { onDelete: 'cascade' }),
   modelDbId: integer('model_db_id')
     .notNull()
-    .references(() => models.id),
+    .references(() => models.id, { onDelete: 'cascade' }), // same cascade reasoning as model_capabilities above
   passed: boolean('passed').notNull(),
   latencyMs: integer('latency_ms'),
   costEstimate: real('cost_estimate'),

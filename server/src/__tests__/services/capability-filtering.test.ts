@@ -65,6 +65,7 @@ describe('P2: capability/dialect filtering, two-gate trust, context-length aware
   beforeEach(async () => {
     const pool = getPool();
     await run(pool, 'DELETE FROM api_keys');
+    await run(pool, 'DELETE FROM model_capabilities');
     await run(pool, 'UPDATE fallback_config SET enabled = true'); // reset from any prior isolation
     vi.clearAllMocks();
     (ratelimit.canMakeRequest as any).mockReturnValue(true);
@@ -134,6 +135,48 @@ describe('P2: capability/dialect filtering, two-gate trust, context-length aware
       await isolateCandidates([await firstModelId('groq')]);
       await addKey('groq', 'test');
       await expect(routeRequest({ needs: ['reasoning_control'] })).rejects.toMatchObject({
+        code: 'NO_ELIGIBLE_MODEL',
+      });
+    });
+  });
+
+  describe('tools capability gate (per-model, DB-backed — ob-claude review, 2026-07-07)', () => {
+    it('throws NO_ELIGIBLE_MODEL when no model has a confirmed tools capability row, even with a key present', async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      // Deliberately NOT inserting a model_capabilities row — this is the
+      // exact "landed on a capable model by coincidence" gap ob-claude
+      // flagged: no confirmed row must mean no eligibility, full stop.
+      await expect(routeRequest({ needs: ['tools'] })).rejects.toMatchObject({
+        code: 'NO_ELIGIBLE_MODEL',
+      });
+    });
+
+    it('routes to a model with a confirmed tools capability row', async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [groqId]);
+      const result = await routeRequest({ needs: ['tools'] });
+      expect(result.platform).toBe('groq');
+    });
+
+    it('is a PER-MODEL fact, not per-provider: confirming tools on one model does not make a sibling model on the same provider eligible', async () => {
+      const pool = getPool();
+      await run(pool, `
+        INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled)
+        VALUES ('groq', 'synthetic-no-tools-model', 'Synthetic No Tools', 0, 1, true)
+      `);
+      const untested = await get<{ id: number }>(pool, `SELECT id FROM models WHERE model_id = 'synthetic-no-tools-model'`);
+      await run(pool, `INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 0, true)`, [untested!.id]);
+      // A DIFFERENT groq model has confirmed tools — the synthetic one does not.
+      const otherGroqId = await firstModelId('groq');
+      await run(pool, `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [otherGroqId]);
+
+      await isolateCandidates([untested!.id]); // ONLY the untested model is reachable
+      await addKey('groq', 'test');
+      await expect(routeRequest({ needs: ['tools'] })).rejects.toMatchObject({
         code: 'NO_ELIGIBLE_MODEL',
       });
     });

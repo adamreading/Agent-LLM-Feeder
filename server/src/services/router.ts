@@ -52,8 +52,13 @@ export interface RouteResult {
 // Capability need derived from the request itself (tier-0 heuristic — no LLM,
 // no task_class tuple required). A model whose provider doesn't declare
 // support for a needed capability is excluded from routing eligibility,
-// never silently sent the field anyway. See providers/base.ts DialectConfig.
-export type CapabilityNeed = 'json_mode' | 'reasoning_control';
+// never silently sent the field anyway. json_mode/reasoning_control are
+// PROVIDER-level facts (DialectConfig); 'tools' is a PER-MODEL fact (varies
+// within a provider, especially aggregators) so it's checked against
+// model_capabilities in the DB instead — ob-claude review, 2026-07-07: a
+// tools[]-bearing request had NO capability gate at all before this, "landed
+// on a capable model by coincidence" is not "cannot land on an incapable one."
+export type CapabilityNeed = 'json_mode' | 'reasoning_control' | 'tools';
 
 export interface RouteOptions {
   estimatedTokens?: number;
@@ -248,6 +253,20 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     if (needs?.includes('json_mode') && !provider.dialect.jsonMode) continue;
     if (needs?.includes('reasoning_control') && !provider.dialect.reasoning) continue;
 
+    // 'tools' is a PER-MODEL fact (varies within a provider, especially
+    // aggregators), so it's checked against model_capabilities, not a
+    // provider-level DialectConfig flag. A tools[]-bearing request MUST NOT
+    // land on a model with no confirmed tools support "by coincidence" —
+    // ob-claude review, 2026-07-07, confirmed empirically non-deterministic
+    // (wsl's probe: identical calls landed on different models call-to-call).
+    if (needs?.includes('tools')) {
+      const toolsRow = await get<{ supported: boolean }>(pool,
+        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'tools' AND supported = true LIMIT 1`,
+        [model.id]
+      );
+      if (!toolsRow) continue;
+    }
+
     // Two-gate INNER enforcement: cost-tier ceiling (independent of the
     // outer per-key trust gate applied by the caller before routeRequest
     // is even invoked).
@@ -256,6 +275,21 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // Context-length awareness: don't route a request the model's window
     // can't hold, derived from the same token estimate used for rate limits.
     if (model.context_window != null && estimatedTokens > model.context_window) continue;
+
+    // Structural TPM incapacity: a request whose OWN size exceeds the
+    // model's entire per-minute token budget can never succeed no matter how
+    // long the caller waits — this is a fact about the request shape vs the
+    // model's serving tier, not transient exhaustion. Distinct from the
+    // canUseTokens() check below (which handles "already used some of this
+    // minute's budget" and correctly IS retry-able). Caught live 2026-07-07:
+    // groq/gpt-oss-120b declares a 131072 context_window but its free-tier
+    // TPM is only 8000 — a 100k-token request 413s regardless of window size.
+    // Without this check such a model still set anyStructurallyEligible=true
+    // (passed context_window, has a key) and only failed canUseTokens per-key,
+    // so the caller got ALL_RATE_LIMITED (429, "retry later") for a request
+    // that can NEVER succeed here — the wrong signal for a caller (Hermes)
+    // whose fallback-to-Codex net triggers on NO_ELIGIBLE_MODEL (422).
+    if (model.tpm_limit != null && estimatedTokens > model.tpm_limit) continue;
 
     // Latency ceiling: exclude candidates whose historical p95 exceeds the
     // caller's declared budget. No history yet ("null") does not exclude —

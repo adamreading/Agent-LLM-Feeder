@@ -46,6 +46,7 @@ describe('Proxy tool-calling support', () => {
     const pool = getPool();
     await run(pool, 'DELETE FROM api_keys');
     await run(pool, 'DELETE FROM requests');
+    await run(pool, 'DELETE FROM model_capabilities');
 
     const addKey = await request(app, 'POST', '/api/keys', {
       platform: 'groq',
@@ -53,6 +54,15 @@ describe('Proxy tool-calling support', () => {
       label: 'proxy-tools',
     });
     expect(addKey.status).toBe(201);
+
+    // P2/P3: tools is a per-model measured capability, checked against
+    // model_capabilities — mark every groq model tools-capable for this
+    // test (this file tests passthrough mechanics, not the capability gate
+    // itself; that's covered by capability-filtering.test.ts).
+    await run(pool, `
+      INSERT INTO model_capabilities (model_db_id, capability, supported, source)
+      SELECT id, 'tools', true, 'measured' FROM models WHERE platform = 'groq'
+    `);
   });
 
   afterEach(() => {

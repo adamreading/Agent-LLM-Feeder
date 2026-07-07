@@ -15,6 +15,20 @@
       "when": 1783454660702,
       "tag": "0001_melodic_hairball",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783457662919,
+      "tag": "0002_absent_rictor",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783458620778,
+      "tag": "0003_closed_wildside",
+      "breakpoints": true
     }
   ]
 }
