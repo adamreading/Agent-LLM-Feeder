@@ -204,11 +204,21 @@ async function migrateModels(pool: pg.Pool) {
 async function migrateModelsV2(pool: pg.Pool) {
   const removals: Array<[string, string]> = [
     // GitHub free tier does NOT include GPT-5 (only catalog-listed). Revert handled below.
-    // Cerebras: qwen-3-coder-480b and llama-4-maverick not on free tier; gpt-oss-120b is listed
-    // but requires special access — our key gets 404. Remove all three.
+    // Cerebras: qwen-3-coder-480b and llama-4-maverick not on free tier — remove both.
+    // cerebras/gpt-oss-120b was ALSO removed here originally ("requires special
+    // access, 404 on our key") but migrateModelsV11 (below, ~line 699) reversed
+    // that finding and re-adds it as reachable on the current free tier. Because
+    // this removals list runs UNCONDITIONALLY on every startup while V11's
+    // insert is merely ON CONFLICT DO NOTHING, leaving the entry here created a
+    // silent delete/re-insert fight on every single restart: V2 deletes the row,
+    // V11 immediately re-creates it with a FRESH serial id (since V2 just made
+    // the natural key available again), cascading away any capability data
+    // accumulated since the last restart. Caught live 2026-07-07 — a full probe
+    // sweep's genuine measured tools/json_mode data for this exact model was
+    // silently wiped by the very next server restart. Removed from here since
+    // V11's re-add already reflects the current, correct state.
     ['cerebras', 'qwen-3-coder-480b'],
     ['cerebras', 'llama-4-maverick-17b-128e-instruct'],
-    ['cerebras', 'gpt-oss-120b'],
     // These OpenRouter :free variants do not exist in the live catalog (April 2026)
     ['openrouter', 'deepseek/deepseek-v3.1:free'],
     ['openrouter', 'moonshotai/kimi-k2:free'],

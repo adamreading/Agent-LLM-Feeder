@@ -259,9 +259,19 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // land on a model with no confirmed tools support "by coincidence" —
     // ob-claude review, 2026-07-07, confirmed empirically non-deterministic
     // (wsl's probe: identical calls landed on different models call-to-call).
+    //
+    // source = 'measured' ONLY, deliberately not falling back to 'declared'
+    // here (unlike scoring/ranking uses elsewhere, which do prefer-measured-
+    // fall-back-to-declared per the schema's general design). This is a hard
+    // safety gate, not a heuristic — the whole night's probe work exists
+    // because declared/spec-sheet claims (NVIDIA reasoning, Groq reasoning,
+    // Ollama context) turned out wrong often enough to matter live. The P3
+    // research cron populates 'declared' rows from web search; those are
+    // leads for the probe scheduler to verify, not something safe to trust
+    // directly for gating real tool-calling eligibility.
     if (needs?.includes('tools')) {
       const toolsRow = await get<{ supported: boolean }>(pool,
-        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'tools' AND supported = true LIMIT 1`,
+        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'tools' AND supported = true AND source = 'measured' LIMIT 1`,
         [model.id]
       );
       if (!toolsRow) continue;
