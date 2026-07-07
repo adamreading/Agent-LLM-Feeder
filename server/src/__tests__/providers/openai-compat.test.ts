@@ -347,3 +347,45 @@ describe('OpenAICompatProvider - dialect emission', () => {
     expect(body.options).toBeUndefined();
   });
 });
+
+// P3: quota header capture
+describe('OpenAICompatProvider - rate limit header capture', () => {
+  it('captures known x-ratelimit-* headers onto the response for the harvester', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1' });
+    vi.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: true,
+      headers: new Headers({
+        'x-ratelimit-remaining-tokens': '5990',
+        'x-ratelimit-limit-tokens': '6000',
+        'x-unrelated-header': 'ignored',
+      }),
+      json: () => Promise.resolve({
+        id: 'id', object: 'chat.completion', created: 1, model: 'm',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }),
+    } as any));
+
+    const result = await provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model');
+    expect(result._rate_limit_headers).toEqual({
+      'x-ratelimit-remaining-tokens': '5990',
+      'x-ratelimit-limit-tokens': '6000',
+    });
+  });
+
+  it('leaves _rate_limit_headers undefined when the provider sends none', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'kilo', name: 'Kilo', baseUrl: 'https://x.test/v1' });
+    vi.spyOn(global, 'fetch').mockImplementation(async () => ({
+      ok: true,
+      headers: new Headers(),
+      json: () => Promise.resolve({
+        id: 'id', object: 'chat.completion', created: 1, model: 'm',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }),
+    } as any));
+
+    const result = await provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model');
+    expect(result._rate_limit_headers).toBeUndefined();
+  });
+});

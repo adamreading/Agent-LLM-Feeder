@@ -149,6 +149,11 @@ export interface ChatCompletionResponse {
     platform: Platform;
     model: string;
   };
+  // P3: provider-declared quota truth harvested from response headers
+  // (x-ratelimit-* — a de facto OpenAI-compat convention several providers
+  // honor). Column-owned by the harvester (services/quotaHarvest.ts) per the
+  // brainstorm's L6 rule — the research cron never writes these columns.
+  _rate_limit_headers?: Record<string, string>;
 }
 
 export interface ChatCompletionChunk {

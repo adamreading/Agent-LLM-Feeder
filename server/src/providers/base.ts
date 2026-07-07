@@ -91,6 +91,33 @@ export abstract class BaseProvider {
 
   abstract validateKey(apiKey: string): Promise<boolean>;
 
+  // P3: several providers (Groq, OpenRouter, Mistral, Cerebras confirmed by
+  // prior design research) return these on every response, win-or-lose —
+  // real, provider-declared quota truth rather than our own estimate. A
+  // provider that doesn't send them yields undefined; the harvester treats
+  // that as "no data," never a false zero.
+  protected static readonly RATE_LIMIT_HEADER_NAMES = [
+    'x-ratelimit-limit-requests',
+    'x-ratelimit-limit-tokens',
+    'x-ratelimit-remaining-requests',
+    'x-ratelimit-remaining-tokens',
+    'x-ratelimit-reset-requests',
+    'x-ratelimit-reset-tokens',
+  ] as const;
+
+  // Defensive against `headers` being absent or non-standard: quota
+  // telemetry must never be the reason a real completion request fails
+  // (same principle as proxy.ts's fire-and-forget request logger).
+  protected extractRateLimitHeaders(headers: unknown): Record<string, string> | undefined {
+    if (!headers || typeof (headers as Headers).get !== 'function') return undefined;
+    const found: Record<string, string> = {};
+    for (const name of BaseProvider.RATE_LIMIT_HEADER_NAMES) {
+      const value = (headers as Headers).get(name);
+      if (value != null) found[name] = value;
+    }
+    return Object.keys(found).length > 0 ? found : undefined;
+  }
+
   protected async fetchWithTimeout(
     url: string,
     init: RequestInit,

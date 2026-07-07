@@ -107,6 +107,7 @@ export class OpenAICompatProvider extends BaseProvider {
     const data = await res.json() as ChatCompletionResponse;
     normalizeChoices(data);
     data._routed_via = { platform: this.platform, model: modelId };
+    data._rate_limit_headers = this.extractRateLimitHeaders(res.headers);
     return data;
   }
 

@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
+import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -451,6 +452,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
         setStickyModel(messages, route.modelDbId, explicitSessionId);
+        void harvestQuotaHeaders(route.platform, route.modelId, route.keyId, result._rate_limit_headers);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
