@@ -42,6 +42,11 @@ export interface RouteResult {
   keyId: number;
   platform: string;
   displayName: string;
+  /** Resolved context length (estimated request size, capped by the model's
+   * declared context_window) — threaded into CompletionOptions.context_length
+   * so providers whose backend defaults to a small window (Ollama) are
+   * explicitly told to use this much, not just permitted to in the abstract. */
+  contextLength: number;
 }
 
 // Capability need derived from the request itself (tier-0 heuristic — no LLM,
@@ -312,6 +317,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
         keyId: key.id,
         platform: model.platform,
         displayName: model.display_name,
+        contextLength: model.context_window != null ? Math.min(estimatedTokens, model.context_window) : estimatedTokens,
       };
     }
 

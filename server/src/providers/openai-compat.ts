@@ -4,7 +4,7 @@ import type {
   ChatCompletionChunk,
   Platform,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions, type DialectConfig, type ReasoningDialect } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig, type ReasoningDialect, type ContextLengthDialect } from './base.js';
 
 function applyReasoningDialect(body: Record<string, unknown>, effort: string, dialect?: ReasoningDialect): void {
   if (!dialect) return; // no known dialect — caller-level capability filtering must have already excluded this model
@@ -12,6 +12,13 @@ function applyReasoningDialect(body: Record<string, unknown>, effort: string, di
   else if (dialect === 'nested_reasoning_effort') body.reasoning = { effort };
   else if (dialect === 'chat_template_enable_thinking') {
     body.chat_template_kwargs = { enable_thinking: effort !== 'none' };
+  }
+}
+
+function applyContextLengthDialect(body: Record<string, unknown>, contextLength: number, dialect?: ContextLengthDialect): void {
+  if (!dialect) return; // no dialect declared — this provider's context handling is assumed to need no explicit hint
+  if (dialect === 'ollama_num_ctx') {
+    body.options = { ...(body.options as Record<string, unknown> | undefined ?? {}), num_ctx: contextLength };
   }
 }
 
@@ -69,6 +76,9 @@ export class OpenAICompatProvider extends BaseProvider {
     }
     if (options?.reasoning_effort) {
       applyReasoningDialect(body, options.reasoning_effort, this.dialect.reasoning);
+    }
+    if (options?.context_length) {
+      applyContextLengthDialect(body, options.context_length, this.dialect.contextLength);
     }
     return body;
   }

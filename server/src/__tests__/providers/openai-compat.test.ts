@@ -272,3 +272,78 @@ describe('OpenAICompatProvider - platform instances', () => {
     });
   }
 });
+
+// P2: dialect emission — each field is only emitted when the provider
+// instance declares support, and translated into the RIGHT wire shape.
+describe('OpenAICompatProvider - dialect emission', () => {
+  async function captureBody(provider: OpenAICompatProvider, options: any): Promise<any> {
+    let capturedBody: any = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'id', object: 'chat.completion', created: 1, model: 'm',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }),
+      } as any;
+    });
+    await provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model', options);
+    vi.restoreAllMocks();
+    return capturedBody;
+  }
+
+  it('never emits response_format when the provider has not declared jsonMode', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'kilo', name: 'Kilo', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, { response_format: { type: 'json_object' } });
+    expect(body.response_format).toBeUndefined();
+  });
+
+  it('emits response_format as-is when jsonMode is declared', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1', dialect: { jsonMode: true } });
+    const body = await captureBody(provider, { response_format: { type: 'json_object' } });
+    expect(body.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('translates reasoning_effort to the flat openai_reasoning_effort dialect', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1', dialect: { reasoning: 'openai_reasoning_effort' } });
+    const body = await captureBody(provider, { reasoning_effort: 'low' });
+    expect(body.reasoning_effort).toBe('low');
+    expect(body.reasoning).toBeUndefined();
+    expect(body.chat_template_kwargs).toBeUndefined();
+  });
+
+  it('translates reasoning_effort to the nested Ollama dialect', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'ollama', name: 'Ollama', baseUrl: 'https://x.test/v1', dialect: { reasoning: 'nested_reasoning_effort' } });
+    const body = await captureBody(provider, { reasoning_effort: 'none' });
+    expect(body.reasoning).toEqual({ effort: 'none' });
+    expect(body.reasoning_effort).toBeUndefined();
+  });
+
+  it('translates reasoning_effort to the NIM chat_template_kwargs dialect', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'nvidia', name: 'NVIDIA NIM', baseUrl: 'https://x.test/v1', dialect: { reasoning: 'chat_template_enable_thinking' } });
+    const body = await captureBody(provider, { reasoning_effort: 'none' });
+    expect(body.chat_template_kwargs).toEqual({ enable_thinking: false });
+  });
+
+  it('never emits a reasoning field when no dialect is declared (capability filtering is the real gate)', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'cerebras', name: 'Cerebras', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, { reasoning_effort: 'none' });
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.reasoning).toBeUndefined();
+    expect(body.chat_template_kwargs).toBeUndefined();
+  });
+
+  it('threads context_length into options.num_ctx for the ollama_num_ctx dialect (ob-claude review: Ollama silently truncates at 2048 otherwise)', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'ollama', name: 'Ollama', baseUrl: 'https://x.test/v1', dialect: { contextLength: 'ollama_num_ctx' } });
+    const body = await captureBody(provider, { context_length: 65536 });
+    expect(body.options).toEqual({ num_ctx: 65536 });
+  });
+
+  it('never emits options.num_ctx when no contextLength dialect is declared', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, { context_length: 65536 });
+    expect(body.options).toBeUndefined();
+  });
+});

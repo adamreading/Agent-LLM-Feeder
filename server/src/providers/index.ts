@@ -71,9 +71,13 @@ register(new OpenAICompatProvider({
 }));
 
 // OpenRouter - OpenAI-compatible with extra headers. Aggregates many upstream
-// models with heterogeneous reasoning support — no single reliable dialect,
-// left unset (capability-filtered out for reasoning_effort requests) until
-// P3 probes a per-model answer.
+// models with heterogeneous reasoning AND json_mode support — same failure
+// class as NVIDIA NIM (ob-claude review, 2026-07-07): response_format
+// support varies by underlying routed model, not by "is OpenRouter
+// OpenAI-compatible." Some routed models silently ignore response_format and
+// return prose instead of erroring. Dialect left fully UNDECLARED (neither
+// jsonMode nor reasoning) pending P3's per-model answer — same treatment as
+// Kilo/Pollinations/LLM7.
 register(new OpenAICompatProvider({
   platform: 'openrouter',
   name: 'OpenRouter',
@@ -82,7 +86,6 @@ register(new OpenAICompatProvider({
     'HTTP-Referer': 'http://localhost:3001',
     'X-Title': 'FreeLLMAPI',
   },
-  dialect: { jsonMode: true },
 }));
 
 // GitHub Models — OpenAI-compatible. Catalog uses `<publisher>/<model>` ids
@@ -123,15 +126,24 @@ register(new OpenAICompatProvider({
 // regularly take 30-90s on Ollama Cloud Free, so the timeout is bumped from
 // the default 15s. Ollama returns reasoning in `message.reasoning` (not
 // `reasoning_content`) — handled by normalizeChoices.
-// Reasoning control is the nested `reasoning:{effort}` shape (confirmed live
-// against Hermes — wsl-claude, 2026-07-07: reasoning:{effort:'none'} => 0
-// reasoning chars @0.49s; the WRONG dialect silently still thinks).
+// Reasoning control is the nested `reasoning:{effort}` shape — wsl-claude
+// confirmed live against BOTH of Hermes's actual Ollama models (2026-07-07):
+// gemma4:12b (0 chars @0.49s vs 984 baseline) and qwen3.5. Covers Hermes's
+// full Ollama surface; other catalog entries here remain unconfirmed.
+//
+// contextLength: 'ollama_num_ctx' — CONFIRMED REQUIRED, not just suspected:
+// ob-claude's review flagged Ollama's OpenAI-compat endpoint silently
+// truncating at num_ctx=2048 regardless of the model's real window (caught
+// via a wiki article that silently came out wrong, no crash); wsl-claude
+// then confirmed from Hermes's own source that this is real — Hermes's
+// fix_voice_model_route already resolves num_ctx explicitly for exactly
+// this reason (2026-07-07).
 register(new OpenAICompatProvider({
   platform: 'ollama',
   name: 'Ollama Cloud',
   baseUrl: 'https://ollama.com/v1',
   timeoutMs: 120000,
-  dialect: { jsonMode: true, reasoning: 'nested_reasoning_effort' },
+  dialect: { jsonMode: true, reasoning: 'nested_reasoning_effort', contextLength: 'ollama_num_ctx' },
 }));
 
 // Kilo AI Gateway — OpenAI-compatible aggregator. Anonymous access works

@@ -33,12 +33,25 @@ export interface CompletionOptions {
   parallel_tool_calls?: boolean;
   response_format?: ResponseFormat;
   reasoning_effort?: ReasoningEffort;
+  // The context window the router resolved this request against (its own
+  // token estimate, capped by the routed model's declared context_window).
+  // Providers whose backend defaults to a SMALL context regardless of the
+  // model's real capacity (Ollama's OpenAI-compat endpoint defaults
+  // num_ctx=2048 and silently truncates past it — ob-claude review,
+  // 2026-07-07) must be explicitly told to use this much, or "the model can
+  // do 64k" and "the model was TOLD to use 64k" silently diverge — the same
+  // failure class as an unhonored reasoning/json_mode field, just quieter
+  // (wrong output, not a 400).
+  context_length?: number;
 }
 
 export type ReasoningDialect =
   | 'openai_reasoning_effort' // flat `reasoning_effort: "none"|"low"|...` (e.g. Groq gpt-oss)
   | 'nested_reasoning_effort' // `reasoning: { effort: "none"|... }` (Ollama)
   | 'chat_template_enable_thinking'; // `chat_template_kwargs: { enable_thinking: boolean }` (NVIDIA NIM)
+
+export type ContextLengthDialect =
+  | 'ollama_num_ctx'; // `options: { num_ctx: N }` — Ollama's native param, passed through its OpenAI-compat layer
 
 // Provider-level capability declaration — the router's capability filter
 // (services/router.ts) checks these directly. Never assume; every `true`/
@@ -47,6 +60,11 @@ export type ReasoningDialect =
 export interface DialectConfig {
   jsonMode?: boolean;
   reasoning?: ReasoningDialect;
+  /** Set when the provider's default context window is smaller than models'
+   * real capacity and must be explicitly raised per-request. UNVERIFIED
+   * against a live key as of P2 — Ollama Cloud specifically, flagged for
+   * wsl-claude to confirm via his Hermes-side Ollama access. */
+  contextLength?: ContextLengthDialect;
 }
 
 export abstract class BaseProvider {
