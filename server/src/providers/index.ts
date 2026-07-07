@@ -131,19 +131,30 @@ register(new OpenAICompatProvider({
 // gemma4:12b (0 chars @0.49s vs 984 baseline) and qwen3.5. Covers Hermes's
 // full Ollama surface; other catalog entries here remain unconfirmed.
 //
-// contextLength: 'ollama_num_ctx' — CONFIRMED REQUIRED, not just suspected:
-// ob-claude's review flagged Ollama's OpenAI-compat endpoint silently
-// truncating at num_ctx=2048 regardless of the model's real window (caught
-// via a wiki article that silently came out wrong, no crash); wsl-claude
-// then confirmed from Hermes's own source that this is real — Hermes's
-// fix_voice_model_route already resolves num_ctx explicitly for exactly
-// this reason (2026-07-07).
+// contextLength: NOT declared, and deliberately so — ob-claude found (prior
+// project investigation, 2026-06-13, re-surfaced during this review) that
+// Ollama's /v1/chat/completions endpoint has NO num_ctx param slot at all.
+// This isn't a masking/silent-ignore risk, confirmed by wsl-claude's
+// ctx-needle probe as consistent with that: there is no wire path for a
+// per-request override via /v1, full stop. The only proven-working lever is
+// the Ollama SERVER's own configured default (desktop app UI setting /
+// OLLAMA_CONTEXT_LENGTH env var — and the app UI silently wins over the env
+// var if both are set). Concretely: our context-length AWARENESS check
+// (comparing the request's estimated tokens against the catalog's
+// context_window) is the only real lever left for Ollama, and its accuracy
+// depends entirely on that number matching what the SPECIFIC deployment's
+// server is actually configured for — not the model's theoretical max. A
+// per-request DialectConfig.contextLength mechanism was built and tested
+// (openai-compat.test.ts) but is NOT wired to any current registration —
+// left as real, working infrastructure for a future provider with a genuine
+// per-request context override, not applied here since it would be dead
+// code claiming a capability that doesn't exist on this wire path.
 register(new OpenAICompatProvider({
   platform: 'ollama',
   name: 'Ollama Cloud',
   baseUrl: 'https://ollama.com/v1',
   timeoutMs: 120000,
-  dialect: { jsonMode: true, reasoning: 'nested_reasoning_effort', contextLength: 'ollama_num_ctx' },
+  dialect: { jsonMode: true, reasoning: 'nested_reasoning_effort' },
 }));
 
 // Kilo AI Gateway — OpenAI-compatible aggregator. Anonymous access works

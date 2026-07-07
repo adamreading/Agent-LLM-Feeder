@@ -60,10 +60,12 @@ export type ContextLengthDialect =
 export interface DialectConfig {
   jsonMode?: boolean;
   reasoning?: ReasoningDialect;
-  /** Set when the provider's default context window is smaller than models'
-   * real capacity and must be explicitly raised per-request. UNVERIFIED
-   * against a live key as of P2 — Ollama Cloud specifically, flagged for
-   * wsl-claude to confirm via his Hermes-side Ollama access. */
+  /** Set ONLY when a provider genuinely accepts a per-request context-length
+   * override on the wire. Confirmed NOT true for Ollama via its
+   * /v1/chat/completions endpoint (no such param exists there at all — P2
+   * review, 2026-07-07); left unset on that registration deliberately. Real,
+   * tested infrastructure (openai-compat.test.ts) for a future provider that
+   * does support this, not a general-purpose escape hatch. */
   contextLength?: ContextLengthDialect;
 }
 
