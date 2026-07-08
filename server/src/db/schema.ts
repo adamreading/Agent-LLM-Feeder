@@ -35,8 +35,57 @@ export const models = pgTable(
     // against this. All current catalog models are free-tier; paid models
     // (e.g. a future Codex integration) would be seeded with 'paid'.
     costTier: text('cost_tier').notNull().default('free'),
+    // Canonical-model grouping (Adam's directive, 2026-07-08): the SAME
+    // underlying model is routinely offered by multiple platforms under
+    // different id spellings (e.g. gpt-oss-120b exists on cerebras,
+    // sambanova, groq, cloudflare, openrouter, ollama). canonicalModelId is
+    // null until the matching job (services/modelCanon.ts) resolves it — a
+    // supplier-specific row with no canonical link is real catalog data
+    // (routable, probeable) but must NOT surface on the model wiki, which
+    // reads canonical_models exclusively. Forward reference to a table
+    // defined below in this file — safe in drizzle via the lazy callback.
+    canonicalModelId: integer('canonical_model_id').references((): any => canonicalModels.id),
+    matchStatus: text('match_status').notNull().default('unmatched'), // 'unmatched' | 'auto_matched' | 'manual_matched' | 'confirmed_new'
   },
   (table) => [unique('models_platform_model_id_unique').on(table.platform, table.modelId)]
+);
+
+// One row per real underlying model, deduplicated across every platform that
+// offers it. The wiki page reads ONLY this table (+ its linked `models`
+// instances for the live per-supplier pills) — a model that hasn't completed
+// matching (see `models.matchStatus`) has no row here yet and stays invisible
+// to the wiki by construction, not by a filter that could be forgotten.
+export const canonicalModels = pgTable(
+  'canonical_models',
+  {
+    id: serial('id').primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    summary: text('summary'), // strengths/weaknesses wiki paragraph — null until a human or the research cron writes one
+    vision: boolean('vision').notNull().default(false),
+    video: boolean('video').notNull().default(false),
+    audio: boolean('audio').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('canonical_models_slug_unique').on(table.slug)]
+);
+
+// A normalized model_id fingerprint (see modelCanon.ts's normalize()) known
+// to belong to a canonical model. UNIQUE across the whole table (not scoped
+// per canonical model) — that constraint IS the auto-match mechanism: a new
+// row's normalized key either matches exactly one existing alias (auto-link)
+// or it doesn't exist yet (stays unmatched, queued for the review UI).
+export const canonicalModelAliases = pgTable(
+  'canonical_model_aliases',
+  {
+    id: serial('id').primaryKey(),
+    canonicalModelId: integer('canonical_model_id')
+      .notNull()
+      .references(() => canonicalModels.id, { onDelete: 'cascade' }),
+    aliasKey: text('alias_key').notNull(),
+  },
+  (table) => [unique('canonical_model_aliases_alias_key_unique').on(table.aliasKey)]
 );
 
 export const apiKeys = pgTable('api_keys', {

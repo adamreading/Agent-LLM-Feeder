@@ -4,6 +4,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from './schema.js';
 import { run, all, get, transaction } from './pgCompat.js';
 import { initEncryptionKey } from '../lib/crypto.js';
+import { matchModels } from '../services/modelCanon.js';
 
 let pool: pg.Pool;
 
@@ -37,6 +38,15 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV11(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
+  // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
+  // every startup so any row added by ANY means (a hand-written catalog
+  // migration above, or a future dynamic per-supplier discovery job) gets
+  // picked up on the very next restart without needing its own bespoke
+  // trigger wiring. See services/modelCanon.ts for the two-pass algorithm.
+  const matchResult = await matchModels(pool);
+  if (matchResult.autoLinkedToExisting || matchResult.autoMergedGroups) {
+    console.log(`Canonical model matching: ${matchResult.autoLinkedToExisting} linked to existing canon, ${matchResult.autoMergedGroups} new canon groups auto-merged (${matchResult.autoMergedRows} rows), ${matchResult.stillUnmatched} still awaiting manual review`);
+  }
 
   const { hostname, port, pathname } = new URL(resolvedConnectionString);
   console.log(`Database initialized (Postgres) at ${hostname}:${port}${pathname}`);

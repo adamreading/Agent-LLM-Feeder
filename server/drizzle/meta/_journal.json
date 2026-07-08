@@ -29,6 +29,13 @@
       "when": 1783458620778,
       "tag": "0003_closed_wildside",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783486076439,
+      "tag": "0004_normal_terror",
+      "breakpoints": true
     }
   ]
 }

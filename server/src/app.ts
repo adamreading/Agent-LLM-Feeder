@@ -12,6 +12,7 @@ import { healthRouter } from './routes/health.js';
 import { settingsRouter } from './routes/settings.js';
 import { agentRouter } from './routes/agent.js';
 import { capabilitiesRouter } from './routes/capabilities.js';
+import { canonRouter } from './routes/canon.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,7 @@ export function createApp() {
   app.use('/api/settings', settingsRouter);
   app.use('/api/agent', agentRouter);
   app.use('/api/capabilities', capabilitiesRouter);
+  app.use('/api/canon', canonRouter);
 
   // OpenAI-compatible proxy
   app.use('/v1', proxyRouter);
