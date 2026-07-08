@@ -174,6 +174,70 @@ describe('OpenAICompatProvider', () => {
     expect(result.choices[0].message.content).toBe('ollama answer');
   });
 
+  // Chinese-CoT-leak guard (Adam's call, 2026-07-08). exclude_reasoning is the
+  // caller's opt-in that raw reasoning must never reach it — neither folded
+  // into content nor returned as a field.
+  it('exclude_reasoning: does NOT fold reasoning into content, and strips the reasoning fields', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        id: 'id', object: 'chat.completion', created: 1, model: 'm',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: '', reasoning_content: '用中文思考…(leaked chain of thought)' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    } as any);
+
+    const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm', { exclude_reasoning: true });
+    const msg = result.choices[0].message as any;
+    // content stays empty — the caller opted out of the only text there was,
+    // rather than have the raw CoT folded in and leaked.
+    expect(msg.content === '' || msg.content == null).toBe(true);
+    expect(msg.reasoning_content).toBeUndefined();
+    expect(msg.reasoning).toBeUndefined();
+  });
+
+  it('exclude_reasoning: preserves a real content answer while stripping the separate reasoning field', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        id: 'id', object: 'chat.completion', created: 1, model: 'm',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'The answer is 42.', reasoning_content: 'internal reasoning here' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    } as any);
+
+    const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm', { exclude_reasoning: true });
+    const msg = result.choices[0].message as any;
+    expect(msg.content).toBe('The answer is 42.'); // real answer untouched
+    expect(msg.reasoning_content).toBeUndefined(); // reasoning stripped
+  });
+
+  it('default (no exclude_reasoning): fold behavior is unchanged for every other consumer', async () => {
+    vi.spyOn(global, 'fetch').mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({
+        id: 'id', object: 'chat.completion', created: 1, model: 'm',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: '', reasoning_content: 'answer-in-reasoning model' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    } as any);
+
+    const result = await provider.chatCompletion('k', [{ role: 'user', content: 'hi' }], 'm');
+    expect(result.choices[0].message.content).toBe('answer-in-reasoning model');
+  });
+
   it('prefers reasoning_content over reasoning when both are present', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValueOnce({
       ok: true,

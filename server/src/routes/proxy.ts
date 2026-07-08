@@ -233,6 +233,9 @@ const chatCompletionSchema = z.object({
   needs: z.array(z.string()).optional(),
   session_id: z.string().optional(),
   user: z.string().optional(), // OpenAI-standard field, also accepted as a sticky-session carrier
+  // Opt-in reasoning suppression (2026-07-08) — see CompletionOptions in
+  // providers/base.ts. Generic; any caller sets it, feeder never imposes it.
+  exclude_reasoning: z.boolean().optional(),
 });
 
 function isRetryableError(err: any): boolean {
@@ -297,7 +300,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const {
     model: requestedModel, temperature, max_tokens, top_p, stream, tools, tool_choice, parallel_tool_calls,
     response_format, reasoning_effort, exclude_providers, max_attempts, latency_ceiling_ms, session_id, user,
-    needs: declaredNeeds,
+    needs: declaredNeeds, exclude_reasoning,
   } = parsed.data;
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
@@ -483,7 +486,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         try {
           const gen = route.provider.streamChatCompletion(
             route.apiKey, messages, route.modelId,
-            { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength },
+            { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
           );
 
           for await (const chunk of gen) {
@@ -532,7 +535,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       } else {
         const result = await route.provider.chatCompletion(
           route.apiKey, messages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength },
+          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
         );
 
         const totalTokens = result.usage?.total_tokens ?? 0;

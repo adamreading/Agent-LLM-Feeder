@@ -105,7 +105,7 @@ export class OpenAICompatProvider extends BaseProvider {
     }
 
     const data = await res.json() as ChatCompletionResponse;
-    normalizeChoices(data);
+    normalizeChoices(data, options?.exclude_reasoning ?? false);
     data._routed_via = { platform: this.platform, model: modelId };
     data._rate_limit_headers = this.extractRateLimitHeaders(res.headers);
     return data;
@@ -152,7 +152,18 @@ export class OpenAICompatProvider extends BaseProvider {
         const data = trimmed.slice(6);
         if (data === '[DONE]') return;
         try {
-          yield JSON.parse(data) as ChatCompletionChunk;
+          const chunk = JSON.parse(data) as ChatCompletionChunk;
+          // Strip reasoning deltas when the caller opted out — streaming yields
+          // raw chunks, so without this a Chinese-CoT reasoning delta would
+          // still reach the consumer even though the non-streaming path guards
+          // it. Same opt-in contract, both paths.
+          if (options?.exclude_reasoning) {
+            for (const ch of chunk.choices ?? []) {
+              const delta = ch.delta as { reasoning_content?: string; reasoning?: string } | undefined;
+              if (delta) { delete delta.reasoning_content; delete delta.reasoning; }
+            }
+          }
+          yield chunk;
         } catch {
           // Skip malformed chunks
         }
@@ -184,8 +195,14 @@ export class OpenAICompatProvider extends BaseProvider {
  *
  * Other providers (Mistral magistral-medium) return `message.content` as an
  * array of text segments instead of a string. Flatten to string.
+ *
+ * `excludeReasoning` (caller opt-in, 2026-07-08): when set, raw reasoning must
+ * NOT reach the consumer — so we neither fold it into content nor return the
+ * reasoning fields. This is the load-bearing feeder-side guard against the
+ * Chinese-CoT-leak that rolled Lunk back; the fold otherwise actively surfaces
+ * raw reasoning whenever a model leaves content empty.
  */
-function normalizeChoices(data: ChatCompletionResponse): void {
+function normalizeChoices(data: ChatCompletionResponse, excludeReasoning: boolean): void {
   for (const choice of data.choices ?? []) {
     const msg = choice.message as ChatMessage & {
       reasoning_content?: string;
@@ -198,6 +215,17 @@ function normalizeChoices(data: ChatCompletionResponse): void {
         .map(seg => (typeof seg === 'string' ? seg : (seg.text ?? '')))
         .join('');
     }
+
+    if (excludeReasoning) {
+      // Caller opted out of reasoning entirely: never fold, and strip both
+      // possible field names so no raw CoT is returned. If the model produced
+      // only reasoning (empty content), content stays empty by the caller's
+      // own choice — an empty answer is preferable to a leaked one.
+      delete msg.reasoning_content;
+      delete msg.reasoning;
+      continue;
+    }
+
     // Fold reasoning into content if content is empty AND there are no
     // tool_calls. With tool_calls present, content=null is the correct OpenAI
     // shape; folding reasoning would confuse clients that branch on content.

@@ -43,6 +43,16 @@ export interface CompletionOptions {
   // failure class as an unhonored reasoning/json_mode field, just quieter
   // (wrong output, not a 400).
   context_length?: number;
+  // Opt-in reasoning suppression (Adam's call, 2026-07-08, after Chinese
+  // chain-of-thought from deepseek-v4-pro/qwen3-coder leaked into Lunk's
+  // Discord output). Generic and caller-declared — NOT a feeder-imposed rule,
+  // so any consumer opts in independently (Lunk for persona; OB even more so,
+  // since folded CoT silently corrupts its structured-extraction JSON). When
+  // true: never fold reasoning_content/reasoning into content, and strip both
+  // fields from the returned message so raw CoT can't reach the consumer. If a
+  // model produced ONLY reasoning (empty content), the caller opted out of the
+  // only text there was — content stays empty by design, rather than leaking.
+  exclude_reasoning?: boolean;
 }
 
 export type ReasoningDialect =
