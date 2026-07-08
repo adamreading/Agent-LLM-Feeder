@@ -50,8 +50,8 @@ export async function logProbeRequest(
 ): Promise<void> {
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, is_probe)
-      VALUES (?, ?, ?, ?, ?, ?, ?, true)
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, is_probe, consumer)
+      VALUES (?, ?, ?, ?, ?, ?, ?, true, 'probe')
     `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error]);
   } catch (e) {
     console.error('Failed to log probe request:', e);

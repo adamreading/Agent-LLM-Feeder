@@ -32,18 +32,22 @@ function hashToken(token: string): string {
 // (127.0.0.1) requests are the operator's own machine — treated as fleet.
 type TrustTier = 'fleet' | 'external';
 
-async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; authorized: boolean }> {
+async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; authorized: boolean; consumer: string }> {
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
-  if (isLocal) return { tier: 'fleet', authorized: true };
-
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-  if (!token) return { tier: 'external', authorized: false };
 
-  const row = await get<{ trust_tier: string }>(getPool(),
-    'SELECT trust_tier FROM consumer_keys WHERE key_hash = ? AND enabled = true',
+  // A tokenless localhost call is trusted as fleet (unchanged) — but label it
+  // by whether it presented a token, so 'local' vs a named key is visible in
+  // the request log (wsl's attribution request, 2026-07-08).
+  if (isLocal && !token) return { tier: 'fleet', authorized: true, consumer: 'local' };
+
+  if (!token) return { tier: 'external', authorized: false, consumer: 'unauthenticated' };
+
+  const row = await get<{ trust_tier: string; label: string }>(getPool(),
+    'SELECT trust_tier, label FROM consumer_keys WHERE key_hash = ? AND enabled = true',
     [hashToken(token)]
   );
-  if (row) return { tier: row.trust_tier === 'fleet' ? 'fleet' : 'external', authorized: true };
+  if (row) return { tier: row.trust_tier === 'fleet' ? 'fleet' : 'external', authorized: true, consumer: row.label };
 
   // Legacy fallback: a caller presenting the raw unified_api_key directly
   // (pre-consumer_keys migration path). Migrated installs already have this
@@ -51,9 +55,13 @@ async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; author
   // that row was somehow removed — kept for defense in depth, not the
   // primary path.
   const unifiedKey = await getUnifiedApiKey();
-  if (timingSafeStringEqual(token, unifiedKey)) return { tier: 'fleet', authorized: true };
+  if (timingSafeStringEqual(token, unifiedKey)) return { tier: 'fleet', authorized: true, consumer: 'unified-key' };
 
-  return { tier: 'external', authorized: false };
+  // A localhost caller that DID present a token we don't recognize: still
+  // fleet-trusted by locality (unchanged behavior), but labeled as such.
+  if (isLocal) return { tier: 'fleet', authorized: true, consumer: 'local-unknown-token' };
+
+  return { tier: 'external', authorized: false, consumer: 'unknown-key' };
 }
 
 // Sticky sessions: track which model served each "session". Prefer an
@@ -266,7 +274,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   // L4 outer gate: resolve trust tier before anything else. Non-local
   // requests without a recognized token are rejected exactly as before.
-  const { tier: trustTier, authorized } = await resolveTrustTier(req);
+  const { tier: trustTier, authorized, consumer } = await resolveTrustTier(req);
   if (!authorized) {
     res.status(401).json({
       error: { message: 'Invalid API key', type: 'authentication_error' },
@@ -503,7 +511,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null, explicitSessionId, taskClass);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null, explicitSessionId, taskClass, consumer, needs);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -515,7 +523,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, streamErr.message, explicitSessionId, taskClass);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, streamErr.message, explicitSessionId, taskClass, consumer, needs);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -541,13 +549,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Date.now() - start, null, explicitSessionId, taskClass,
+          Date.now() - start, null, explicitSessionId, taskClass, consumer, needs,
         );
         return;
       }
     } catch (err: any) {
       const latency = Date.now() - start;
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, taskClass);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, taskClass, consumer, needs);
 
       if (isRetryableError(err)) {
         // Put this model+key on cooldown and try the next one
@@ -596,12 +604,14 @@ async function logRequest(
   error: string | null,
   sessionId?: string,
   taskClass?: string | null,
+  consumer?: string | null,
+  needs?: string[] | null,
 ) {
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error, sessionId ?? null, taskClass ?? null]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }

@@ -50,6 +50,13 @@
       "when": 1783488656038,
       "tag": "0006_curvy_spyke",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783489815543,
+      "tag": "0007_petite_northstar",
+      "breakpoints": true
     }
   ]
 }

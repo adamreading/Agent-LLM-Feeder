@@ -183,6 +183,17 @@ export const requests = pgTable('requests', {
   isProbe: boolean('is_probe').notNull().default(false),
   sessionId: text('session_id'),
   taskClass: text('task_class'),
+  // Who made the call (added 2026-07-08, wsl's multi-consumer attribution
+  // request): the consumer_keys.label of the authenticated caller, or
+  // 'local' for a tokenless localhost call, or 'probe' for internal probe
+  // traffic. Makes "which consumer routed to this model" answerable from the
+  // request log without cross-referencing another system.
+  consumer: text('consumer'),
+  // The capability needs[] the router actually filtered on for this call —
+  // the empirical proof of whether needs attached (e.g. Lunk's
+  // tools/long_context/ob_readwrite) or the call ran unfiltered. Stored as a
+  // comma-joined string; null/empty = no needs filter applied.
+  needs: text('needs'),
 });
 
 export const fallbackConfig = pgTable(
