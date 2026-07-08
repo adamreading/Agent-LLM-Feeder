@@ -1,328 +1,132 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
-import { useI18n } from '@/lib/i18n'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { PageHeader } from '@/components/page-header'
-import type { ApiKey, Platform } from '../../../shared/types'
+import { PLATFORM_IDS, platformName, platformColor } from '@/lib/cyber'
+import type { ApiKey } from '../../../shared/types'
 
-const PLATFORMS: { value: Platform; label: string }[] = [
-  { value: 'google', label: 'Google AI Studio' },
-  { value: 'groq', label: 'Groq' },
-  { value: 'cerebras', label: 'Cerebras' },
-  { value: 'sambanova', label: 'SambaNova' },
-  { value: 'nvidia', label: 'NVIDIA NIM' },
-  { value: 'mistral', label: 'Mistral' },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'github', label: 'GitHub Models' },
-  { value: 'cohere', label: 'Cohere' },
-  { value: 'cloudflare', label: 'Cloudflare Workers AI' },
-  { value: 'zhipu', label: 'Zhipu AI (Z.ai)' },
-  { value: 'ollama', label: 'Ollama Cloud' },
-  { value: 'kilo', label: 'Kilo Gateway (anon ok)' },
-  { value: 'pollinations', label: 'Pollinations (anon ok)' },
-  { value: 'llm7', label: 'LLM7 (anon ok)' },
-]
+const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
-const statusDot: Record<string, string> = {
-  healthy: 'bg-emerald-500',
-  rate_limited: 'bg-amber-500',
-  invalid: 'bg-rose-500',
-  error: 'bg-rose-500',
-  unknown: 'bg-muted-foreground/40',
+const STATUS: Record<string, { label: string; color: string }> = {
+  healthy: { label: 'HEALTHY', color: 'var(--good)' },
+  rate_limited: { label: 'RATE LIMITED', color: 'var(--warn)' },
+  checking: { label: 'CHECKING…', color: 'var(--acc2)' },
+  unknown: { label: 'UNVERIFIED', color: 'var(--dim)' },
+  invalid: { label: 'INVALID', color: 'var(--bad)' },
+  error: { label: 'ERROR', color: 'var(--bad)' },
 }
+const statusOf = (s: string) => STATUS[s] ?? STATUS.unknown
 
-interface HealthPlatform {
-  platform: string
-  totalKeys: number
-  healthyKeys: number
-  rateLimitedKeys: number
-  invalidKeys: number
-  errorKeys: number
-  unknownKeys: number
-}
-
-interface HealthData {
-  platforms: HealthPlatform[]
-  keys: { id: number; platform: string; status: string; lastCheckedAt: string | null }[]
-}
-
-function UnifiedKeySection() {
-  const { t } = useI18n()
+function UnifiedKeyPanel() {
   const queryClient = useQueryClient()
-  const [showKey, setShowKey] = useState(false)
+  const [revealed, setRevealed] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const { data } = useQuery<{ apiKey: string }>({
-    queryKey: ['unified-key'],
-    queryFn: () => apiFetch('/api/settings/api-key'),
-  })
-
+  const { data } = useQuery<{ apiKey: string }>({ queryKey: ['unified-key'], queryFn: () => apiFetch('/api/settings/api-key') })
   const regenerate = useMutation({
     mutationFn: () => apiFetch('/api/settings/api-key/regenerate', { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['unified-key'] }),
+    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['unified-key'] }); setRevealed(false) },
   })
 
-  const apiKey = data?.apiKey ?? ''
-  const masked = apiKey ? apiKey.slice(0, 13) + '*'.repeat(32) : '...'
-  const baseUrl = import.meta.env.DEV
-    ? `http://${window.location.hostname}:${__SERVER_PORT__}/v1`
-    : `${window.location.origin}/v1`
-
-  function copy() {
-    navigator.clipboard.writeText(apiKey)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
+  const key = data?.apiKey ?? ''
+  const shown = revealed ? key : (key ? key.slice(0, 14) + '••••••••••••••••••••••••••••' : '—')
 
   return (
-    <section className="rounded-lg border bg-card p-5">
-      <div className="flex items-start justify-between gap-4 mb-3">
+    <div style={{ border: '1px solid var(--acc)', background: 'var(--panel)', padding: 20, marginBottom: 28, boxShadow: '0 0 30px var(--glow), inset 0 0 40px rgba(0,0,0,.3)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <h2 className="text-sm font-medium">{t('unifiedKeyTitle')}</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{t('unifiedKeyDescription')}</p>
+          <div style={{ fontWeight: 700, fontSize: 16, letterSpacing: 1 }}>UNIFIED API KEY</div>
+          <div style={{ color: 'var(--dim)', fontSize: 12, marginTop: 2 }}>One key to feed every agent. Provider keys stay encrypted (AES-256-GCM) behind it.</div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => regenerate.mutate()}
-          disabled={regenerate.isPending}
-        >
-          {t('regenerate')}
-        </Button>
+        <button onClick={() => regenerate.mutate()} disabled={regenerate.isPending} className="cy-txt-bad" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 700, letterSpacing: 1, color: 'var(--bad)', border: '1px solid var(--bad)', padding: '7px 12px', transition: 'all .15s' }}>⟲ REGENERATE</button>
       </div>
-
-      <div className="flex items-center gap-2">
-        <code className="flex-1 font-mono text-xs bg-muted px-3 py-2 rounded-md select-all truncate tabular-nums">
-          {showKey ? apiKey : masked}
-        </code>
-        <Button variant="outline" size="sm" onClick={() => setShowKey(!showKey)}>
-          {showKey ? t('hide') : t('show')}
-        </Button>
-        <Button variant="outline" size="sm" onClick={copy}>
-          {copied ? t('copied') : t('copy')}
-        </Button>
+      <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }}>
+        <code style={{ flex: 1, minWidth: 280, ...mono, fontSize: 13, color: 'var(--acc2)', background: 'var(--bg2)', border: '1px solid var(--line)', padding: '10px 12px', letterSpacing: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shown}</code>
+        <button onClick={() => setRevealed(r => !r)} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--line)', padding: '0 14px', display: 'flex', alignItems: 'center' }}>{revealed ? 'HIDE' : 'SHOW'}</button>
+        <button onClick={() => { if (key) { navigator.clipboard?.writeText(key).catch(() => {}); setCopied(true); setTimeout(() => setCopied(false), 1400) } }} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--line)', padding: '0 14px', display: 'flex', alignItems: 'center' }}>{copied ? 'COPIED ✓' : 'COPY'}</button>
       </div>
-
-      <div className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-xs">
-        <span className="text-muted-foreground">Base URL</span>
-        <code className="font-mono">{baseUrl}</code>
-        <span className="text-muted-foreground">{t('endpoint')}</span>
-        <code className="font-mono">/v1/chat/completions</code>
+      <div style={{ display: 'flex', gap: 24, marginTop: 12, ...mono, fontSize: 11, color: 'var(--dim)', flexWrap: 'wrap' }}>
+        <span>BASE_URL <span style={{ color: 'var(--ink)' }}>http://localhost:3001/v1</span></span>
+        <span>ENDPOINT <span style={{ color: 'var(--ink)' }}>/v1/chat/completions</span></span>
       </div>
-    </section>
+    </div>
   )
 }
 
 export default function KeysPage() {
-  const { t } = useI18n()
   const queryClient = useQueryClient()
-  const [platform, setPlatform] = useState<Platform | ''>('')
-  const [apiKey, setApiKey] = useState('')
-  const [accountId, setAccountId] = useState('')
-  const [label, setLabel] = useState('')
+  const [addPlatform, setAddPlatform] = useState<string>('google')
+  const [addDraft, setAddDraft] = useState('')
+  const [addLabel, setAddLabel] = useState('')
 
-  const { data: keys = [], isLoading } = useQuery<ApiKey[]>({
-    queryKey: ['keys'],
-    queryFn: () => apiFetch('/api/keys'),
-  })
+  const { data: keys = [], isLoading } = useQuery<ApiKey[]>({ queryKey: ['keys'], queryFn: () => apiFetch('/api/keys') })
 
-  const { data: healthData } = useQuery<HealthData>({
-    queryKey: ['health'],
-    queryFn: () => apiFetch('/api/health'),
-    refetchInterval: 30000,
-  })
-
-  const addKey = useMutation({
-    mutationFn: (body: { platform: string; key: string; label?: string }) =>
-      apiFetch('/api/keys', { method: 'POST', body: JSON.stringify(body) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['fallback'] })
-      setPlatform('')
-      setApiKey('')
-      setAccountId('')
-      setLabel('')
-    },
-  })
-
-  const deleteKey = useMutation({
-    mutationFn: (id: number) => apiFetch(`/api/keys/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-    },
-  })
-
-  const checkAll = useMutation({
-    mutationFn: () => apiFetch('/api/health/check-all', { method: 'POST' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-    },
-  })
-
-  const checkKey = useMutation({
-    mutationFn: (keyId: number) => apiFetch(`/api/health/check/${keyId}`, { method: 'POST' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-    },
-  })
-
-  const needsAccountId = platform === 'cloudflare'
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!platform || !apiKey) return
-    if (needsAccountId && !accountId) return
-    const key = needsAccountId ? `${accountId}:${apiKey}` : apiKey
-    addKey.mutate({ platform, key, label: label || undefined })
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ['keys'] })
+    queryClient.invalidateQueries({ queryKey: ['health'] })
+    queryClient.invalidateQueries({ queryKey: ['fallback'] })
   }
+  const addKey = useMutation({ mutationFn: (b: { platform: string; key: string; label?: string }) => apiFetch('/api/keys', { method: 'POST', body: JSON.stringify(b) }), onSuccess: invalidate })
+  const deleteKey = useMutation({ mutationFn: (id: number) => apiFetch(`/api/keys/${id}`, { method: 'DELETE' }), onSuccess: invalidate })
+  const checkKey = useMutation({ mutationFn: (id: number) => apiFetch(`/api/health/check/${id}`, { method: 'POST' }), onSuccess: invalidate })
+  const checkAll = useMutation({ mutationFn: () => apiFetch('/api/health/check-all', { method: 'POST' }), onSuccess: invalidate })
 
-  const healthKeyMap = new Map<number, { status: string; lastCheckedAt: string | null }>()
-  for (const k of healthData?.keys ?? []) healthKeyMap.set(k.id, k)
+  const groups = PLATFORM_IDS
+    .filter(id => keys.some(k => k.platform === id))
+    .map(id => ({ id, name: platformName(id), keys: keys.filter(k => k.platform === id) }))
 
-  const grouped = PLATFORMS.map(p => ({
-    ...p,
-    keys: keys.filter(k => k.platform === p.value),
-  })).filter(p => p.keys.length > 0)
-
-  const statusLabel: Record<string, string> = {
-    healthy: t('statusHealthy'),
-    rate_limited: t('statusRateLimited'),
-    invalid: t('statusInvalid'),
-    error: t('statusError'),
-    unknown: t('statusUnknown'),
+  const submitAdd = () => {
+    if (!addDraft.trim()) return
+    addKey.mutate({ platform: addPlatform, key: addDraft.trim(), label: addLabel.trim() || undefined })
+    setAddDraft(''); setAddLabel('')
   }
 
   return (
-    <div>
-      <PageHeader
-        title={t('keysTitle')}
-        description={t('keysDescription')}
-        actions={
-          keys.length > 0 && (
-            <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={checkAll.isPending}>
-              {checkAll.isPending ? t('checking') : t('checkAll')}
-            </Button>
-          )
-        }
-      />
+    <main style={{ maxWidth: 1180, margin: '0 auto', padding: '36px 28px 80px', animation: 'flickin .35s ease' }}>
+      <div style={{ ...mono, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// STEP 02 — ARM THE VAULT</div>
+      <h1 style={{ margin: '0 0 24px', fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>KEY VAULT</h1>
 
-      <div className="space-y-8">
-        <UnifiedKeySection />
+      <UnifiedKeyPanel />
 
-        <section>
-          <h2 className="text-sm font-medium mb-3">{t('addProviderKey')}</h2>
-          <form onSubmit={handleSubmit} className="flex flex-wrap items-end gap-3 rounded-lg border p-4 bg-card">
-            <div className="space-y-1.5">
-              <Label className="text-xs">{t('platform')}</Label>
-              <Select value={platform} onValueChange={(v) => setPlatform(v as Platform)}>
-                <SelectTrigger className="w-[220px]">
-                  <SelectValue placeholder={t('selectProvider')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {PLATFORMS.map(p => (
-                    <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {needsAccountId && (
-              <div className="space-y-1.5">
-                <Label className="text-xs">{t('accountId')}</Label>
-                <Input
-                  value={accountId}
-                  onChange={e => setAccountId(e.target.value)}
-                  placeholder="a1b2c3d4..."
-                  className="w-[200px] font-mono text-xs"
-                />
-              </div>
-            )}
-            <div className="space-y-1.5 flex-1 min-w-[240px]">
-              <Label className="text-xs">{needsAccountId ? t('apiToken') : 'API key'}</Label>
-              <Input
-                type="password"
-                value={apiKey}
-                onChange={e => setApiKey(e.target.value)}
-                placeholder={needsAccountId ? t('bearerToken') : t('pasteKey')}
-                className="font-mono text-xs"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label className="text-xs">{t('label')}</Label>
-              <Input
-                value={label}
-                onChange={e => setLabel(e.target.value)}
-                placeholder={t('optional')}
-                className="w-[160px]"
-              />
-            </div>
-            <Button type="submit" size="sm" disabled={!platform || !apiKey || (needsAccountId && !accountId) || addKey.isPending}>
-              {addKey.isPending ? t('adding') : t('addKey')}
-            </Button>
-          </form>
-          {addKey.isError && (
-            <p className="text-destructive text-xs mt-2">{(addKey.error as Error).message}</p>
-          )}
-        </section>
-
-        <section>
-          <h2 className="text-sm font-medium mb-3">{t('configuredProviders')}</h2>
-          {isLoading ? (
-            <p className="text-sm text-muted-foreground">{t('loading')}</p>
-          ) : keys.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-8 text-center">
-              <p className="text-sm text-muted-foreground">{t('noProviderKeys')}</p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {grouped.map(group => (
-                <div key={group.value}>
-                  <div className="flex items-baseline justify-between mb-2">
-                    <h3 className="text-sm font-medium">{group.label}</h3>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      {group.keys.length} {group.keys.length === 1 ? t('connectedKey') : t('connectedKeys')}
-                    </span>
-                  </div>
-                  <div className="rounded-lg border divide-y bg-card overflow-hidden">
-                    {group.keys.map(k => {
-                      const h = healthKeyMap.get(k.id)
-                      const status = h?.status ?? k.status
-                      const lastChecked = h?.lastCheckedAt
-                      return (
-                        <div key={k.id} className="flex items-center gap-3 px-4 py-3 hover:bg-muted/40 transition-colors">
-                          <span className={`size-1.5 rounded-full flex-shrink-0 ${statusDot[status] ?? statusDot.unknown}`} />
-                          <code className="text-xs font-mono flex-shrink-0">{k.maskedKey}</code>
-                          {k.label && <span className="text-xs text-muted-foreground">{k.label}</span>}
-                          <span className="text-xs text-muted-foreground">{statusLabel[status] ?? status}</span>
-                          <div className="flex-1" />
-                          {lastChecked && (
-                            <span className="text-[11px] text-muted-foreground tabular-nums">
-                              {new Date(lastChecked).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          )}
-                          <Button variant="ghost" size="xs" onClick={() => checkKey.mutate(k.id)} disabled={checkKey.isPending}>
-                            {t('verify')}
-                          </Button>
-                          <Button variant="ghost" size="xs" className="text-muted-foreground hover:text-destructive" onClick={() => deleteKey.mutate(k.id)} disabled={deleteKey.isPending}>
-                            {t('remove')}
-                          </Button>
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+      <div style={{ border: '1px solid var(--line)', background: 'var(--panel2)', padding: 16, marginBottom: 28, display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ ...mono, fontSize: 10, letterSpacing: 2, color: 'var(--dim)' }}>ADD KEY →</span>
+        <select className="cy-input" value={addPlatform} onChange={e => setAddPlatform(e.target.value)} style={{ background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', minWidth: 180, ...mono }}>
+          {PLATFORM_IDS.map(id => <option key={id} value={id}>{platformName(id)}</option>)}
+        </select>
+        <input className="cy-input" value={addDraft} onChange={e => setAddDraft(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') submitAdd() }} placeholder="paste key here" style={{ flex: 1, minWidth: 220, background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', ...mono }} />
+        <input className="cy-input" value={addLabel} onChange={e => setAddLabel(e.target.value)} placeholder="label (optional)" style={{ width: 150, background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', ...mono }} />
+        <button onClick={submitAdd} disabled={addKey.isPending} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 12, fontWeight: 700, letterSpacing: 1, padding: '8px 16px', border: '1px solid var(--acc)', color: 'var(--acc)' }}>+ SLOT IN</button>
+        <button onClick={() => checkAll.mutate()} disabled={checkAll.isPending} className="cy-txt-good" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--line)', padding: '8px 12px', color: 'var(--dim)', transition: 'all .15s' }}>⟳ VERIFY ALL</button>
       </div>
-    </div>
+
+      {isLoading ? (
+        <p className="cy-mono" style={{ color: 'var(--dim)', fontSize: 12 }}>▸ reading vault…</p>
+      ) : groups.length === 0 ? (
+        <div style={{ border: '1px dashed var(--line)', padding: 40, textAlign: 'center', color: 'var(--dim)', fontSize: 13 }}>Vault empty — slot in a key above or jack in from Onboarding.</div>
+      ) : groups.map(g => (
+        <div key={g.id} style={{ marginBottom: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid var(--line)', paddingBottom: 6, marginBottom: 8 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, letterSpacing: 1 }}>
+              <span style={{ width: 8, height: 8, transform: 'rotate(45deg)', background: platformColor(g.id) }} />{g.name}
+            </span>
+            <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{g.keys.length} {g.keys.length === 1 ? 'KEY' : 'KEYS'}</span>
+          </div>
+          {g.keys.map(k => {
+            const s = statusOf(k.status)
+            return (
+              <div key={k.id} className="cy-hover-acc" style={{ display: 'flex', alignItems: 'center', gap: 14, border: '1px solid var(--line)', background: 'var(--panel)', padding: '10px 14px', marginBottom: 6, flexWrap: 'wrap' }}>
+                <span style={{ width: 9, height: 9, borderRadius: '50%', background: s.color, boxShadow: `0 0 8px ${s.color}`, animation: 'ledpulse 2.4s infinite' }} />
+                <code style={{ ...mono, fontSize: 12, color: 'var(--ink)', letterSpacing: 1 }}>{k.maskedKey}</code>
+                <span style={{ ...mono, fontSize: 10, color: s.color, letterSpacing: 1, border: `1px solid ${s.color}`, padding: '2px 6px' }}>{s.label}</span>
+                {k.label && <span style={{ fontSize: 11, color: 'var(--dim)' }}>{k.label}</span>}
+                <div style={{ flex: 1 }} />
+                <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{k.lastCheckedAt ? new Date(k.lastCheckedAt).toLocaleTimeString() : '—'}</span>
+                <button onClick={() => checkKey.mutate(k.id)} className="cy-glow-acc2" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: 1, color: 'var(--acc2)' }}>VERIFY</button>
+                <button onClick={() => deleteKey.mutate(k.id)} className="cy-glow-bad" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: 1, color: 'var(--bad)' }}>PURGE</button>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </main>
   )
 }

@@ -9,6 +9,17 @@ export const platformColors: Record<string, string> = {
 }
 export const platformColor = (p: string) => platformColors[p] ?? '#94a3b8'
 
+// Display names + the canonical platform list (matches the server's PLATFORMS
+// enum in routes/keys.ts) for the Key Vault add-key select and group headers.
+export const PLATFORM_NAMES: Record<string, string> = {
+  google: 'Google AI Studio', groq: 'Groq', cerebras: 'Cerebras', sambanova: 'SambaNova',
+  nvidia: 'NVIDIA NIM', mistral: 'Mistral', openrouter: 'OpenRouter', github: 'GitHub Models',
+  cohere: 'Cohere', cloudflare: 'Cloudflare Workers AI', zhipu: 'Z.ai / Zhipu', ollama: 'Ollama Cloud',
+  kilo: 'Kilo Gateway', pollinations: 'Pollinations', llm7: 'LLM7',
+}
+export const PLATFORM_IDS = Object.keys(PLATFORM_NAMES)
+export const platformName = (p: string) => PLATFORM_NAMES[p] ?? p
+
 // Friendly short labels for measured capabilities (DB capability name → chip).
 export const CAP_LABELS: Record<string, string> = {
   tools: 'TOOL CALLS',

@@ -1,231 +1,38 @@
-import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import {
-  Check,
-  Clipboard,
-  ExternalLink,
-  KeyRound,
-  MessageSquare,
-  RefreshCw,
-} from 'lucide-react'
 import { apiFetch } from '@/lib/api'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { PageHeader } from '@/components/page-header'
-import { useI18n } from '@/lib/i18n'
 import type { ApiKey, Platform } from '../../../shared/types'
 
-type ProviderGuide = {
-  platform: Platform
-  name: string
-  accountUrl: string
-  keyUrl: string
-  freeTierKey: string
-  credentialLabel: string
-  placeholder: string
-  noteKey: string
-  accountId?: boolean
-  optionalKey?: boolean
-}
+const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
-const PROVIDERS: ProviderGuide[] = [
-  {
-    platform: 'google',
-    name: 'Google AI Studio',
-    accountUrl: 'https://ai.google.dev',
-    keyUrl: 'https://aistudio.google.com/api-keys',
-    freeTierKey: 'providerGoogleTier',
-    credentialLabel: 'API key',
-    placeholder: 'AIza...',
-    noteKey: 'providerGoogleNote',
-  },
-  {
-    platform: 'groq',
-    name: 'Groq',
-    accountUrl: 'https://console.groq.com',
-    keyUrl: 'https://console.groq.com/keys',
-    freeTierKey: 'providerGroqTier',
-    credentialLabel: 'API key',
-    placeholder: 'gsk_...',
-    noteKey: 'providerGroqNote',
-  },
-  {
-    platform: 'cerebras',
-    name: 'Cerebras',
-    accountUrl: 'https://cloud.cerebras.ai',
-    keyUrl: 'https://cloud.cerebras.ai/platform',
-    freeTierKey: 'providerCerebrasTier',
-    credentialLabel: 'API key',
-    placeholder: 'csk-...',
-    noteKey: 'providerCerebrasNote',
-  },
-  {
-    platform: 'sambanova',
-    name: 'SambaNova',
-    accountUrl: 'https://cloud.sambanova.ai',
-    keyUrl: 'https://cloud.sambanova.ai/apis',
-    freeTierKey: 'providerSambanovaTier',
-    credentialLabel: 'API key',
-    placeholder: 'sambanova...',
-    noteKey: 'providerSambanovaNote',
-  },
-  {
-    platform: 'nvidia',
-    name: 'NVIDIA NIM',
-    accountUrl: 'https://build.nvidia.com',
-    keyUrl: 'https://build.nvidia.com',
-    freeTierKey: 'providerNvidiaTier',
-    credentialLabel: 'API key',
-    placeholder: 'nvapi-...',
-    noteKey: 'providerNvidiaNote',
-  },
-  {
-    platform: 'mistral',
-    name: 'Mistral',
-    accountUrl: 'https://console.mistral.ai',
-    keyUrl: 'https://console.mistral.ai/api-keys',
-    freeTierKey: 'providerMistralTier',
-    credentialLabel: 'API key',
-    placeholder: '...',
-    noteKey: 'providerMistralNote',
-  },
-  {
-    platform: 'openrouter',
-    name: 'OpenRouter',
-    accountUrl: 'https://openrouter.ai',
-    keyUrl: 'https://openrouter.ai/settings/keys',
-    freeTierKey: 'providerOpenrouterTier',
-    credentialLabel: 'API key',
-    placeholder: 'sk-or-v1-...',
-    noteKey: 'providerOpenrouterNote',
-  },
-  {
-    platform: 'github',
-    name: 'GitHub Models',
-    accountUrl: 'https://github.com/marketplace/models',
-    keyUrl: 'https://github.com/settings/personal-access-tokens',
-    freeTierKey: 'providerGithubTier',
-    credentialLabel: 'GitHub token',
-    placeholder: 'github_pat_...',
-    noteKey: 'providerGithubNote',
-  },
-  {
-    platform: 'cohere',
-    name: 'Cohere',
-    accountUrl: 'https://dashboard.cohere.com',
-    keyUrl: 'https://dashboard.cohere.com/api-keys',
-    freeTierKey: 'providerCohereTier',
-    credentialLabel: 'API key',
-    placeholder: '...',
-    noteKey: 'providerCohereNote',
-  },
-  {
-    platform: 'cloudflare',
-    name: 'Cloudflare Workers AI',
-    accountUrl: 'https://dash.cloudflare.com',
-    keyUrl: 'https://dash.cloudflare.com/profile/api-tokens',
-    freeTierKey: 'providerCloudflareTier',
-    credentialLabel: 'API token',
-    placeholder: 'token...',
-    accountId: true,
-    noteKey: 'providerCloudflareNote',
-  },
-  {
-    platform: 'zhipu',
-    name: 'Z.ai / Zhipu',
-    accountUrl: 'https://bigmodel.cn',
-    keyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys',
-    freeTierKey: 'providerZhipuTier',
-    credentialLabel: 'API key',
-    placeholder: '...',
-    noteKey: 'providerZhipuNote',
-  },
-  {
-    platform: 'ollama',
-    name: 'Ollama Cloud',
-    accountUrl: 'https://ollama.com',
-    keyUrl: 'https://ollama.com/settings/keys',
-    freeTierKey: 'providerOllamaTier',
-    credentialLabel: 'API key',
-    placeholder: 'ollama_...',
-    noteKey: 'providerOllamaNote',
-  },
-  {
-    platform: 'kilo',
-    name: 'Kilo Gateway',
-    accountUrl: 'https://kilo.ai',
-    keyUrl: 'https://kilo.ai',
-    freeTierKey: 'providerKiloTier',
-    credentialLabel: 'API key',
-    placeholder: 'optional key or anonymous',
-    optionalKey: true,
-    noteKey: 'providerKiloNote',
-  },
-  {
-    platform: 'pollinations',
-    name: 'Pollinations',
-    accountUrl: 'https://pollinations.ai',
-    keyUrl: 'https://pollinations.ai',
-    freeTierKey: 'providerPollinationsTier',
-    credentialLabel: 'Token',
-    placeholder: 'anonymous',
-    optionalKey: true,
-    noteKey: 'providerPollinationsNote',
-  },
-  {
-    platform: 'llm7',
-    name: 'LLM7',
-    accountUrl: 'https://llm7.io',
-    keyUrl: 'https://llm7.io',
-    freeTierKey: 'providerLlm7Tier',
-    credentialLabel: 'API key',
-    placeholder: 'optional key or anonymous',
-    optionalKey: true,
-    noteKey: 'providerLlm7Note',
-  },
+// Provider metadata from the design handoff — name / free-tier label / key
+// prefix / account + key URLs. Wired to the real /api/keys endpoint.
+const PROVIDERS: { id: Platform; name: string; tier: string; prefix: string; accountUrl: string; keyUrl: string }[] = [
+  { id: 'google', name: 'Google AI Studio', tier: 'GEMINI FREE TIER', prefix: 'AIza…', accountUrl: 'https://ai.google.dev', keyUrl: 'https://aistudio.google.com/api-keys' },
+  { id: 'groq', name: 'Groq', tier: 'FREE DEV QUOTA', prefix: 'gsk_…', accountUrl: 'https://console.groq.com', keyUrl: 'https://console.groq.com/keys' },
+  { id: 'cerebras', name: 'Cerebras', tier: 'FREE INFERENCE TIER', prefix: 'csk-…', accountUrl: 'https://cloud.cerebras.ai', keyUrl: 'https://cloud.cerebras.ai/platform' },
+  { id: 'sambanova', name: 'SambaNova', tier: 'FREE CLOUD ACCESS', prefix: 'sn-…', accountUrl: 'https://cloud.sambanova.ai', keyUrl: 'https://cloud.sambanova.ai/apis' },
+  { id: 'nvidia', name: 'NVIDIA NIM', tier: 'DEV TRIAL CREDITS', prefix: 'nvapi-…', accountUrl: 'https://build.nvidia.com', keyUrl: 'https://build.nvidia.com' },
+  { id: 'mistral', name: 'Mistral', tier: 'LA PLATEFORME FREE', prefix: 'mst-…', accountUrl: 'https://console.mistral.ai', keyUrl: 'https://console.mistral.ai/api-keys' },
+  { id: 'openrouter', name: 'OpenRouter', tier: 'FREE MODELS POOL', prefix: 'sk-or-…', accountUrl: 'https://openrouter.ai', keyUrl: 'https://openrouter.ai/settings/keys' },
+  { id: 'github', name: 'GitHub Models', tier: 'PAT FREE TIER', prefix: 'ghp_…', accountUrl: 'https://github.com/marketplace/models', keyUrl: 'https://github.com/settings/personal-access-tokens' },
+  { id: 'cohere', name: 'Cohere', tier: 'TRIAL KEY', prefix: 'co-…', accountUrl: 'https://dashboard.cohere.com', keyUrl: 'https://dashboard.cohere.com/api-keys' },
+  { id: 'cloudflare', name: 'Cloudflare Workers AI', tier: '10K NEURONS / DAY', prefix: 'cf-…', accountUrl: 'https://dash.cloudflare.com', keyUrl: 'https://dash.cloudflare.com/profile/api-tokens' },
+  { id: 'zhipu', name: 'Z.ai / Zhipu', tier: 'FREE GLM TIER', prefix: 'zk-…', accountUrl: 'https://bigmodel.cn', keyUrl: 'https://bigmodel.cn/usercenter/proj-mgmt/apikeys' },
+  { id: 'ollama', name: 'Ollama Cloud', tier: 'HOBBY TIER', prefix: 'ol-…', accountUrl: 'https://ollama.com', keyUrl: 'https://ollama.com/settings/keys' },
+  { id: 'kilo', name: 'Kilo Gateway', tier: 'GATEWAY FREE', prefix: 'kg-…', accountUrl: 'https://kilo.ai', keyUrl: 'https://kilo.ai' },
+  { id: 'pollinations', name: 'Pollinations', tier: 'ANONYMOUS OK', prefix: 'token…', accountUrl: 'https://pollinations.ai', keyUrl: 'https://pollinations.ai' },
+  { id: 'llm7', name: 'LLM7', tier: 'COMMUNITY FREE', prefix: 'llm7-…', accountUrl: 'https://llm7.io', keyUrl: 'https://llm7.io' },
 ]
 
-type Drafts = Record<string, { key: string; accountId: string; label: string }>
-
-const statusTone: Record<string, string> = {
-  healthy: 'border-emerald-500/40 text-emerald-700 dark:text-emerald-300',
-  rate_limited: 'border-amber-500/40 text-amber-700 dark:text-amber-300',
-  invalid: 'border-rose-500/40 text-rose-700 dark:text-rose-300',
-  error: 'border-rose-500/40 text-rose-700 dark:text-rose-300',
-  unknown: 'border-border text-muted-foreground',
-}
-
-function emptyDrafts(): Drafts {
-  return Object.fromEntries(
-    PROVIDERS.map(provider => [
-      provider.platform,
-      {
-        key: provider.optionalKey ? 'anonymous' : '',
-        accountId: '',
-        label: provider.name,
-      },
-    ]),
-  )
-}
+const initials = (name: string) =>
+  name.replace(/[^A-Za-z ]/g, '').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 
 export default function OnboardingPage() {
-  const { t } = useI18n()
   const queryClient = useQueryClient()
-  const [drafts, setDrafts] = useState<Drafts>(() => emptyDrafts())
-  const [copied, setCopied] = useState(false)
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
 
-  const { data: keys = [] } = useQuery<ApiKey[]>({
-    queryKey: ['keys'],
-    queryFn: () => apiFetch('/api/keys'),
-  })
-
-  const { data: unifiedKey } = useQuery<{ apiKey: string }>({
-    queryKey: ['unified-key'],
-    queryFn: () => apiFetch('/api/settings/api-key'),
-  })
+  const { data: keys = [] } = useQuery<ApiKey[]>({ queryKey: ['keys'], queryFn: () => apiFetch('/api/keys') })
 
   const addKey = useMutation({
     mutationFn: (body: { platform: Platform; key: string; label?: string }) =>
@@ -237,222 +44,78 @@ export default function OnboardingPage() {
     },
   })
 
-  const checkAll = useMutation({
-    mutationFn: () => apiFetch('/api/health/check-all', { method: 'POST' }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['keys'] })
-      queryClient.invalidateQueries({ queryKey: ['health'] })
-    },
-  })
-
-  const configuredByPlatform = useMemo(() => {
-    const map = new Map<Platform, ApiKey[]>()
-    for (const key of keys) {
-      const list = map.get(key.platform) ?? []
-      list.push(key)
-      map.set(key.platform, list)
-    }
-    return map
-  }, [keys])
-
-  const configuredCount = PROVIDERS.filter(provider => configuredByPlatform.has(provider.platform)).length
-  const ready = configuredCount > 0
-  const baseUrl = import.meta.env.DEV
-    ? `http://${window.location.hostname}:${__SERVER_PORT__}/v1`
-    : `${window.location.origin}/v1`
-
-  function updateDraft(platform: Platform, field: 'key' | 'accountId' | 'label', value: string) {
-    setDrafts(prev => ({
-      ...prev,
-      [platform]: {
-        ...prev[platform],
-        [field]: value,
-      },
-    }))
-  }
-
-  function saveProvider(provider: ProviderGuide) {
-    const draft = drafts[provider.platform]
-    const rawKey = draft.key.trim()
-    const accountId = draft.accountId.trim()
-    if (!rawKey || (provider.accountId && !accountId)) return
-    const key = provider.accountId ? `${accountId}:${rawKey}` : rawKey
-    addKey.mutate({
-      platform: provider.platform,
-      key,
-      label: draft.label.trim() || provider.name,
-    })
-  }
-
-  function copyApiSetup() {
-    const text = `base_url=${baseUrl}\napi_key=${unifiedKey?.apiKey ?? ''}`
-    navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
+  const connected = new Set(keys.map(k => k.platform))
+  const connectedCount = connected.size
+  const total = PROVIDERS.length
+  const pct = Math.round((connectedCount / total) * 100)
+  const progressMsg = connectedCount === 0 ? '> insert first key to boot the router'
+    : connectedCount < 4 ? '> router live. more keys = more fallback lives'
+    : '> solid chain. the router will not go hungry'
 
   return (
-    <div>
-      <PageHeader
-        title={t('onboardingTitle')}
-        description={t('onboardingDescription')}
-        actions={
-          <>
-            <Button variant="outline" size="sm" onClick={() => checkAll.mutate()} disabled={!ready || checkAll.isPending}>
-              <RefreshCw />
-              {checkAll.isPending ? t('verifying') : t('verify')}
-            </Button>
-            <Button size="sm" render={<Link to="/playground" />}>
-              <MessageSquare />
-              Chatbot
-            </Button>
-          </>
-        }
-      />
-
-      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
-        <section className="space-y-3">
-          {PROVIDERS.map(provider => {
-            const providerKeys = configuredByPlatform.get(provider.platform) ?? []
-            const firstStatus = providerKeys[0]?.status ?? 'unknown'
-            const draft = drafts[provider.platform]
-            const canSave = Boolean(draft.key.trim()) && (!provider.accountId || Boolean(draft.accountId.trim()))
-
-            return (
-              <div key={provider.platform} className="rounded-lg border bg-card p-4">
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="flex-1 min-w-[220px]">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-base font-medium">{provider.name}</h2>
-                      <Badge variant="outline">{t(provider.freeTierKey)}</Badge>
-                      {providerKeys.length > 0 && (
-                        <Badge variant="outline" className={statusTone[firstStatus] ?? statusTone.unknown}>
-                          <Check className="size-3" />
-                          {providerKeys.length} {providerKeys.length > 1 ? t('connectedKeys') : t('connectedKey')}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">{t(provider.noteKey)}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" render={<a href={provider.accountUrl} target="_blank" rel="noreferrer" />}>
-                      {t('account')}
-                      <ExternalLink />
-                    </Button>
-                    <Button variant="outline" size="sm" render={<a href={provider.keyUrl} target="_blank" rel="noreferrer" />}>
-                      {t('key')}
-                      <ExternalLink />
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(180px,220px)_auto]">
-                  {provider.accountId && (
-                    <div className="space-y-1.5">
-                      <Label className="text-xs">{t('accountId')}</Label>
-                      <Input
-                        value={draft.accountId}
-                        onChange={event => updateDraft(provider.platform, 'accountId', event.target.value)}
-                        placeholder={t('cloudflareAccountPlaceholder')}
-                        className="font-mono text-xs"
-                      />
-                    </div>
-                  )}
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">{provider.credentialLabel}</Label>
-                    <Input
-                      type={provider.optionalKey ? 'text' : 'password'}
-                      value={draft.key}
-                      onChange={event => updateDraft(provider.platform, 'key', event.target.value)}
-                      placeholder={provider.placeholder}
-                      className="font-mono text-xs"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">{t('label')}</Label>
-                    <Input
-                      value={draft.label}
-                      onChange={event => updateDraft(provider.platform, 'label', event.target.value)}
-                      placeholder={t('providerLabelPlaceholder')}
-                    />
-                  </div>
-                  <div className="flex items-end">
-                    <Button
-                      size="sm"
-                      onClick={() => saveProvider(provider)}
-                      disabled={!canSave || addKey.isPending}
-                    >
-                      <KeyRound />
-                      {t('add')}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            )
-          })}
-        </section>
-
-        <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start">
-          <section className="rounded-lg border bg-card p-4">
-            <h2 className="text-sm font-medium">{t('progress')}</h2>
-            <div className="mt-3">
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>{t('connectedProviders')}</span>
-                <span className="tabular-nums">{configuredCount}/{PROVIDERS.length}</span>
-              </div>
-              <div className="mt-2 h-2 rounded-full bg-muted overflow-hidden">
-                <div
-                  className="h-full bg-primary transition-all"
-                  style={{ width: `${Math.max(4, (configuredCount / PROVIDERS.length) * 100)}%` }}
-                />
-              </div>
-            </div>
-            <div className="mt-4 space-y-2 text-sm text-muted-foreground">
-              <p>{t('progressHintOne')}</p>
-              <p>{t('progressHintTwo')}</p>
-            </div>
-          </section>
-
-          <section className="rounded-lg border bg-card p-4">
-            <h2 className="text-sm font-medium">{t('chatbotConfig')}</h2>
-            <div className="mt-3 space-y-2 text-xs">
-              <div>
-                <span className="text-muted-foreground">Base URL</span>
-                <code className="mt-1 block truncate rounded-md bg-muted px-2 py-1.5">{baseUrl}</code>
-              </div>
-              <div>
-                <span className="text-muted-foreground">API key</span>
-                <code className="mt-1 block truncate rounded-md bg-muted px-2 py-1.5">
-                  {unifiedKey?.apiKey ? `${unifiedKey.apiKey.slice(0, 13)}********************************` : '...'}
-                </code>
-              </div>
-            </div>
-            <div className="mt-3 flex gap-2">
-              <Button variant="outline" size="sm" onClick={copyApiSetup} disabled={!unifiedKey?.apiKey}>
-                <Clipboard />
-                {copied ? t('copied') : t('copy')}
-              </Button>
-              <Button size="sm" render={<Link to="/playground" />}>
-                {t('test')}
-              </Button>
-            </div>
-          </section>
-
-          <section className="rounded-lg border bg-card p-4">
-            <h2 className="text-sm font-medium">{t('recommendedOrder')}</h2>
-            <ol className="mt-3 space-y-2 text-sm text-muted-foreground">
-              <li>{t('orderOne')}</li>
-              <li>{t('orderTwo')}</li>
-              <li>{t('orderThree')}</li>
-              <li>{t('orderFour')}</li>
-            </ol>
-          </section>
-        </aside>
+    <main style={{ maxWidth: 1180, margin: '0 auto', padding: '36px 28px 80px', animation: 'flickin .35s ease' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 24, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div>
+          <div style={{ ...mono, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// STEP 01 — JACK IN</div>
+          <h1 style={{ margin: 0, fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>ONBOARDING</h1>
+          <p style={{ margin: '8px 0 0', color: 'var(--dim)', fontSize: 14, maxWidth: 560 }}>
+            Grab free-tier keys from the grid below. One key lights up the router — every extra key is another life when a provider rate-limits you.
+          </p>
+        </div>
+        <div style={{ flex: 1, minWidth: 260, border: '1px solid var(--line)', background: 'var(--panel)', padding: '14px 16px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', ...mono, fontSize: 11, color: 'var(--dim)', marginBottom: 8 }}>
+            <span>PROVIDERS CONNECTED</span><span style={{ color: 'var(--acc2)' }}>{connectedCount} / {total}</span>
+          </div>
+          <div style={{ height: 10, border: '1px solid var(--line)', padding: 1 }}>
+            <div style={{ height: '100%', width: `${pct}%`, background: 'repeating-linear-gradient(90deg, var(--acc) 0px, var(--acc) 6px, transparent 6px, transparent 9px)', boxShadow: '0 0 10px var(--glow)', transition: 'width .4s' }} />
+          </div>
+          <div style={{ marginTop: 8, ...mono, fontSize: 10, color: 'var(--dim)' }}>{progressMsg}</div>
+        </div>
       </div>
 
-      {addKey.isError && (
-        <p className="mt-4 text-sm text-destructive">{(addKey.error as Error).message}</p>
-      )}
-    </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))', gap: 14, marginTop: 24 }}>
+        {PROVIDERS.map(p => {
+          const isOn = connected.has(p.id)
+          const cardBorder = isOn ? 'rgba(61,255,160,.45)' : 'var(--line)'
+          const draft = drafts[p.id] || ''
+          const submit = () => {
+            if (!draft.trim()) return
+            addKey.mutate({ platform: p.id, key: draft.trim(), label: 'onboarding' })
+            setDrafts(s => ({ ...s, [p.id]: '' }))
+          }
+          return (
+            <div key={p.id} className="cy-hover-acc" style={{ border: `1px solid ${cardBorder}`, background: 'var(--panel)', padding: 16, display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
+              <div style={{ position: 'absolute', top: 0, right: 0, width: 14, height: 14, background: `linear-gradient(135deg, transparent 50%, ${cardBorder} 50%)` }} />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div style={{ width: 32, height: 32, border: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: 14, color: 'var(--acc)', background: 'var(--bg2)' }}>{initials(p.name)}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: '.5px' }}>{p.name}</div>
+                  <div style={{ ...mono, fontSize: 9.5, color: 'var(--dim)', letterSpacing: '.5px' }}>{p.tier}</div>
+                </div>
+                {isOn && <span style={{ ...mono, fontSize: 9, letterSpacing: 1, color: 'var(--good)', border: '1px solid var(--good)', padding: '3px 6px', boxShadow: '0 0 8px rgba(61,255,160,.25)' }}>◈ LINKED</span>}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <a href={p.accountUrl} target="_blank" rel="noreferrer" className="cy-hover-acc2" style={{ flex: 1, textAlign: 'center', fontSize: 11, fontWeight: 600, letterSpacing: 1, border: '1px solid var(--line)', padding: '7px 0', color: 'var(--ink)' }}>ACCOUNT ⧉</a>
+                <a href={p.keyUrl} target="_blank" rel="noreferrer" className="cy-hover-acc2" style={{ flex: 1, textAlign: 'center', fontSize: 11, fontWeight: 600, letterSpacing: 1, border: '1px solid var(--line)', padding: '7px 0', color: 'var(--ink)' }}>GET KEY ⧉</a>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="cy-input"
+                  value={draft}
+                  onChange={e => setDrafts(s => ({ ...s, [p.id]: e.target.value }))}
+                  onKeyDown={e => { if (e.key === 'Enter') submit() }}
+                  placeholder={p.prefix}
+                  style={{ flex: 1, minWidth: 0, background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', ...mono }}
+                />
+                <button onClick={submit} disabled={addKey.isPending} className="cy-btn" style={{
+                  all: 'unset', cursor: 'pointer', fontSize: 12, fontWeight: 700, letterSpacing: 1, padding: '8px 14px',
+                  background: isOn ? 'transparent' : 'var(--acc)', color: isOn ? 'var(--acc)' : '#000', border: '1px solid var(--acc)',
+                }}>{isOn ? '+ MORE' : 'PLUG IN'}</button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </main>
   )
 }
