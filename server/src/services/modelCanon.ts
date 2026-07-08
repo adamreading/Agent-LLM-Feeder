@@ -61,12 +61,11 @@ interface UnmatchedRow {
 //      canonical alias links to it immediately (covers a new supplier
 //      instance of an already-canonicalized model — the common ongoing case).
 //   2. Bootstrap grouping: among rows STILL unmatched after pass 1, group by
-//      normalized key; any group with 2+ members is a same-model duplicate
-//      the DB just proved by direct collision — auto-create one canonical
-//      entry and link the whole group. A group of exactly 1 stays unmatched;
-//      per Adam's directive, a model only enters canon once a human (or a
-///     future confident automated step) actively confirms it — deliberately
-//      not auto-created here even though it "could" be its own trivial group.
+//      normalized key. Every group becomes a canonical model — a 2+-member
+//      group is a same-model duplicate merged into one entry; a singleton
+//      becomes its own 1:1 canonical — so the wiki reflects the whole catalog,
+//      not just cross-platform duplicates. The review UI stays for correcting
+//      a bad auto-merge or re-linking a mis-grouped instance.
 export async function matchModels(pool: pg.Pool): Promise<{ autoLinkedToExisting: number; autoMergedGroups: number; autoMergedRows: number; stillUnmatched: number }> {
   const unmatched = await all<UnmatchedRow>(pool, `
     SELECT id, platform, model_id, display_name FROM models WHERE canonical_model_id IS NULL
@@ -99,7 +98,13 @@ export async function matchModels(pool: pg.Pool): Promise<{ autoLinkedToExisting
   let autoMergedGroups = 0;
   let autoMergedRows = 0;
   for (const [key, members] of groups) {
-    if (members.length < 2) continue; // singleton — leave for manual review, see doc comment above
+    // Every distinct model gets a canonical entry — a cross-platform group is
+    // merged into one, and a singleton becomes its own 1:1 canonical — so the
+    // wiki surfaces the whole catalog rather than only the models that happen
+    // to be offered by more than one supplier. (Earlier this skipped
+    // singletons pending manual review, which left most of the catalog
+    // invisible.) Genuine cross-platform collisions still merge; the review UI
+    // remains for correcting a bad auto-merge or re-linking.
     // Prefer the shortest display_name as the canonical label — the id
     // spelling with the least platform-specific decoration (fewest instances
     // of "(SambaNova)"/"(free)"/"(CF)" style suffixes seen in the catalog).
@@ -133,10 +138,13 @@ export async function linkToExistingCanonical(pool: pg.Pool, modelDbId: number, 
   if (!canonical) throw new Error(`No canonical_models row with id ${canonicalModelId}`);
 
   const key = normalizeModelId(model.model_id);
-  const existingAlias = await get<{ canonical_model_id: number }>(pool, 'SELECT canonical_model_id FROM canonical_model_aliases WHERE alias_key = ?', [key]);
-  if (!existingAlias) {
-    await run(pool, `INSERT INTO canonical_model_aliases (canonical_model_id, alias_key) VALUES (?, ?)`, [canonicalModelId, key]);
-  }
+  // Upsert: this row may already carry an alias (every model is auto-
+  // canonicalized now), so re-point it to the chosen canonical rather than
+  // colliding on the UNIQUE(alias_key) constraint.
+  await run(pool, `
+    INSERT INTO canonical_model_aliases (canonical_model_id, alias_key) VALUES (?, ?)
+    ON CONFLICT (alias_key) DO UPDATE SET canonical_model_id = EXCLUDED.canonical_model_id
+  `, [canonicalModelId, key]);
   await run(pool, `UPDATE models SET canonical_model_id = ?, match_status = 'manual_matched' WHERE id = ?`, [canonicalModelId, modelDbId]);
 }
 
@@ -158,7 +166,10 @@ export async function createCanonicalFromModel(
   `, [name, slug, fields.summary ?? null, fields.vision ?? false, fields.video ?? false, fields.audio ?? false]);
 
   const key = normalizeModelId(model.model_id);
-  await run(pool, `INSERT INTO canonical_model_aliases (canonical_model_id, alias_key) VALUES (?, ?)`, [canonicalId, key]);
+  await run(pool, `
+    INSERT INTO canonical_model_aliases (canonical_model_id, alias_key) VALUES (?, ?)
+    ON CONFLICT (alias_key) DO UPDATE SET canonical_model_id = EXCLUDED.canonical_model_id
+  `, [canonicalId, key])
   await run(pool, `UPDATE models SET canonical_model_id = ?, match_status = 'confirmed_new' WHERE id = ?`, [canonicalId, modelDbId]);
 
   return canonicalId;

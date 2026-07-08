@@ -5,15 +5,14 @@ import { get, run, all } from '../db/pgCompat.js';
 
 export const capabilitiesRouter = Router();
 
-// Generic capability-reporting endpoint — lets an EXTERNAL caller (Hermes,
-// Open Brain's own tooling, or any consumer) report a real measured
-// capability fact for a model it identifies by platform+model_id, without
-// feeder needing to know what the capability name MEANS or run the test
-// itself. Added 2026-07-08 (Adam's architecture directive): feeder stays a
-// generic, use-case-agnostic provider — a consumer-specific probe (e.g. the
-// ob_readwrite test, which hits Open Brain's REST API) is consumer policy
-// and belongs in the consumer's own codebase, calling this endpoint to
-// populate feeder's generic capability table rather than living in
+// Generic capability-reporting endpoint — lets an EXTERNAL caller (any
+// policy-aware consumer or agent) report a real measured capability fact for
+// a model it identifies by platform+model_id, without feeder needing to know
+// what the capability name MEANS or run the test itself. feeder stays a
+// generic, use-case-agnostic provider — a consumer-specific probe (e.g. one
+// that tests whether a model can drive that consumer's own private tool/API)
+// is consumer policy and belongs in the consumer's own codebase, calling this
+// endpoint to populate feeder's generic capability table rather than living in
 // feeder's core (see services/probes/methods.ts's tools/json_mode/
 // long_context probes, which stay in feeder because they test feeder's own
 // job — talking to the LLM providers it routes to — not a third-party

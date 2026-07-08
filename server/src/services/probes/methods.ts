@@ -27,7 +27,7 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
           // REALISTIC schema, not a toy (fix for the probe-vs-reality gap wsl
           // caught live 2026-07-08): nested object params + additionalProperties
           // at multiple levels, mirroring the shape real consumers (Lunk's ~59
-          // tools, OB's extraction) actually send. A provider that passes a
+          // tools, a consumer's structured extraction) actually send. A provider that passes a
           // trivial flat get_weather but chokes on additionalProperties (Gemini,
           // pre-sanitizer) must now FAIL this probe — so tools=true reflects
           // real-world tool use. With the Google sanitizer in place, Gemini's

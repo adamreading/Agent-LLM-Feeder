@@ -4,7 +4,7 @@ import { GoogleProvider, sanitizeSchemaForGemini } from '../../providers/google.
 // wsl found live (2026-07-08, real Lunk turn): Gemini 400s on JSON-schema
 // `additionalProperties` in tool parameters (valid schema, accepted by every
 // other provider), 502ing the whole turn. windows confirmed the same hits
-// json_mode responseSchema for OB's structured extraction. These prove the
+// json_mode responseSchema for a consumer's structured extraction. These prove the
 // dialect-compat sanitizer strips the keywords Gemini rejects — recursively,
 // at every nesting level, in both tool params and response schemas — while
 // leaving legitimate schema intact.

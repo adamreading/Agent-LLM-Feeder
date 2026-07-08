@@ -56,15 +56,16 @@ describe('matchModels — real catalog integration', () => {
     expect(rows.every((r) => r.match_status === 'auto_matched')).toBe(true);
   });
 
-  it('leaves a genuine singleton model unmatched, pending manual review', async () => {
+  it('canonicalizes a genuine singleton into its own 1:1 canonical (so it appears in the wiki)', async () => {
     const pool = getPool();
-    // gemini-2.5-pro has no known cross-platform duplicate in the seeded catalog.
+    // gemini-2.5-pro has no cross-platform duplicate — it still gets its own
+    // canonical entry so the whole catalog surfaces, not just duplicates.
     const row = await get<{ canonical_model_id: number | null; match_status: string }>(pool, `
       SELECT canonical_model_id, match_status FROM models WHERE model_id = 'gemini-2.5-pro' AND platform = 'google'
     `);
     expect(row).toBeDefined();
-    expect(row!.canonical_model_id).toBeNull();
-    expect(row!.match_status).toBe('unmatched');
+    expect(row!.canonical_model_id).not.toBeNull()
+    expect(row!.match_status).toBe('auto_matched');
   });
 
   it('is idempotent — a second run does not create duplicate canonical entries', async () => {

@@ -7,7 +7,7 @@
 // provider actually declares a dialect), and a generic, use-case-neutral
 // BEST-USE taxonomy that feeds Adam's own intelligence/budget/speed scoring
 // — explicitly NOT Hermes-specific (same agnosticism principle as the
-// router refactor). ob_readwrite is deliberately NOT covered here — that
+// router refactor). Consumer-specific capabilities are deliberately NOT covered here — that
 // dimension is Hermes-specific and is being built as a separate prober in
 // hermes-stack (wsl-claude), writing to feeder's generic POST /capabilities
 // endpoint instead of living in this sweep.

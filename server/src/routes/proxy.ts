@@ -224,12 +224,12 @@ const chatCompletionSchema = z.object({
   max_attempts: z.number().int().positive().max(DEFAULT_MAX_RETRIES).optional(),
   latency_ceiling_ms: z.number().int().positive().optional(),
   // Generic, opaque capability declaration — the caller states what its
-  // own call-site requires (e.g. a Hermes agentic turn declaring
-  // ['tools','ob_readwrite']); feeder enforces whatever's named here
+  // own call-site requires (e.g. an agentic turn declaring
+  // ['tools','long_context']); feeder enforces whatever's named here
   // against model_capabilities without needing to know what any of it
-  // means. Added 2026-07-08 (Adam's architecture directive) to replace a
-  // hardcoded task_class→capability mapping that baked consumer-specific
-  // policy into the generic router — see router.ts's CapabilityNeed comment.
+  // means. Replaces a hardcoded task_class→capability mapping that would
+  // bake consumer-specific policy into the generic router — see router.ts's
+  // CapabilityNeed comment.
   needs: z.array(z.string()).optional(),
   session_id: z.string().optional(),
   user: z.string().optional(), // OpenAI-standard field, also accepted as a sticky-session carrier
@@ -357,16 +357,15 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   if (tools && tools.length > 0) needs.push('tools');
 
   // Caller-DECLARED needs (generic `needs[]` body field) — this is how a
-  // policy-aware consumer (e.g. Hermes's agentic call-site) states what ITS
+  // policy-aware consumer (e.g. an agent's agentic call-site) states what ITS
   // OWN task requires, without feeder having to know what task_class means
-  // or hardcode any consumer-specific capability. Corrected 2026-07-08
-  // (Adam's architecture directive): an earlier version of this hardcoded
-  // `taskClass === 'agentic_chat' → needs.push('ob_readwrite')` directly in
-  // feeder, which would have wrongly filtered a generic Open WebUI caller
-  // hitting the same auto/agentic_chat sentinel by a capability ("can write
-  // to Adam's personal Open Brain") it has no reason to know exists. The
-  // policy now lives entirely in the caller; feeder only enforces what's
-  // explicitly declared, keeping it a generic, use-case-agnostic provider.
+  // or hardcode any consumer-specific capability. A hardcoded
+  // `taskClass === 'agentic_chat' → needs.push(<private capability>)` mapping
+  // would wrongly filter a generic Open WebUI caller hitting the same
+  // auto/agentic_chat sentinel by a capability it has no reason to know
+  // exists. The policy lives entirely in the caller; feeder only enforces
+  // what's explicitly declared, keeping it a generic, use-case-agnostic
+  // provider.
   for (const need of declaredNeeds ?? []) {
     if (!needs.includes(need)) needs.push(need);
   }

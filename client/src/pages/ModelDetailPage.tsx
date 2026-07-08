@@ -2,15 +2,17 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
-  type CanonModel, CAP_LABELS, TASK_LABELS, makerFromName, prettyCtx, prettyLatency,
+  type CanonModel, capLabel, TASK_LABELS, makerFromName, prettyCtx, prettyLatency,
   latencyColor, bestIntel, bestSpeed, maxCtx, fastestLatency,
 } from '@/lib/cyber'
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
-// Capabilities shown in the matrix, in a stable order. A measured-true row →
-// GOOD; measured-false → NONE; no row at all → UNPROBED.
-const MATRIX_CAPS = ['tools', 'json_mode', 'long_context', 'vision', 'video', 'audio', 'ob_readwrite', 'reasoning_control']
+// Base capabilities always shown in the matrix, in a stable order. A
+// measured-true row → GOOD; measured-false → NONE; no row at all → UNPROBED.
+// Any additional caller-declared capability present in the data is appended
+// generically (feeder is capability-agnostic — it doesn't hardcode the set).
+const BASE_MATRIX_CAPS = ['tools', 'json_mode', 'long_context', 'vision', 'video', 'audio', 'reasoning_control']
 
 function Panel({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return <div style={{ border: '1px solid var(--line)', background: 'var(--panel)', padding: 18, ...style }}>{children}</div>
@@ -49,6 +51,13 @@ export default function ModelDetailPage() {
   ]
 
   const capByName = new Map(m.capabilities.map(c => [c.capability, c.supported]))
+  // Base set + any extra caller-declared capabilities present in the data
+  // (appended generically, so the matrix never hardcodes a consumer-specific
+  // capability while still surfacing whatever a caller has reported).
+  const extraCaps = m.capabilities
+    .map(c => c.capability)
+    .filter(c => !c.startsWith('best_use_') && c !== 'reachable' && !BASE_MATRIX_CAPS.includes(c))
+  const matrixCaps = [...BASE_MATRIX_CAPS, ...[...new Set(extraCaps)]]
   const tasks = m.taskScores.filter(s => s.task_type !== 'overall')
 
   return (
@@ -79,14 +88,14 @@ export default function ModelDetailPage() {
         <Panel>
           <SectionTitle>CAPABILITY MATRIX</SectionTitle>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            {MATRIX_CAPS.map(cap => {
+            {matrixCaps.map(cap => {
               const has = capByName.has(cap)
               const ok = capByName.get(cap) === true
               const verdict = !has ? '◇ UNPROBED' : ok ? '◈ GOOD' : '— NONE'
               const color = !has ? 'var(--dim)' : ok ? 'var(--good)' : 'var(--bad)'
               return (
                 <div key={cap} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid var(--line)', background: 'var(--bg2)', padding: '8px 12px' }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>{CAP_LABELS[cap] ?? cap.toUpperCase()}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: 1 }}>{capLabel(cap)}</span>
                   <span style={{ ...mono, fontSize: 10, fontWeight: 700, letterSpacing: 1, color, textShadow: `0 0 8px ${color}` }}>{verdict}</span>
                 </div>
               )
@@ -159,7 +168,7 @@ export default function ModelDetailPage() {
               {(() => {
                 const bad = m.capabilities.filter(c => !c.supported && !c.capability.startsWith('best_use_') && c.capability !== 'reachable').slice(0, 4)
                 return bad.length
-                  ? bad.map(c => <div key={c.capability} style={{ fontSize: 12, color: 'var(--ink)', padding: '3px 0' }}>− {(CAP_LABELS[c.capability] ?? c.capability).toLowerCase()}</div>)
+                  ? bad.map(c => <div key={c.capability} style={{ fontSize: 12, color: 'var(--ink)', padding: '3px 0' }}>− {capLabel(c.capability).toLowerCase()}</div>)
                   : <div style={{ fontSize: 11.5, color: 'var(--dim)' }}>pending</div>
               })()}
             </div>

@@ -104,10 +104,10 @@ describe('P2 DoD: response_format capability gate, live over HTTP', () => {
 });
 
 // History: wsl-claude's pre-wire catch (2026-07-08) found that measuring
-// ob_readwrite on 16 models wasn't the same as enforcing it, and the first
-// fix mapped auto/agentic_chat's task_class directly to needs:['ob_readwrite']
+// privileged_write on 16 models wasn't the same as enforcing it, and the first
+// fix mapped auto/agentic_chat's task_class directly to needs:['privileged_write']
 // server-side. Adam's architecture directive (same day) correctly rejected
-// that: it baked Hermes/Open-Brain-specific POLICY into feeder's generic
+// that: it baked consumer-specific POLICY into feeder's generic
 // router — a plain Open WebUI caller hitting the same auto/agentic_chat
 // sentinel would get filtered by a capability ("can write to Adam's
 // personal brain") it has no reason to know exists. The corrected design:
@@ -140,36 +140,36 @@ describe('generic needs[] declaration enforces opaque capabilities, live over HT
     vi.restoreAllMocks();
   });
 
-  it('refuses with 422 when the caller explicitly declares needs:["tools","ob_readwrite"] and no model has both', async () => {
+  it('refuses with 422 when the caller explicitly declares needs:["tools","privileged_write"] and no model has both', async () => {
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
     await run(getPool(), `
       INSERT INTO model_capabilities (model_db_id, capability, supported, source)
       SELECT id, 'tools', true, 'measured' FROM models WHERE platform = 'groq'
     `);
-    // Deliberately no ob_readwrite rows at all — exactly the live gap found.
+    // Deliberately no privileged_write rows at all — exactly the live gap found.
 
     const { status, body } = await request(app, 'POST', '/v1/chat/completions', {
       model: 'auto/agentic_chat',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
-      needs: ['tools', 'ob_readwrite'],
+      needs: ['tools', 'privileged_write'],
     });
 
     expect(status).toBe(422);
     expect(body.error.code).toBe('NO_ELIGIBLE_MODEL');
   });
 
-  it('does NOT filter on ob_readwrite when the caller declares no needs[] at all — a generic client must not be blocked by a capability it never asked for', async () => {
+  it('does NOT filter on privileged_write when the caller declares no needs[] at all — a generic client must not be blocked by a capability it never asked for', async () => {
     // This is the exact regression Adam's directive was about: a plain
     // Open WebUI caller hitting auto/agentic_chat with no needs[] knowledge
-    // of Open Brain must succeed on ANY tools-confirmed model, not just the
-    // 4 ob_readwrite-confirmed ones.
+    // of a consumer backend must succeed on ANY tools-confirmed model, not just the
+    // 4 privileged_write-confirmed ones.
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
     await run(getPool(), `
       INSERT INTO model_capabilities (model_db_id, capability, supported, source)
       SELECT id, 'tools', true, 'measured' FROM models WHERE platform = 'groq'
     `);
-    // No ob_readwrite row anywhere — if this were still gated implicitly,
+    // No privileged_write row anywhere — if this were still gated implicitly,
     // this request would 422. It must not.
 
     const origFetch = global.fetch;
@@ -195,13 +195,13 @@ describe('generic needs[] declaration enforces opaque capabilities, live over HT
       model: 'auto/agentic_chat',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
-      // No needs[] — generic caller, no Open Brain awareness.
+      // No needs[] — generic caller, no a consumer backend awareness.
     });
 
     expect(status).toBe(200);
   });
 
-  it('routes only to the model confirmed for BOTH declared needs (tools and ob_readwrite)', async () => {
+  it('routes only to the model confirmed for BOTH declared needs (tools and privileged_write)', async () => {
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
     await run(getPool(), `
       INSERT INTO model_capabilities (model_db_id, capability, supported, source)
@@ -209,7 +209,7 @@ describe('generic needs[] declaration enforces opaque capabilities, live over HT
     `);
     const pool = getPool();
     const eligible = await import('../../db/pgCompat.js').then((m) => m.get<{ id: number }>(pool, `SELECT id FROM models WHERE platform = 'groq' LIMIT 1`));
-    await run(pool, `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'ob_readwrite', true, 'measured')`, [eligible!.id]);
+    await run(pool, `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'privileged_write', true, 'measured')`, [eligible!.id]);
 
     const origFetch = global.fetch;
     vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
@@ -234,7 +234,7 @@ describe('generic needs[] declaration enforces opaque capabilities, live over HT
       model: 'auto/agentic_chat',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
-      needs: ['tools', 'ob_readwrite'],
+      needs: ['tools', 'privileged_write'],
     });
 
     expect(status).toBe(200);

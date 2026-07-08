@@ -53,20 +53,20 @@ export interface RouteResult {
 // Capability need — an OPAQUE string, deliberately not a closed union.
 // 'json_mode' and 'reasoning_control' are the two feeder-NATIVE special
 // cases (checked against provider.dialect, a wire-format fact feeder owns
-// as a translation layer). Anything else — 'tools', 'ob_readwrite', or a
-// future caller-invented name — is checked generically against the
-// model_capabilities table (per-model, source='measured' only) with zero
-// feeder-side knowledge of what the string MEANS.
+// as a translation layer). Anything else — 'tools' or any caller-invented
+// capability name — is checked generically against the model_capabilities
+// table (per-model, source='measured' only) with zero feeder-side knowledge
+// of what the string MEANS.
 //
-// Corrected 2026-07-08 (Adam's architecture directive, after wsl-claude's
-// server-side agentic_chat→ob_readwrite sentinel mapping was found to bake
-// Hermes/Open-Brain-specific POLICY into feeder's generic router): a caller
-// that knows nothing about Open Brain (Open WebUI, any generic script)
-// must never be filtered by a capability it has no reason to know exists.
-// Feeder stays a generic, use-case-agnostic OpenAI-compatible provider
-// (like LiteLLM/Ollama) — callers DECLARE the needs[] their own call-site
-// requires (via the request body); feeder only ever enforces what's
-// declared, never infers consumer-specific policy from task_class itself.
+// This keeps feeder a generic, use-case-agnostic OpenAI-compatible provider
+// (like LiteLLM/Ollama): a caller that knows nothing about some consumer's
+// private capability (Open WebUI, any generic script) must never be filtered
+// by a capability it has no reason to know exists. Callers DECLARE the needs[]
+// their own call-site requires (via the request body); feeder only ever
+// enforces what's declared, never infers consumer-specific policy from
+// task_class itself. (An earlier revision baked a consumer-specific
+// task_class→capability mapping into the router — the anti-pattern this
+// opaque design exists to prevent.)
 export type CapabilityNeed = string;
 
 export interface RouteOptions {
@@ -316,23 +316,21 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     if (needs?.includes('reasoning_control') && !provider.dialect.reasoning) continue;
 
     // Everything else in needs[] is an OPAQUE per-model capability string —
-    // feeder doesn't know or care what it MEANS (tools, ob_readwrite, or
-    // anything a future caller declares), only whether some caller has
-    // reported it measured-true for this specific model. This is what keeps
-    // feeder a generic, use-case-agnostic provider (Adam's architecture
-    // directive, 2026-07-08): consumer-specific policy (e.g. "agentic_chat
-    // needs ob_readwrite") lives in the CALLER, not hardcoded here — a
+    // feeder doesn't know or care what it MEANS (tools, or anything a caller
+    // declares), only whether some caller has reported it measured-true for
+    // this specific model. This is what keeps feeder a generic, use-case-
+    // agnostic provider: consumer-specific policy (e.g. "this task needs my
+    // private capability X") lives in the CALLER, not hardcoded here — a
     // generic client (Open WebUI, any script) that declares no needs[] gets
-    // pure priority + tools-from-request-body; a policy-aware caller
-    // (Hermes) declares exactly what its call-site requires.
+    // pure priority + tools-from-request-body; a policy-aware caller declares
+    // exactly what its call-site requires.
     //
     // source = 'measured' ONLY, deliberately not falling back to 'declared'
-    // — this is a hard safety gate, not a heuristic. The whole night's probe
-    // work exists because declared/spec-sheet claims (NVIDIA reasoning, Groq
-    // reasoning, Ollama context) turned out wrong often enough to matter
-    // live; an unverified claim must never satisfy a capability a caller is
-    // relying on for correctness (ob-claude's tools-gate review, 2026-07-07,
-    // generalizes to every opaque capability a caller might declare).
+    // — this is a hard safety gate, not a heuristic. Probe work exists because
+    // declared/spec-sheet claims (NVIDIA reasoning, Groq reasoning, Ollama
+    // context) turned out wrong often enough to matter live; an unverified
+    // claim must never satisfy a capability a caller is relying on for
+    // correctness.
     const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control');
     let missingOpaqueNeed = false;
     for (const need of opaqueNeeds) {

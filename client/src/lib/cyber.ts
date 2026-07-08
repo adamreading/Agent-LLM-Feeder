@@ -28,10 +28,14 @@ export const CAP_LABELS: Record<string, string> = {
   vision: 'VISION IN',
   video: 'VIDEO IN',
   audio: 'AUDIO IN',
-  ob_readwrite: 'OB R/W',
   reasoning_control: 'REASONING',
   reachable: 'REACHABLE',
 }
+
+// Any capability without an explicit label above renders generically — feeder
+// is capability-agnostic, so a caller-declared capability (whatever it is)
+// still shows a sensible chip without the UI hardcoding knowledge of it.
+export const capLabel = (cap: string) => CAP_LABELS[cap] ?? cap.replace(/_/g, ' ').toUpperCase()
 
 // Task-type labels for the lmarena score bars (matches TASK_TYPES on the server).
 export const TASK_LABELS: Record<string, string> = {

@@ -21,7 +21,7 @@ async function request(app: Express, method: string, path: string, body?: any) {
   return { status: res.status, body: data };
 }
 
-// Found live 2026-07-08 (wsl-claude, prepping the ob_readwrite probe run):
+// Found live 2026-07-08 (wsl-claude, prepping the privileged_write probe run):
 // the catalog seeds a bare model_id that collides across platforms (e.g.
 // gpt-oss-120b exists on both cerebras and sambanova) — these are NOT
 // interchangeable instances, they differ on tool support, json_mode dialect,

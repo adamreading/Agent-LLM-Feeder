@@ -49,12 +49,22 @@ describe('Model canon API (/api/canon)', () => {
     expect(gptOss.instances.map((i: any) => i.platform)).toEqual(expect.arrayContaining(['cerebras', 'sambanova']));
   });
 
+  // Every model is auto-canonicalized now, so /unmatched is normally empty.
+  // The review-path tests below simulate a genuinely-unmatched row (e.g. a
+  // brand-new supplier instance before the next match pass) by nulling one.
+  async function unmatchOne(): Promise<number> {
+    const row = await get<{ id: number }>(getPool(), `SELECT id FROM models WHERE enabled = true ORDER BY id LIMIT 1`)
+    await run(getPool(), `UPDATE models SET canonical_model_id = NULL, match_status = 'unmatched' WHERE id = ?`, [row!.id])
+    return row!.id
+  }
+
   it('GET /unmatched lists supplier rows that have not completed matching — the wiki must not show these', async () => {
+    const id = await unmatchOne()
     const { status, body } = await request(app, 'GET', '/api/canon/unmatched');
     expect(status).toBe(200);
     expect(Array.isArray(body)).toBe(true);
-    expect(body.length).toBeGreaterThan(0);
-    // None of the unmatched rows should already carry a canonical link.
+    expect(body.some((r: any) => r.id === id)).toBe(true);
+    // Every listed row is genuinely unlinked.
     const pool = getPool();
     for (const row of body.slice(0, 5)) {
       const dbRow = await get<{ canonical_model_id: number | null }>(pool, 'SELECT canonical_model_id FROM models WHERE id = ?', [row.id]);
@@ -63,6 +73,7 @@ describe('Model canon API (/api/canon)', () => {
   });
 
   it('POST / creates a new canonical model from an unmatched row, and it disappears from /unmatched and appears in /', async () => {
+    await unmatchOne()
     const { body: unmatched } = await request(app, 'GET', '/api/canon/unmatched');
     const target = unmatched[0];
 
@@ -85,6 +96,7 @@ describe('Model canon API (/api/canon)', () => {
   });
 
   it('POST /match links an unmatched row to an existing canonical model', async () => {
+    await unmatchOne()
     const { body: unmatched } = await request(app, 'GET', '/api/canon/unmatched');
     const target = unmatched[0];
     const { body: canon } = await request(app, 'GET', '/api/canon');
@@ -103,11 +115,9 @@ describe('Model canon API (/api/canon)', () => {
   });
 
   it('POST /match with an unknown canonical_model_id returns 404, not a silent no-op', async () => {
-    const { body: unmatched } = await request(app, 'GET', '/api/canon/unmatched');
-    const target = unmatched[unmatched.length - 1];
-
+    const id = await unmatchOne()
     const { status } = await request(app, 'POST', '/api/canon/match', {
-      model_db_id: target.id,
+      model_db_id: id,
       canonical_model_id: 999999,
     });
     expect(status).toBe(404);

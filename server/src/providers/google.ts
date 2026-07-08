@@ -73,12 +73,12 @@ function toGeminiFinishReason(finishReason?: string): string {
 // `additionalProperties` — valid JSON-schema, accepted by every OTHER provider
 // — and Gemini 400s ("Unknown name 'additionalProperties'"), 502ing the whole
 // turn and forcing a degraded local fallback. windows confirmed the same class
-// hits json_mode responseSchema for OB's structured-extraction call-sites.
+// hits json_mode responseSchema for a consumer's structured-extraction call-sites.
 // Gemini genuinely tool-calls and honors JSON schema; its parser just can't
 // tolerate these keywords, so we strip them before dispatch — the dialect/
 // compat layer's job, exactly like the reasoning-dialect translation. This
-// helps ALL consumers (Lunk, OB, Open WebUI), not just one, so it lives here
-// in the provider adapter, not in any caller.
+// helps ALL consumers (agents, structured-extraction jobs, Open WebUI), not
+// just one, so it lives here in the provider adapter, not in any caller.
 const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
   'additionalProperties', 'unevaluatedProperties', 'patternProperties', 'additionalItems',
   'unevaluatedItems', '$schema', '$id', '$ref', '$defs', 'definitions', '$comment', '$anchor',
@@ -135,7 +135,7 @@ function toGeminiGenerationConfig(options?: CompletionOptions): Record<string, u
     config.responseMimeType = 'application/json';
   } else if (options?.response_format?.type === 'json_schema' && options.response_format.json_schema) {
     config.responseMimeType = 'application/json';
-    // Same strict-parser sanitize as tool parameters (windows' finding: OB's
+    // Same strict-parser sanitize as tool parameters (a consumer's
     // structured-extraction response schemas hit the identical rejection).
     config.responseSchema = sanitizeSchemaForGemini(options.response_format.json_schema.schema);
   }

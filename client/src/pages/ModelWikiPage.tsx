@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
-  type CanonModel, CAP_LABELS, makerFromName, prettyCtx,
+  type CanonModel, capLabel, makerFromName, prettyCtx,
   bestIntel, maxCtx, supportedCaps, overallScore,
 } from '@/lib/cyber'
 
@@ -13,7 +13,6 @@ const FILTERS = [
   { id: 'vision', label: 'VISION' },
   { id: 'json_mode', label: 'JSON' },
   { id: 'long_context', label: 'LONG CTX' },
-  { id: 'ob_readwrite', label: 'OB R/W' },
 ]
 
 const label = { fontFamily: "'JetBrains Mono',monospace" } as const
@@ -105,7 +104,7 @@ export default function ModelWikiPage() {
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', minHeight: 18 }}>
                   {caps.map(c => (
                     <span key={c.capability} style={{ ...label, fontSize: 9, fontWeight: 700, letterSpacing: 1, padding: '3px 6px', border: '1px solid var(--acc)', color: 'var(--acc)' }}>
-                      {CAP_LABELS[c.capability] ?? c.capability.toUpperCase()}
+                      {capLabel(c.capability)}
                     </span>
                   ))}
                   {caps.length === 0 && <span style={{ ...label, fontSize: 9, color: 'var(--dim)' }}>NO MEASURED CAPS YET</span>}

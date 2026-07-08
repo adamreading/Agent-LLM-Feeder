@@ -182,27 +182,27 @@ describe('P2: capability/dialect filtering, two-gate trust, context-length aware
     });
   });
 
-  describe('ob_readwrite capability gate (wsl-claude pre-wire catch, 2026-07-08)', () => {
-    it('throws NO_ELIGIBLE_MODEL when tools is confirmed but ob_readwrite is not — measuring a capability is not the same as gating on it', async () => {
+  describe('privileged_write capability gate (wsl-claude pre-wire catch, 2026-07-08)', () => {
+    it('throws NO_ELIGIBLE_MODEL when tools is confirmed but privileged_write is not — measuring a capability is not the same as gating on it', async () => {
       const groqId = await firstModelId('groq');
       await isolateCandidates([groqId]);
       await addKey('groq', 'test');
       await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [groqId]);
-      // No ob_readwrite row at all — this is exactly the gap a live 10x
+      // No privileged_write row at all — this is exactly the gap a live 10x
       // agentic_chat test surfaced: 40% of turns landed on tools-confirmed
       // models with zero measured OB access data.
-      await expect(routeRequest({ needs: ['tools', 'ob_readwrite'] })).rejects.toMatchObject({
+      await expect(routeRequest({ needs: ['tools', 'privileged_write'] })).rejects.toMatchObject({
         code: 'NO_ELIGIBLE_MODEL',
       });
     });
 
-    it('routes to a model with both tools and ob_readwrite confirmed', async () => {
+    it('routes to a model with both tools and privileged_write confirmed', async () => {
       const groqId = await firstModelId('groq');
       await isolateCandidates([groqId]);
       await addKey('groq', 'test');
       await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [groqId]);
-      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'ob_readwrite', true, 'measured')`, [groqId]);
-      const result = await routeRequest({ needs: ['tools', 'ob_readwrite'] });
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'privileged_write', true, 'measured')`, [groqId]);
+      const result = await routeRequest({ needs: ['tools', 'privileged_write'] });
       expect(result.platform).toBe('groq');
     });
   });

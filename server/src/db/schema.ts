@@ -230,7 +230,7 @@ export const requests = pgTable('requests', {
   consumer: text('consumer'),
   // The capability needs[] the router actually filtered on for this call —
   // the empirical proof of whether needs attached (e.g. Lunk's
-  // tools/long_context/ob_readwrite) or the call ran unfiltered. Stored as a
+  // tools/long_context/<declared caps>) or the call ran unfiltered. Stored as a
   // comma-joined string; null/empty = no needs filter applied.
   needs: text('needs'),
 });
