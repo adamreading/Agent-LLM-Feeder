@@ -58,7 +58,14 @@ export interface RouteResult {
 // model_capabilities in the DB instead — ob-claude review, 2026-07-07: a
 // tools[]-bearing request had NO capability gate at all before this, "landed
 // on a capable model by coincidence" is not "cannot land on an incapable one."
-export type CapabilityNeed = 'json_mode' | 'reasoning_control' | 'tools';
+// 'ob_readwrite' added 2026-07-08 (wsl-claude pre-wire catch): Adam's stated
+// minimum bar for agentic_chat is tools AND ctx-floor AND ob_readwrite, but
+// measuring the capability isn't the same as gating on it — proxy.ts maps
+// the auto/agentic_chat sentinel to this need explicitly (it can't be
+// derived from the request body the way tools[] presence works, since
+// "needs OB access" isn't a field a caller declares, it's implied by
+// task_class). Same per-model, source='measured'-only treatment as tools.
+export type CapabilityNeed = 'json_mode' | 'reasoning_control' | 'tools' | 'ob_readwrite';
 
 export interface RouteOptions {
   estimatedTokens?: number;
@@ -275,6 +282,21 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
         [model.id]
       );
       if (!toolsRow) continue;
+    }
+
+    // 'ob_readwrite' — same per-model, measured-only treatment as tools.
+    // wsl-claude, 2026-07-08 (pre-wire catch): measuring this capability on
+    // 16 models is not the same as ENFORCING it — a live 10x agentic_chat
+    // test showed 40% of turns landing on models with unmeasured OB access,
+    // silently violating Adam's stated minimum bar. proxy.ts derives this
+    // need from the agentic_chat task_class sentinel (see parseModelField
+    // callers there), not from any request-body field.
+    if (needs?.includes('ob_readwrite')) {
+      const obRow = await get<{ supported: boolean }>(pool,
+        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'ob_readwrite' AND supported = true AND source = 'measured' LIMIT 1`,
+        [model.id]
+      );
+      if (!obRow) continue;
     }
 
     // Two-gate INNER enforcement: cost-tier ceiling (independent of the

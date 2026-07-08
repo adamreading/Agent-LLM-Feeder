@@ -182,6 +182,31 @@ describe('P2: capability/dialect filtering, two-gate trust, context-length aware
     });
   });
 
+  describe('ob_readwrite capability gate (wsl-claude pre-wire catch, 2026-07-08)', () => {
+    it('throws NO_ELIGIBLE_MODEL when tools is confirmed but ob_readwrite is not — measuring a capability is not the same as gating on it', async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [groqId]);
+      // No ob_readwrite row at all — this is exactly the gap a live 10x
+      // agentic_chat test surfaced: 40% of turns landed on tools-confirmed
+      // models with zero measured OB access data.
+      await expect(routeRequest({ needs: ['tools', 'ob_readwrite'] })).rejects.toMatchObject({
+        code: 'NO_ELIGIBLE_MODEL',
+      });
+    });
+
+    it('routes to a model with both tools and ob_readwrite confirmed', async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'measured')`, [groqId]);
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'ob_readwrite', true, 'measured')`, [groqId]);
+      const result = await routeRequest({ needs: ['tools', 'ob_readwrite'] });
+      expect(result.platform).toBe('groq');
+    });
+  });
+
   describe('two-gate INNER enforcement: cost_tier ceiling', () => {
     it('excludes a paid-tier model when the caller is capped at free tier', async () => {
       const pool = getPool();

@@ -325,6 +325,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
+  const explicitSessionId = session_id ?? user;
+  const { taskClass, isAuto } = parseModelField(requestedModel);
+
   // Tier-0 heuristics: derive capability needs directly from the request's
   // own declared fields — no LLM, no task_class tuple required for this.
   const needs: CapabilityNeed[] = [];
@@ -332,8 +335,22 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   if (reasoning_effort) needs.push('reasoning_control');
   if (tools && tools.length > 0) needs.push('tools');
 
-  const explicitSessionId = session_id ?? user;
-  const { taskClass, isAuto } = parseModelField(requestedModel);
+  // task_class → implied needs. Distinct from the heuristics above: "needs
+  // OB access" isn't a field a caller declares in the request body the way
+  // tools[] presence is — it's implied by WHICH kind of turn this is.
+  // wsl-claude, 2026-07-08 (pre-wire catch): agentic_chat is Lunk's real
+  // main-brain turn type and Adam's stated minimum bar for it is tools AND
+  // ctx-floor AND ob_readwrite — measuring ob_readwrite on some models
+  // isn't the same as this route refusing to land on an unmeasured one. A
+  // live 10x test before this fix showed 40% of agentic_chat+tools calls
+  // landing on models with no ob_readwrite data at all. 'tools' is included
+  // here too as a defensive backstop — normally already implied by the
+  // request carrying tools[], but agentic_chat should never be able to
+  // reach a non-tool-capable model even if a caller forgets to attach tools[].
+  if (taskClass === 'agentic_chat') {
+    if (!needs.includes('tools')) needs.push('tools');
+    needs.push('ob_readwrite');
+  }
 
   // Explicit `model` field (that isn't the 'auto' sentinel) pins routing. If
   // the catalog has no enabled row matching the requested id, return 400 —
