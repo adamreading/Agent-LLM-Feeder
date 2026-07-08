@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { performance } from 'node:perf_hooks';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -273,7 +274,10 @@ function parseModelField(model: string | undefined): { taskClass: string | null;
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
-  const start = Date.now();
+  // Monotonic clock for elapsed-time measurement — Date.now() is wall-clock
+  // and can jump BACKWARDS on a clock adjustment (NTP step, WSL2 resume),
+  // which produced negative latency_ms rows. performance.now() never regresses.
+  const start = performance.now();
 
   // L4 outer gate: resolve trust tier before anything else. Non-local
   // requests without a recognized token are rejected exactly as before.
@@ -513,7 +517,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Date.now() - start, null, explicitSessionId, taskClass, consumer, needs);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, taskClass, consumer, needs);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -525,7 +529,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Date.now() - start, streamErr.message, explicitSessionId, taskClass, consumer, needs);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, taskClass, consumer, needs);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -551,12 +555,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Date.now() - start, null, explicitSessionId, taskClass, consumer, needs,
+          Math.round(performance.now() - start), null, explicitSessionId, taskClass, consumer, needs,
         );
         return;
       }
     } catch (err: any) {
-      const latency = Date.now() - start;
+      const latency = Math.round(performance.now() - start);
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, taskClass, consumer, needs);
 
       if (isRetryableError(err)) {
@@ -613,7 +617,7 @@ async function logRequest(
     await run(getPool(), `
       INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null]);
+    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }
