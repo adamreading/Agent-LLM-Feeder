@@ -6,6 +6,7 @@ import { matchModels, linkToExistingCanonical, createCanonicalFromModel } from '
 import { recordTaskScore, getTaskScores, TASK_TYPES } from '../services/taskScores.js';
 import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
+import { startMissingResearch, getResearchStatus } from '../services/researchRunner.js';
 
 export const canonRouter = Router();
 
@@ -213,6 +214,22 @@ canonRouter.post('/:id/research', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: { message: err.message, type: 'research_error' } });
   }
+});
+
+// Wiki "RESEARCH MISSING" button: kick off a background pass over every
+// canonical model that still lacks a summary. Returns immediately (the pass
+// runs detached; the button polls /research-status). One pass at a time —
+// re-clicking while running is a no-op with a reason. Stops cleanly on the
+// search backend's hourly rate limit; re-click later to fill the rest.
+canonRouter.post('/research-missing', async (_req, res) => {
+  const started = await startMissingResearch(getPool());
+  res.status(started.started ? 202 : 409).json(started);
+});
+
+// Progress source for the button while a pass runs (and live "remaining" count
+// between passes, so the button can label itself honestly).
+canonRouter.get('/research-status', async (_req, res) => {
+  res.json(await getResearchStatus(getPool()));
 });
 
 // All quality scores for one canonical model (the wiki drill-down / editor).

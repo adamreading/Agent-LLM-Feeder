@@ -37,11 +37,16 @@ async function main() {
 
   const limitArg = process.argv.indexOf('--limit');
   const limit = limitArg !== -1 ? parseInt(process.argv[limitArg + 1], 10) : undefined;
+  // By default only fill the GAPS — models that still have no summary — so a
+  // re-run after a rate-limit stop doesn't spend quota re-researching the ones
+  // already written. Pass --all to force a full refresh of every model.
+  const all_ = process.argv.includes('--all');
+  const where = all_ ? '' : `WHERE summary IS NULL OR summary = ''`;
 
   const canonicals = await all<{ id: number; name: string }>(pool, `
-    SELECT id, name FROM canonical_models ORDER BY name ASC ${limit ? 'LIMIT ' + limit : ''}
+    SELECT id, name FROM canonical_models ${where} ORDER BY name ASC ${limit ? 'LIMIT ' + limit : ''}
   `);
-  console.log(`Researching ${canonicals.length} canonical models…\n`);
+  console.log(`Researching ${canonicals.length} canonical models${all_ ? '' : ' (missing summaries only)'}…\n`);
 
   let ok = 0, empty = 0, failed = 0;
   for (const c of canonicals) {

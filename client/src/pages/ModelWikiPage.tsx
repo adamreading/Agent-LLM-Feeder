@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useState, useMemo, useEffect, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
@@ -16,6 +16,73 @@ const FILTERS = [
 ]
 
 const label = { fontFamily: "'JetBrains Mono',monospace" } as const
+
+interface ResearchStatus {
+  running: boolean; total: number; done: number; empty: number; failed: number
+  remaining: number; rateLimited: boolean; lastError: string | null; current: string | null
+}
+
+// "RESEARCH MISSING" — runs street-research for every model that still has no
+// summary, in one background pass on the server. Polls progress while running
+// and refreshes the wiki cards as summaries land. Stops cleanly on the search
+// backend's hourly cap; click again later to fill the rest.
+function ResearchMissing() {
+  const qc = useQueryClient()
+  const [msg, setMsg] = useState<string | null>(null)
+  const prevDone = useRef(0)
+
+  const { data: status } = useQuery<ResearchStatus>({
+    queryKey: ['research-status'],
+    queryFn: () => apiFetch('/api/canon/research-status'),
+    refetchInterval: (q) => (q.state.data?.running ? 3000 : false),
+  })
+
+  // Refresh the model cards as new summaries are written mid-pass.
+  useEffect(() => {
+    if (status && status.done !== prevDone.current) {
+      prevDone.current = status.done
+      qc.invalidateQueries({ queryKey: ['canon'] })
+    }
+  }, [status?.done, qc])
+
+  const running = status?.running ?? false
+  const remaining = status?.remaining ?? 0
+
+  async function trigger() {
+    setMsg(null)
+    const res = await fetch(`${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/canon/research-missing`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok && body.reason) setMsg(body.reason)
+    qc.invalidateQueries({ queryKey: ['research-status'] })
+  }
+
+  let text: string
+  if (running) text = `▸ RESEARCHING ${status!.done + status!.empty + status!.failed}/${status!.total}…`
+  else if (remaining === 0) text = 'ALL MODELS RESEARCHED ✓'
+  else text = `⟳ RESEARCH MISSING (${remaining})`
+
+  const disabled = running || remaining === 0
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+      <button onClick={trigger} disabled={disabled} className="cy-hover-acc" style={{
+        all: 'unset', cursor: disabled ? 'default' : 'pointer', ...label, fontSize: 10.5, fontWeight: 700, letterSpacing: 1,
+        padding: '8px 14px', border: `1px solid ${remaining === 0 ? 'var(--good)' : 'var(--acc)'}`,
+        color: remaining === 0 ? 'var(--good)' : (running ? 'var(--dim)' : 'var(--acc)'),
+        background: 'transparent', opacity: running ? 0.8 : 1,
+      }}>{text}</button>
+      {running && status?.current && (
+        <span style={{ ...label, fontSize: 9, color: 'var(--dim)' }}>▸ {status.current}</span>
+      )}
+      {status?.rateLimited && !running && (
+        <span style={{ ...label, fontSize: 9, color: 'var(--warn, #e0a030)' }}>SEARCH RATE-LIMITED — RETRY LATER</span>
+      )}
+      {msg && <span style={{ ...label, fontSize: 9, color: 'var(--dim)', maxWidth: 260, textAlign: 'right' }}>{msg}</span>}
+    </div>
+  )
+}
 
 export default function ModelWikiPage() {
   const navigate = useNavigate()
@@ -39,11 +106,16 @@ export default function ModelWikiPage() {
 
   return (
     <main style={{ maxWidth: 1180, margin: '0 auto', padding: '36px 28px 80px', animation: 'flickin .35s ease' }}>
-      <div style={{ ...label, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// THE STREET KNOWS ITS MODELS</div>
-      <h1 style={{ margin: '0 0 6px', fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>MODEL WIKI</h1>
-      <p style={{ margin: '0 0 20px', color: 'var(--dim)', fontSize: 14, maxWidth: 620 }}>
-        Every model in the catalog, what it's actually good at, and how each free-tier provider serves it. Grouped across suppliers, with live probe data.
-      </p>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ ...label, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// THE STREET KNOWS ITS MODELS</div>
+          <h1 style={{ margin: '0 0 6px', fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>MODEL WIKI</h1>
+          <p style={{ margin: '0 0 20px', color: 'var(--dim)', fontSize: 14, maxWidth: 620 }}>
+            Every model in the catalog, what it's actually good at, and how each free-tier provider serves it. Grouped across suppliers, with live probe data.
+          </p>
+        </div>
+        <ResearchMissing />
+      </div>
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
         <input
