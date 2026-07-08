@@ -4,6 +4,8 @@ import { getPool } from '../db/index.js';
 import { get, all, run } from '../db/pgCompat.js';
 import { matchModels, linkToExistingCanonical, createCanonicalFromModel } from '../services/modelCanon.js';
 import { recordTaskScore, getTaskScores, TASK_TYPES } from '../services/taskScores.js';
+import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
+import { searchConfigured } from '../services/webSearch.js';
 
 export const canonRouter = Router();
 
@@ -185,6 +187,32 @@ canonRouter.post('/run-match', async (_req, res) => {
 // score columns/filters without hardcoding the list client-side.
 canonRouter.get('/task-types', (_req, res) => {
   res.json(TASK_TYPES);
+});
+
+// On-demand research trigger for a single canonical model — web research +
+// writer-model synthesis → summary + task scores. Lets the UI's "research this
+// model" action run without the whole-catalog script. Returns 503 if the
+// web-search backend or a writer model isn't configured (see .env.example).
+canonRouter.post('/:id/research', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) { res.status(400).json({ error: { message: 'invalid id', type: 'invalid_request_error' } }); return; }
+  if (!searchConfigured()) {
+    res.status(503).json({ error: { message: 'No web-search backend configured (set WEB_SEARCH_BACKEND + its API key).', type: 'not_configured' } });
+    return;
+  }
+  const pool = getPool();
+  const writer = await getWriterModel(pool);
+  if (!writer) {
+    res.status(503).json({ error: { message: 'No writer model available (set RESEARCH_MODEL or add a json_mode-capable key).', type: 'not_configured' } });
+    return;
+  }
+  try {
+    const result = await researchCanonicalModel(pool, id, writer);
+    await recordResearch(pool, id, result);
+    res.status(200).json({ summary: result.summary, tasks: result.tasks, sources: result.sources });
+  } catch (err: any) {
+    res.status(500).json({ error: { message: err.message, type: 'research_error' } });
+  }
 });
 
 // All quality scores for one canonical model (the wiki drill-down / editor).
