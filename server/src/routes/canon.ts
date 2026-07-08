@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { getPool } from '../db/index.js';
 import { get, all, run } from '../db/pgCompat.js';
 import { matchModels, linkToExistingCanonical, createCanonicalFromModel } from '../services/modelCanon.js';
+import { recordTaskScore, getTaskScores, TASK_TYPES } from '../services/taskScores.js';
 
 export const canonRouter = Router();
 
@@ -29,7 +30,11 @@ canonRouter.get('/', async (_req, res) => {
       GROUP BY capability
     `, [instances.map((i) => i.id)]);
 
-    result.push({ ...c, instances, capabilities: capRollup });
+    const taskScores = await all<{ task_type: string; score: number; rank: number | null; source: string }>(pool, `
+      SELECT task_type, score, rank, source FROM task_scores WHERE canonical_model_id = ? ORDER BY score DESC
+    `, [c.id]);
+
+    result.push({ ...c, instances, capabilities: capRollup, taskScores });
   }
 
   res.json(result);
@@ -157,4 +162,51 @@ canonRouter.patch('/:id', async (req, res) => {
 canonRouter.post('/run-match', async (_req, res) => {
   const result = await matchModels(getPool());
   res.status(200).json(result);
+});
+
+// The task-type taxonomy (lmarena categories) — the UI reads this to render
+// score columns/filters without hardcoding the list client-side.
+canonRouter.get('/task-types', (_req, res) => {
+  res.json(TASK_TYPES);
+});
+
+// All quality scores for one canonical model (the wiki drill-down / editor).
+canonRouter.get('/:id/scores', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: { message: 'invalid id', type: 'invalid_request_error' } });
+    return;
+  }
+  res.json(await getTaskScores(getPool(), id));
+});
+
+// Record/upsert a quality score. Used by the weekly lmarena ingest (step 4)
+// and available for a manual UI override. source defaults to 'benchmark'.
+const scoreSchema = z.object({
+  task_type: z.string().min(1),
+  score: z.number().min(0).max(1),
+  rank: z.number().int().optional(),
+  source: z.enum(['benchmark', 'measured', 'declared']).optional(),
+  evidence: z.string().max(2000).optional(),
+});
+canonRouter.post('/:id/scores', async (req, res) => {
+  const id = Number(req.params.id);
+  const parsed = scoreSchema.safeParse(req.body);
+  if (!id || !parsed.success) {
+    res.status(400).json({ error: { message: 'invalid request', type: 'invalid_request_error' } });
+    return;
+  }
+  const canonical = await get<{ id: number }>(getPool(), 'SELECT id FROM canonical_models WHERE id = ?', [id]);
+  if (!canonical) {
+    res.status(404).json({ error: { message: `No canonical_models row with id ${id}`, type: 'invalid_request_error' } });
+    return;
+  }
+  await recordTaskScore(getPool(), id, {
+    taskType: parsed.data.task_type,
+    score: parsed.data.score,
+    rank: parsed.data.rank ?? null,
+    source: parsed.data.source,
+    evidence: parsed.data.evidence ?? null,
+  });
+  res.status(201).json({ recorded: true });
 });

@@ -94,6 +94,55 @@ export const canonicalModelAliases = pgTable(
   (table) => [unique('canonical_model_aliases_alias_key_unique').on(table.aliasKey)]
 );
 
+// Per-task-type QUALITY scores, attached to the CANONICAL model (not the
+// supplier instance) — quality is a property of the weights, identical
+// whichever platform serves them (Adam's directive, 2026-07-08). Distinct
+// from model_capabilities: that table records CAPABILITY (can it tool-call /
+// do vision / honor ctx — a hard routing GATE, measured on the wire once);
+// this records QUALITY (how good at coding / prose / math — a soft SCORE in
+// the routing blend). source='benchmark' is the norm here (Adam chose
+// benchmark-only quality scoring — lmarena category leaderboards, scraped
+// externally, zero provider-quota cost — over running our own paid quality
+// probes). taskType is deliberately FREE TEXT, not an enum/FK: the taxonomy
+// (see TASK_TYPES in services/taskScores.ts) is expected to track lmarena's
+// evolving categories and must stay trivially adjustable without a migration.
+export const taskScores = pgTable(
+  'task_scores',
+  {
+    id: serial('id').primaryKey(),
+    canonicalModelId: integer('canonical_model_id')
+      .notNull()
+      .references(() => canonicalModels.id, { onDelete: 'cascade' }),
+    taskType: text('task_type').notNull(),
+    score: real('score').notNull(), // normalized 0-1 within the task category
+    rank: integer('rank'), // raw leaderboard position when the source provides one (null otherwise)
+    source: text('source').notNull().default('benchmark'), // 'benchmark' | 'measured' | 'declared'
+    evidence: text('evidence'), // leaderboard URL / snapshot note — never a fabricated judgement
+    measuredAt: timestamp('measured_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique('task_scores_canonical_task_source_unique').on(table.canonicalModelId, table.taskType, table.source)]
+);
+
+// External-benchmark naming → canonical model. Same matching pattern as
+// canonicalModelAliases but a SEPARATE table on purpose: that one is
+// load-bearing for the live supplier auto-match (modelCanon.matchModels), and
+// benchmark-name matching (lmarena's model spellings, which differ again from
+// both our supplier ids and our canonical slug) must not leak into that
+// routing-adjacent path. UNIQUE(aliasKey) so one benchmark name resolves to
+// exactly one canonical model; an unmatched benchmark row queues for the same
+// human review as an unmatched supplier row rather than guessing.
+export const benchmarkAliases = pgTable(
+  'benchmark_aliases',
+  {
+    id: serial('id').primaryKey(),
+    canonicalModelId: integer('canonical_model_id')
+      .notNull()
+      .references(() => canonicalModels.id, { onDelete: 'cascade' }),
+    aliasKey: text('alias_key').notNull(),
+  },
+  (table) => [unique('benchmark_aliases_alias_key_unique').on(table.aliasKey)]
+);
+
 // Tracks how long a platform has had ZERO usable keys (deleted, disabled, or
 // auto-disabled-after-failures — any cause, checked uniformly). Adam's
 // directive (2026-07-08): a platform dark for 10+ minutes should have its

@@ -43,6 +43,13 @@
       "when": 1783486585742,
       "tag": "0005_mute_switch",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783488656038,
+      "tag": "0006_curvy_spyke",
+      "breakpoints": true
     }
   ]
 }

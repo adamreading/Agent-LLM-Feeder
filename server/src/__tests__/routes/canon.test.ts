@@ -143,4 +143,43 @@ describe('Model canon API (/api/canon)', () => {
     expect(updated.summary).toBe('Updated wiki paragraph.');
     expect(updated.vision).toBe(true);
   });
+
+  it('GET /task-types returns the lmarena-category taxonomy', async () => {
+    const { status, body } = await request(app, 'GET', '/api/canon/task-types');
+    expect(status).toBe(200);
+    expect(body).toEqual(expect.arrayContaining(['overall', 'coding', 'creative_writing']));
+  });
+
+  it('POST /:id/scores records a quality score that then surfaces in GET / and GET /:id/scores', async () => {
+    const { body: canon } = await request(app, 'GET', '/api/canon');
+    const target = canon[0];
+
+    const { status } = await request(app, 'POST', `/api/canon/${target.id}/scores`, {
+      task_type: 'coding',
+      score: 0.82,
+      rank: 5,
+      evidence: 'lmarena',
+    });
+    expect(status).toBe(201);
+
+    const { body: scores } = await request(app, 'GET', `/api/canon/${target.id}/scores`);
+    const coding = scores.find((s: any) => s.task_type === 'coding');
+    expect(coding.score).toBeCloseTo(0.82);
+    expect(coding.source).toBe('benchmark');
+
+    const { body: after } = await request(app, 'GET', '/api/canon');
+    const updated = after.find((c: any) => c.id === target.id);
+    expect(updated.taskScores.some((s: any) => s.task_type === 'coding' && Math.abs(s.score - 0.82) < 1e-6)).toBe(true);
+  });
+
+  it('POST /:id/scores rejects an out-of-range score (must be 0-1)', async () => {
+    const { body: canon } = await request(app, 'GET', '/api/canon');
+    const { status } = await request(app, 'POST', `/api/canon/${canon[0].id}/scores`, { task_type: 'coding', score: 42 });
+    expect(status).toBe(400);
+  });
+
+  it('POST /:id/scores on an unknown canonical id returns 404', async () => {
+    const { status } = await request(app, 'POST', '/api/canon/999999/scores', { task_type: 'coding', score: 0.5 });
+    expect(status).toBe(404);
+  });
 });
