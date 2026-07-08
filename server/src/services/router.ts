@@ -3,6 +3,7 @@ import { all, get } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { canMakeRequest, canUseTokens, isOnCooldown } from './ratelimit.js';
+import { getHealthMap, type ModelHealthRow } from './modelHealth.js';
 import type { BaseProvider } from '../providers/base.js';
 
 interface ModelRow {
@@ -181,6 +182,50 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
   return result.sort((a, b) => b.penalty - a.penalty);
 }
 
+// ── Step-3 selection scoring ──────────────────────────────────────────────
+// Ordering ONLY — never filtering (the hard eligibility filters and the typed-
+// error contract are untouched). The flip-window data (wsl, 2026-07-08) showed
+// selection within the eligible set had no health/latency signal, so it kept
+// landing on 9-12s heavy reasoners while sub-second eligible models sat idle,
+// and slow/dead models tried first stacked ~15s failover timeouts. This
+// reorders the walk so healthy+fast models are tried first.
+//
+// Everything is expressed as an additive penalty in the SAME units as the
+// existing fallback priority (~1-30, lower=better), so with no health data the
+// score reduces exactly to today's (priority + penalty) ordering — fully
+// backward compatible (a fresh install / cold cache routes identically).
+const HEALTH_WEIGHT = 10;            // a fully-unhealthy model sinks ~10 positions
+const LATENCY_TIGHT_DIVISOR = 500;   // chat (tight ceiling): +1 position per 500ms
+const LATENCY_TIGHT_CAP = 24;        // a 12s model sinks hard for chat
+const LATENCY_LOOSE_DIVISOR = 5000;  // batch (no ceiling): +1 per 5s — latency barely matters
+const LATENCY_LOOSE_CAP = 4;         // quality/curated prior dominates for batch
+
+// Composite ordering score (lower = tried earlier). health/success-rate always
+// counts; latency's WEIGHT scales with the caller's declared latency_ceiling
+// (tight → latency dominates for interactive chat; loose/absent → quality
+// prior dominates for latency-tolerant batch) — the caller-declared,
+// use-case-agnostic shape wsl + windows converged on.
+function candidateScore(
+  basePriority: number,
+  modelDbId: number,
+  health: ModelHealthRow | undefined,
+  latencyCeilingMs: number | undefined,
+): number {
+  let score = basePriority + getPenalty(modelDbId);
+  if (!health) return score; // no data → today's behavior, don't invent a penalty
+
+  const clampedHealth = Math.max(0, Math.min(1, health.health_score));
+  score += (1 - clampedHealth) * HEALTH_WEIGHT;
+
+  if (health.recent_latency_ms != null) {
+    const [divisor, cap] = latencyCeilingMs != null
+      ? [LATENCY_TIGHT_DIVISOR, LATENCY_TIGHT_CAP]
+      : [LATENCY_LOOSE_DIVISOR, LATENCY_LOOSE_CAP];
+    score += Math.min(health.recent_latency_ms / divisor, cap);
+  }
+  return score;
+}
+
 async function getP95LatencyMs(pool: ReturnType<typeof getPool>, platform: string, modelId: string): Promise<number | null> {
   const row = await get<{ p95: string | null }>(pool, `
     SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95
@@ -222,10 +267,15 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     ORDER BY fc.priority ASC
   `);
 
-  // Apply dynamic penalties: sort by (base priority + penalty)
+  // Step-3 selection: order by the composite health/latency-aware score
+  // (see candidateScore). healthMap is the persisted, cron-derived summary
+  // from model_health — one cheap read per route call, no per-candidate DB
+  // hit for it. With no health data the score == (priority + penalty), so
+  // this is a strict superset of the old priority ordering.
+  const healthMap = await getHealthMap(pool);
   const sortedChain = fallbackChain.map(entry => ({
     ...entry,
-    effectivePriority: entry.priority + getPenalty(entry.model_db_id),
+    effectivePriority: candidateScore(entry.priority, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
   // Sticky session: move preferred model to front of chain
@@ -340,6 +390,17 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // currently rate-limited. A capability match with zero keys configured
     // isn't a usable option, so it must not suppress NO_ELIGIBLE_MODEL.
     anyStructurallyEligible = true;
+
+    // Circuit-breaker (step 3): skip a model whose health row carries a live
+    // cooldown (set by modelHealth when it recently 429'd/timed out). This is
+    // a cross-restart / cross-request backstop to the immediate per-key
+    // in-memory cooldown below — after a restart the in-memory cooldowns are
+    // gone (L7) but the persisted one still steers failover away from a
+    // known-dead provider, killing the ~15s-timeout-stacking. Set AFTER
+    // anyStructurallyEligible so an all-cooled pool surfaces as ALL_RATE_LIMITED
+    // (transient, retryable), never NO_ELIGIBLE_MODEL.
+    const health = healthMap.get(model.id);
+    if (health?.cooldown_until && new Date(health.cooldown_until).getTime() > Date.now()) continue;
 
     // Get limits once for this model
     const limits = {
