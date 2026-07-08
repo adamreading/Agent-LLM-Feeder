@@ -376,7 +376,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     // instances). Only takes effect if the left segment is a real platform,
     // so it never misfires on a model_id that legitimately contains its own
     // slash (e.g. groq's meta-llama/llama-4-scout-17b-16e-instruct).
-    let resolved: { id: number } | null = null;
+    let resolved: { id: number } | undefined;
     const slashIdx = requestedModel.indexOf('/');
     if (slashIdx > 0) {
       const candidatePlatform = requestedModel.slice(0, slashIdx);
