@@ -9,6 +9,7 @@ import PlaygroundPage from '@/pages/PlaygroundPage'
 import FallbackPage from '@/pages/FallbackPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
 import AgentPage from '@/pages/AgentPage'
+import ModelWikiPage from '@/pages/ModelWikiPage'
 
 const queryClient = new QueryClient()
 
@@ -114,6 +115,7 @@ function AppShell() {
               <NavItem to="/onboarding">{t('navOnboarding')}</NavItem>
               <NavItem to="/playground">{t('navChatbot')}</NavItem>
               <NavItem to="/agent">{t('navAgent')}</NavItem>
+              <NavItem to="/wiki">{t('navWiki')}</NavItem>
               <NavItem to="/keys">{t('navKeys')}</NavItem>
               <NavItem to="/fallback">{t('navFallback')}</NavItem>
               <NavItem to="/analytics">{t('navAnalytics')}</NavItem>
@@ -130,6 +132,7 @@ function AppShell() {
             <Route path="/onboarding" element={<OnboardingPage />} />
             <Route path="/playground" element={<PlaygroundPage />} />
             <Route path="/agent" element={<AgentPage />} />
+            <Route path="/wiki" element={<ModelWikiPage />} />
             <Route path="/keys" element={<KeysPage />} />
             <Route path="/fallback" element={<FallbackPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />

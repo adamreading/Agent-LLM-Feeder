@@ -20,8 +20,21 @@ canonRouter.get('/', async (_req, res) => {
 
   const result = [];
   for (const c of canonicals) {
-    const instances = await all<{ id: number; platform: string; model_id: string; display_name: string; enabled: boolean }>(pool, `
-      SELECT id, platform, model_id, display_name, enabled FROM models WHERE canonical_model_id = ? ORDER BY platform ASC
+    // Per-supplier instances with their live health (latency/status) LEFT-
+    // joined — the wiki renders one row per supplier with a live status +
+    // latency pill, so the reader sees not just "who offers this model" but
+    // "which supplier is fast and healthy right now."
+    const instances = await all<{
+      id: number; platform: string; model_id: string; display_name: string; enabled: boolean;
+      disabled_reason: string | null; context_window: number | null; size_label: string; cost_tier: string;
+      recent_latency_ms: number | null; health_score: number | null; health_status: string | null;
+    }>(pool, `
+      SELECT m.id, m.platform, m.model_id, m.display_name, m.enabled, m.disabled_reason,
+             m.context_window, m.size_label, m.cost_tier,
+             h.recent_latency_ms, h.health_score, h.status AS health_status
+      FROM models m
+      LEFT JOIN model_health h ON h.model_db_id = m.id
+      WHERE m.canonical_model_id = ? ORDER BY m.platform ASC
     `, [c.id]);
     const capRollup = await all<{ capability: string; supported: boolean }>(pool, `
       SELECT capability, bool_or(supported) as supported

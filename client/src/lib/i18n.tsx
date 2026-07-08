@@ -13,6 +13,7 @@ const dictionaries: Record<Locale, Dict> = {
     navFallback: 'Fallback',
     navAgent: 'Agent',
     navAnalytics: 'Analytics',
+    navWiki: 'Models',
     toggleTheme: 'Toggle theme',
 
     onboardingTitle: 'Onboarding',
@@ -189,6 +190,7 @@ const dictionaries: Record<Locale, Dict> = {
     navFallback: 'Fallback',
     navAgent: 'Agent',
     navAnalytics: 'Analytics',
+    navWiki: 'Modeles',
     toggleTheme: 'Changer le theme',
 
     onboardingTitle: 'Embarquement',
@@ -365,6 +367,7 @@ const dictionaries: Record<Locale, Dict> = {
     navFallback: 'Fallback',
     navAgent: 'Agente',
     navAnalytics: 'Analitica',
+    navWiki: 'Modelos',
     toggleTheme: 'Cambiar tema',
 
     onboardingTitle: 'Onboarding',
