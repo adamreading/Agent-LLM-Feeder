@@ -1,188 +1,119 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Bot, FileText, RefreshCw, X } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
-import { useI18n } from '@/lib/i18n'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Badge } from '@/components/ui/badge'
-import { PageHeader } from '@/components/page-header'
 
-interface AgentStatus {
-  status: string
-  workspaceRoot: string
-  capabilities: string[]
-}
+const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
-interface AgentFiles {
-  files: string[]
-  total: number
-}
+interface AgentStatus { status: string; workspaceRoot: string; capabilities: string[] }
+interface AgentFiles { files: string[]; total: number }
+interface AgentReply { content: string; routedVia?: { platform: string; model: string; displayName: string } }
 
-interface AgentReply {
-  content: string
-  routedVia?: {
-    platform: string
-    model: string
-    displayName: string
-  }
-}
+const panel: React.CSSProperties = { border: '1px solid var(--line)', background: 'var(--panel)', padding: 16 }
 
 export default function AgentPage() {
-  const { t, locale } = useI18n()
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<string[]>([])
   const [message, setMessage] = useState('')
   const [reply, setReply] = useState<AgentReply | null>(null)
 
-  const { data: status } = useQuery<AgentStatus>({
-    queryKey: ['agent', 'status'],
-    queryFn: () => apiFetch('/api/agent/status'),
-  })
-
-  const { data: filesData, refetch } = useQuery<AgentFiles>({
-    queryKey: ['agent', 'files', query],
-    queryFn: () => apiFetch(`/api/agent/files?q=${encodeURIComponent(query)}`),
-  })
-
+  const { data: status } = useQuery<AgentStatus>({ queryKey: ['agent', 'status'], queryFn: () => apiFetch('/api/agent/status') })
+  const { data: filesData, refetch } = useQuery<AgentFiles>({ queryKey: ['agent', 'files', query], queryFn: () => apiFetch(`/api/agent/files?q=${encodeURIComponent(query)}`) })
   const ask = useMutation({
-    mutationFn: (body: { message: string; paths: string[]; language: string }) =>
-      apiFetch<AgentReply>('/api/agent/chat', { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: (body: { message: string; paths: string[]; language: string }) => apiFetch<AgentReply>('/api/agent/chat', { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: setReply,
   })
 
   const files = filesData?.files ?? []
   const selectedSet = useMemo(() => new Set(selected), [selected])
-
-  function toggleFile(file: string) {
-    setSelected(prev => prev.includes(file)
-      ? prev.filter(item => item !== file)
-      : [...prev, file].slice(0, 8))
-  }
-
-  function runAgent() {
-    const trimmed = message.trim()
-    if (!trimmed || ask.isPending) return
-    ask.mutate({ message: trimmed, paths: selected, language: locale })
-  }
+  const toggleFile = (f: string) => setSelected(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f].slice(0, 8))
+  const runAgent = () => { const t = message.trim(); if (!t || ask.isPending) return; ask.mutate({ message: t, paths: selected, language: 'en' }) }
 
   return (
-    <div>
-      <PageHeader
-        title={t('agentTitle')}
-        description={t('agentDescription')}
-        actions={
-          <Button variant="outline" size="sm" onClick={() => refetch()}>
-            <RefreshCw />
-            {t('agentRefresh')}
-          </Button>
-        }
-      />
+    <main style={{ maxWidth: 1180, margin: '0 auto', padding: '36px 28px 80px', animation: 'flickin .35s ease' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 20 }}>
+        <div>
+          <div style={{ ...mono, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// LOCAL AGENT UPLINK</div>
+          <h1 style={{ margin: 0, fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>AGENT</h1>
+        </div>
+        <button onClick={() => refetch()} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--line)', color: 'var(--dim)', padding: '8px 12px' }}>⟳ REFRESH</button>
+      </div>
 
-      <div className="grid gap-6 lg:grid-cols-[360px_1fr]">
-        <aside className="space-y-4">
-          <section className="rounded-lg border bg-card p-4">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-sm font-medium">{t('agentWorkspace')}</h2>
-              <Badge variant="outline">{t('agentReady')}</Badge>
+      <div style={{ display: 'grid', gap: 14, gridTemplateColumns: 'minmax(0,360px) 1fr' }}>
+        <aside style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <section style={panel}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>WORKSPACE</h2>
+              <span style={{ ...mono, fontSize: 9, letterSpacing: 1, color: 'var(--good)', border: '1px solid var(--good)', padding: '2px 6px' }}>{status ? 'READY' : '…'}</span>
             </div>
-            <p className="mt-2 truncate font-mono text-xs text-muted-foreground">
-              {status?.workspaceRoot ?? '...'}
-            </p>
-            <p className="mt-3 text-sm text-muted-foreground">
-              {t('agentVisualStudioHint')}
-            </p>
+            <p style={{ margin: '8px 0 0', ...mono, fontSize: 11, color: 'var(--dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{status?.workspaceRoot ?? '…'}</p>
+            <p style={{ margin: '10px 0 0', fontSize: 12, color: 'var(--dim)' }}>Attach workspace files as context, then task the local agent.</p>
           </section>
 
-          <section className="rounded-lg border bg-card p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-medium">{t('agentFiles')}</h2>
-              <span className="text-xs text-muted-foreground tabular-nums">{files.length}</span>
+          <section style={panel}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>FILES</h2>
+              <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{files.length}</span>
             </div>
-            <Input
-              value={query}
-              onChange={event => setQuery(event.target.value)}
-              placeholder={t('agentSearchPlaceholder')}
-              className="mb-3"
-            />
-            <div className="max-h-[420px] space-y-1 overflow-y-auto pr-1">
+            <input className="cy-input cy-mono" value={query} onChange={e => setQuery(e.target.value)} placeholder="▸ filter files…" style={{ width: '100%', boxSizing: 'border-box', background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', marginBottom: 10 }} />
+            <div style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
               {files.map(file => {
                 const active = selectedSet.has(file)
                 return (
-                  <button
-                    key={file}
-                    type="button"
-                    onClick={() => toggleFile(file)}
-                    className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors ${
-                      active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
-                    }`}
-                  >
-                    <FileText className="size-3.5 shrink-0" />
-                    <span className="truncate">{file}</span>
-                    <span className="ml-auto text-[11px]">{active ? t('agentUnselect') : t('agentSelect')}</span>
+                  <button key={file} onClick={() => toggleFile(file)} className="cy-hover-acc" style={{
+                    all: 'unset', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px',
+                    fontSize: 11.5, ...mono, border: `1px solid ${active ? 'var(--acc)' : 'transparent'}`,
+                    color: active ? 'var(--ink)' : 'var(--dim)', background: active ? 'var(--bg2)' : 'transparent',
+                  }}>
+                    <span style={{ color: 'var(--acc2)' }}>▸</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 9, color: active ? 'var(--acc)' : 'var(--dim)' }}>{active ? '✕' : '+'}</span>
                   </button>
                 )
               })}
+              {files.length === 0 && <span style={{ ...mono, fontSize: 11, color: 'var(--dim)', padding: 8 }}>no files</span>}
             </div>
           </section>
         </aside>
 
-        <section className="space-y-4">
-          <div className="rounded-lg border bg-card p-4">
-            <h2 className="mb-3 text-sm font-medium">{t('agentSelectedFiles')}</h2>
+        <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div style={panel}>
+            <h2 style={{ margin: '0 0 10px', fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>ATTACHED CONTEXT</h2>
             {selected.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{t('agentNoFiles')}</p>
+              <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ no files attached</p>
             ) : (
-              <div className="flex flex-wrap gap-2">
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {selected.map(file => (
-                  <Badge key={file} variant="outline" className="max-w-full gap-1">
-                    <span className="truncate">{file}</span>
-                    <button type="button" onClick={() => toggleFile(file)} aria-label={t('agentUnselect')}>
-                      <X className="size-3" />
-                    </button>
-                  </Badge>
+                  <span key={file} style={{ display: 'flex', alignItems: 'center', gap: 6, ...mono, fontSize: 10, border: '1px solid var(--line)', padding: '3px 6px', maxWidth: '100%' }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file}</span>
+                    <button onClick={() => toggleFile(file)} style={{ all: 'unset', cursor: 'pointer', color: 'var(--bad)' }}>✕</button>
+                  </span>
                 ))}
               </div>
             )}
           </div>
 
-          <div className="rounded-lg border bg-card p-4">
-            <label className="mb-2 block text-sm font-medium">{t('agentPrompt')}</label>
-            <Textarea
-              value={message}
-              onChange={event => setMessage(event.target.value)}
-              placeholder={t('agentPromptPlaceholder')}
-              className="min-h-[150px]"
-            />
-            <div className="mt-3 flex items-center justify-end">
-              <Button onClick={runAgent} disabled={!message.trim() || ask.isPending}>
-                <Bot />
-                {ask.isPending ? t('agentRunning') : t('agentRun')}
-              </Button>
+          <div style={panel}>
+            <label style={{ display: 'block', marginBottom: 8, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>PROMPT</label>
+            <textarea className="cy-input" value={message} onChange={e => setMessage(e.target.value)} placeholder="▸ task the agent…" style={{ width: '100%', boxSizing: 'border-box', minHeight: 150, resize: 'vertical', background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 13, padding: '10px 12px', fontFamily: "'Chakra Petch',sans-serif" }} />
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
+              <button onClick={runAgent} disabled={!message.trim() || ask.isPending} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: '9px 18px', background: 'var(--acc)', color: '#000', border: '1px solid var(--acc)', opacity: !message.trim() || ask.isPending ? 0.5 : 1 }}>{ask.isPending ? 'RUNNING…' : '▸ RUN AGENT'}</button>
             </div>
-            {ask.isError && (
-              <p className="mt-3 text-sm text-destructive">{(ask.error as Error).message}</p>
-            )}
+            {ask.isError && <p style={{ marginTop: 12, fontSize: 12, color: 'var(--bad)', ...mono }}>{(ask.error as Error).message}</p>}
           </div>
 
-          <div className="rounded-lg border bg-card p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <h2 className="text-sm font-medium">{t('agentResponse')}</h2>
-              {reply?.routedVia && (
-                <span className="text-xs text-muted-foreground">
-                  {t('agentRoutedVia')} {reply.routedVia.platform}/{reply.routedVia.model}
-                </span>
-              )}
+          <div style={panel}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+              <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>RESPONSE</h2>
+              {reply?.routedVia && <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>via {reply.routedVia.platform}/{reply.routedVia.model}</span>}
             </div>
             {reply ? (
-              <div className="whitespace-pre-wrap text-sm leading-relaxed">{reply.content}</div>
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.55 }}>{reply.content}</div>
             ) : (
-              <p className="text-sm text-muted-foreground">{t('agentNoResponse')}</p>
+              <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ awaiting task</p>
             )}
           </div>
         </section>
       </div>
-    </div>
+    </main>
   )
 }
