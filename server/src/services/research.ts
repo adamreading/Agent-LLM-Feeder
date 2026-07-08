@@ -10,6 +10,7 @@ import { get, run } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { webSearch, webFetch } from './ollamaSearch.js';
+import { logProbeRequest } from './probes/runner.js';
 
 export interface DeclaredFact {
   capability: 'tools' | 'json_mode' | 'vision' | 'reasoning_control';
@@ -91,12 +92,20 @@ Respond with ONLY a JSON object of this exact shape, using true/false only when 
 Search results:
 ${corpus.slice(0, 12000)}`;
 
-  const result = await provider.chatCompletion(extractor.apiKey, [
-    { role: 'user', content: extractionPrompt },
-  ], extractor.modelId, {
-    max_tokens: 200,
-    response_format: { type: 'json_object' },
-  });
+  const extractStart = Date.now();
+  let result;
+  try {
+    result = await provider.chatCompletion(extractor.apiKey, [
+      { role: 'user', content: extractionPrompt },
+    ], extractor.modelId, {
+      max_tokens: 200,
+      response_format: { type: 'json_object' },
+    });
+    void logProbeRequest(extractor.platform, extractor.modelId, 'success', result.usage?.prompt_tokens ?? 0, result.usage?.completion_tokens ?? 0, Date.now() - extractStart, null);
+  } catch (err: any) {
+    void logProbeRequest(extractor.platform, extractor.modelId, 'error', 0, 0, Date.now() - extractStart, err.message);
+    throw err;
+  }
 
   const content = result.choices?.[0]?.message?.content;
   if (typeof content !== 'string') {

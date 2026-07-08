@@ -26,6 +26,38 @@ export interface ProbeOutcome {
 
 export type ProbeFn = (ctx: ProbeContext) => Promise<ProbeOutcome>;
 
+// Probes call providers directly (see below), which means they bypass
+// routes/proxy.ts's logRequest entirely — and every real probe call
+// genuinely consumes provider quota/tokens just like production traffic
+// does. Found live 2026-07-08 (Adam noticed the UI's monthly-token-budget
+// dashboard stayed at 100% remaining despite a full night of real probe
+// traffic): the `requests` table already has an `is_probe` column for
+// exactly this (per the original P2/L2 design: "is_probe traffic is
+// excluded from quality/latency scoring... but still counts toward quota
+// accounting, a probe really burns provider quota"), but nothing was ever
+// writing to it from the probe path. This is the fix — call from every
+// probe call site right after a completion (or error), same shape as
+// proxy.ts's logRequest, tagged is_probe=true so it's visible in the same
+// dashboard without polluting production quality/latency stats.
+export async function logProbeRequest(
+  platform: string,
+  modelId: string,
+  status: 'success' | 'error',
+  inputTokens: number,
+  outputTokens: number,
+  latencyMs: number,
+  error: string | null,
+): Promise<void> {
+  try {
+    await run(getPool(), `
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, is_probe)
+      VALUES (?, ?, ?, ?, ?, ?, ?, true)
+    `, [platform, modelId, status, inputTokens, outputTokens, latencyMs, error]);
+  } catch (e) {
+    console.error('Failed to log probe request:', e);
+  }
+}
+
 // Probes call the provider DIRECTLY — never through routeRequest/the
 // capability filter. A probe's whole purpose is to establish whether a
 // capability works; routing it through the very gate it's meant to inform

@@ -1,4 +1,5 @@
 import type { ProbeContext, ProbeOutcome } from './runner.js';
+import { logProbeRequest } from './runner.js';
 
 // A probe call failed for a reason unrelated to the model's actual
 // capability (rate limit, transport timeout, upstream 5xx) — recording a
@@ -29,6 +30,7 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
       tool_choice: 'required',
     });
     const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'success', result.usage?.prompt_tokens ?? 0, result.usage?.completion_tokens ?? 0, latencyMs, null);
     const call = result.choices?.[0]?.message?.tool_calls?.[0];
     const passed = call?.function?.name === 'get_weather';
     return {
@@ -39,9 +41,11 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
         : `no valid get_weather tool_call in response: ${JSON.stringify(result.choices?.[0]?.message)}`,
     };
   } catch (err: any) {
+    const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'error', 0, 0, latencyMs, err.message);
     return {
       passed: false,
-      latencyMs: Date.now() - start,
+      latencyMs,
       evidence: `error: ${err.message}`,
       transient: isTransientError(err.message ?? ''),
     };
@@ -62,6 +66,7 @@ export async function probeJsonMode(ctx: ProbeContext): Promise<ProbeOutcome> {
       response_format: { type: 'json_object' },
     });
     const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'success', result.usage?.prompt_tokens ?? 0, result.usage?.completion_tokens ?? 0, latencyMs, null);
     const content = result.choices?.[0]?.message?.content;
     if (typeof content !== 'string') {
       return { passed: false, latencyMs, evidence: 'no string content in response' };
@@ -79,9 +84,11 @@ export async function probeJsonMode(ctx: ProbeContext): Promise<ProbeOutcome> {
       evidence: passed ? `parsed correctly: ${content.slice(0, 100)}` : `wrong shape: ${content.slice(0, 200)}`,
     };
   } catch (err: any) {
+    const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'error', 0, 0, latencyMs, err.message);
     return {
       passed: false,
-      latencyMs: Date.now() - start,
+      latencyMs,
       evidence: `error: ${err.message}`,
       transient: isTransientError(err.message ?? ''),
     };
@@ -100,15 +107,17 @@ export async function probeReasoningControl(
   const prompt = 'Solve this step by step: if a train travels 240 miles in 4 hours, then speeds up by 25% for the next 2 hours, how far does it travel in total?';
   try {
     const baselineStart = Date.now();
-    await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, { max_tokens: 300 });
+    const baselineResult = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, { max_tokens: 300 });
     const baselineLatency = Date.now() - baselineStart;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'success', baselineResult.usage?.prompt_tokens ?? 0, baselineResult.usage?.completion_tokens ?? 0, baselineLatency, null);
 
     const testStart = Date.now();
-    await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, {
+    const testResult = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, {
       max_tokens: 300,
       reasoning_effort: 'none',
     });
     const testLatency = Date.now() - testStart;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'success', testResult.usage?.prompt_tokens ?? 0, testResult.usage?.completion_tokens ?? 0, testLatency, null);
 
     // wsl's live data: right dialect ~10x faster (2.1s vs 21.1s). Require a
     // clear majority reduction, not just "slightly faster" (noise-prone).
@@ -120,6 +129,7 @@ export async function probeReasoningControl(
       dialect,
     };
   } catch (err: any) {
+    void logProbeRequest(ctx.platform, ctx.modelId, 'error', 0, 0, 0, err.message);
     return { passed: false, latencyMs: 0, evidence: `error: ${err.message}`, dialect, transient: isTransientError(err.message ?? '') };
   }
 }
@@ -145,6 +155,7 @@ export async function probeLongContext(ctx: ProbeContext, targetTokens: number):
       max_tokens: 50,
     });
     const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'success', result.usage?.prompt_tokens ?? 0, result.usage?.completion_tokens ?? 0, latencyMs, null);
     const content = result.choices?.[0]?.message?.content ?? '';
     const passed = content.includes(marker);
     return {
@@ -155,9 +166,11 @@ export async function probeLongContext(ctx: ProbeContext, targetTokens: number):
         : `marker NOT recalled — response: ${content.slice(0, 200)}`,
     };
   } catch (err: any) {
+    const latencyMs = Date.now() - start;
+    void logProbeRequest(ctx.platform, ctx.modelId, 'error', 0, 0, latencyMs, err.message);
     return {
       passed: false,
-      latencyMs: Date.now() - start,
+      latencyMs,
       evidence: `error: ${err.message}`,
       transient: isTransientError(err.message ?? ''),
     };
