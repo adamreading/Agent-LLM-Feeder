@@ -3,6 +3,7 @@ import { all, get, run } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { checkPlatformKeyGaps } from './platformKeyWatch.js';
+import { recomputeModelHealth, reviveUnhealthyModels } from './modelHealth.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -60,6 +61,16 @@ export async function checkAllKeys(): Promise<void> {
   }
 
   await checkPlatformKeyGaps(getPool());
+
+  // Recompute per-instance health/latency from the requests log (passive — no
+  // extra provider calls) and run the daily revival poll for benched models.
+  // Failures here must never sink the key-health cron, hence the try/catch.
+  try {
+    await recomputeModelHealth(getPool());
+    await reviveUnhealthyModels(getPool());
+  } catch (err: any) {
+    console.error('[Health] Model-health recompute failed:', err.message);
+  }
 
   console.log(`[Health] Check complete.`);
 }

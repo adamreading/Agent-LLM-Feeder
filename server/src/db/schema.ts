@@ -31,12 +31,18 @@ export const models = pgTable(
     monthlyTokenBudget: text('monthly_token_budget').notNull().default(''),
     contextWindow: integer('context_window'),
     enabled: boolean('enabled').notNull().default(true),
-    // Set true only when services/platformKeyWatch.ts disabled this row
-    // because its platform had zero usable keys for 10+ minutes (Adam's
-    // directive, 2026-07-08) — distinguishes an auto-disable from a human
-    // manually disabling this specific model, so re-enabling on key-return
-    // only ever restores what THIS mechanism turned off.
-    autoDisabledNoKey: boolean('auto_disabled_no_key').notNull().default(false),
+    // WHY this row is disabled when enabled=false, so multiple independent
+    // auto-disable mechanisms never fight (the migration-DELETE/INSERT-war
+    // failure class, L12). null = not disabled by a tracked mechanism.
+    //   'no_key'    — platformKeyWatch: platform had zero usable keys 10+ min
+    //   'unhealthy' — modelHealth: sustained 429s / provider failure
+    //   'manual'    — a human turned this specific model off in the UI
+    // Each mechanism only ever re-enables rows carrying ITS OWN reason, so a
+    // returning key never overrides a health-disable and neither ever
+    // overrides a human's manual decision (Adam's directive, 2026-07-08).
+    // Consolidated from the earlier auto_disabled_no_key boolean once a second
+    // reason (health) appeared — a boolean per reason would have collided.
+    disabledReason: text('disabled_reason'),
     // P2 two-gate inner enforcement: policy_matrix.cost_tier_ceiling compares
     // against this. All current catalog models are free-tier; paid models
     // (e.g. a future Codex integration) would be seeded with 'paid'.
@@ -153,6 +159,39 @@ export const benchmarkAliases = pgTable(
 export const platformKeyWatch = pgTable('platform_key_watch', {
   platform: text('platform').primaryKey(),
   keysMissingSince: timestamp('keys_missing_since', { withTimezone: true }),
+});
+
+// Per-instance live health + latency, DERIVED (recomputed on the health cron
+// from the requests log + quota_snapshots — no hot-path writes, no extra probe
+// traffic; the daily revival poll is the only active call). This is the
+// selection engine's fast-moving input: the flip-window data (wsl, 2026-07-08)
+// showed the needs-filter was correct but selection WITHIN the eligible set had
+// no latency/health signal, so it kept landing on 9-12s heavy reasoners while
+// sub-second eligible models sat idle. Ranking the eligible set by
+// recentLatencyMs (fast wins) × healthScore (flaky sinks), plus a
+// circuit-breaker cooldown so failover never re-pays a dead provider's ~15s
+// timeout, is what makes the pool ship-ably fast. Quality (task_scores) is the
+// slow-moving input; this is the fast one.
+export const modelHealth = pgTable('model_health', {
+  modelDbId: integer('model_db_id').primaryKey().references(() => models.id, { onDelete: 'cascade' }),
+  // 0..1 success-health multiplier: 1 = clean, decays toward ~0.2 under recent
+  // 429/timeout, recovers as failures age out of the window / a success lands.
+  healthScore: real('health_score').notNull().default(1),
+  // Recent median latency (ms) over the observation window — the primary
+  // speed-ranking signal. null until we've seen real traffic for this model.
+  recentLatencyMs: integer('recent_latency_ms'),
+  recentSuccessRate: real('recent_success_rate'), // 0..1 over the window; null = no recent data
+  consecutive429: integer('consecutive_429').notNull().default(0),
+  last429At: timestamp('last_429_at', { withTimezone: true }),
+  lastSuccessAt: timestamp('last_success_at', { withTimezone: true }),
+  // Circuit-breaker: skip this instance entirely until this time (set on a
+  // fresh timeout/429). Kills the failover-re-hits-a-dead-provider 15s tax.
+  cooldownUntil: timestamp('cooldown_until', { withTimezone: true }),
+  // Quota-aware parking: when a 429 carries daily-quota-exhausted headers,
+  // park until the reset rather than retry-decay a window that can't recover.
+  quotaExhaustedUntil: timestamp('quota_exhausted_until', { withTimezone: true }),
+  status: text('status').notNull().default('healthy'), // 'healthy' | 'penalized' | 'inactive'
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const apiKeys = pgTable('api_keys', {

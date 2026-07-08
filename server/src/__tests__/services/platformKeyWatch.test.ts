@@ -63,11 +63,12 @@ describe('checkPlatformKeyGaps — 10-minute grace period auto-disable', () => {
 
   it('a human-disabled model in the same platform is left alone by the grace-period clock start', async () => {
     const ids = await mistralModelIds();
-    await run(getPool(), `UPDATE models SET enabled = false WHERE id = ?`, [ids[0]]);
+    // A human disabling a model via the UI sets disabled_reason='manual'.
+    await run(getPool(), `UPDATE models SET enabled = false, disabled_reason = 'manual' WHERE id = ?`, [ids[0]]);
     await checkPlatformKeyGaps(getPool());
-    const row = await get<{ enabled: boolean; auto_disabled_no_key: boolean }>(getPool(), `SELECT enabled, auto_disabled_no_key FROM models WHERE id = ?`, [ids[0]]);
+    const row = await get<{ enabled: boolean; disabled_reason: string | null }>(getPool(), `SELECT enabled, disabled_reason FROM models WHERE id = ?`, [ids[0]]);
     expect(row!.enabled).toBe(false);
-    expect(row!.auto_disabled_no_key).toBe(false); // was never touched by this mechanism
+    expect(row!.disabled_reason).toBe('manual'); // untouched by this mechanism
   });
 
   it('auto-disables the platform\'s (still-enabled) models once the grace period has elapsed', async () => {
@@ -76,20 +77,18 @@ describe('checkPlatformKeyGaps — 10-minute grace period auto-disable', () => {
     await checkPlatformKeyGaps(getPool());
 
     const ids = await mistralModelIds();
-    const rows = await all<{ id: number; enabled: boolean; auto_disabled_no_key: boolean }>(getPool(), `SELECT id, enabled, auto_disabled_no_key FROM models WHERE platform = 'mistral'`);
-    // The one model a human already disabled in the prior test stays exactly
-    // as it was (enabled=false, auto_disabled_no_key still false) — proves
-    // this mechanism doesn't stamp its flag on rows it didn't itself disable.
+    const rows = await all<{ id: number; enabled: boolean; disabled_reason: string | null }>(getPool(), `SELECT id, enabled, disabled_reason FROM models WHERE platform = 'mistral'`);
+    // The human-disabled model keeps its 'manual' reason — this mechanism only
+    // touches rows that were still enabled, and stamps its own 'no_key' reason.
     const humanDisabled = rows.find((r) => r.id === ids[0]);
-    expect(humanDisabled!.auto_disabled_no_key).toBe(false);
-    // Every OTHER model on the platform is now auto-disabled and flagged.
+    expect(humanDisabled!.disabled_reason).toBe('manual');
     for (const r of rows.filter((r) => r.id !== ids[0])) {
       expect(r.enabled).toBe(false);
-      expect(r.auto_disabled_no_key).toBe(true);
+      expect(r.disabled_reason).toBe('no_key');
     }
   });
 
-  it('re-enables only the auto-disabled models once a usable key returns, leaving the human-disabled one untouched', async () => {
+  it('re-enables only the no_key-disabled models once a usable key returns, leaving the human-disabled one untouched', async () => {
     const { encrypted, iv, authTag } = encrypt('test-mistral-key-2');
     await runReturningId(getPool(), `
       INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled)
@@ -99,12 +98,13 @@ describe('checkPlatformKeyGaps — 10-minute grace period auto-disable', () => {
     await checkPlatformKeyGaps(getPool());
 
     const ids = await mistralModelIds();
-    const rows = await all<{ id: number; enabled: boolean; auto_disabled_no_key: boolean }>(getPool(), `SELECT id, enabled, auto_disabled_no_key FROM models WHERE platform = 'mistral'`);
+    const rows = await all<{ id: number; enabled: boolean; disabled_reason: string | null }>(getPool(), `SELECT id, enabled, disabled_reason FROM models WHERE platform = 'mistral'`);
     const humanDisabled = rows.find((r) => r.id === ids[0]);
-    expect(humanDisabled!.enabled).toBe(false); // still off — a human turned this off, the key returning shouldn't override that
+    expect(humanDisabled!.enabled).toBe(false); // still off — 'manual' is never auto-revived
+    expect(humanDisabled!.disabled_reason).toBe('manual');
     for (const r of rows.filter((r) => r.id !== ids[0])) {
       expect(r.enabled).toBe(true);
-      expect(r.auto_disabled_no_key).toBe(false);
+      expect(r.disabled_reason).toBeNull();
     }
 
     const watch = await get<{ keys_missing_since: string | null }>(getPool(), `SELECT keys_missing_since FROM platform_key_watch WHERE platform = 'mistral'`);

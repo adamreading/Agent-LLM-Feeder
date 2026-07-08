@@ -28,12 +28,15 @@ export async function checkPlatformKeyGaps(pool: pg.Pool): Promise<void> {
       if (watch) {
         await run(pool, `UPDATE platform_key_watch SET keys_missing_since = NULL WHERE platform = ?`, [platform]);
       }
+      // Re-enable ONLY rows this mechanism disabled (disabled_reason='no_key').
+      // A health-disable ('unhealthy') or a human disable ('manual') is left
+      // untouched — a returning key doesn't override a different reason.
       const restored = await run(pool, `
-        UPDATE models SET enabled = true, auto_disabled_no_key = false
-        WHERE platform = ? AND auto_disabled_no_key = true
+        UPDATE models SET enabled = true, disabled_reason = NULL
+        WHERE platform = ? AND enabled = false AND disabled_reason = 'no_key'
       `, [platform]);
       if (restored.changes > 0) {
-        console.log(`[PlatformKeyWatch] ${platform}: usable key present, re-enabled ${restored.changes} auto-disabled model(s)`);
+        console.log(`[PlatformKeyWatch] ${platform}: usable key present, re-enabled ${restored.changes} no-key-disabled model(s)`);
       }
       continue;
     }
@@ -50,12 +53,15 @@ export async function checkPlatformKeyGaps(pool: pg.Pool): Promise<void> {
 
     const elapsedMs = Date.now() - new Date(watch.keys_missing_since).getTime();
     if (elapsedMs >= GRACE_PERIOD_MS) {
+      // Only disable rows currently enabled — leaves a human's 'manual'
+      // disable as-is, and stamps our own reason so revival (above) only
+      // touches what we turned off.
       const disabled = await run(pool, `
-        UPDATE models SET enabled = false, auto_disabled_no_key = true
+        UPDATE models SET enabled = false, disabled_reason = 'no_key'
         WHERE platform = ? AND enabled = true
       `, [platform]);
       if (disabled.changes > 0) {
-        console.log(`[PlatformKeyWatch] ${platform}: no usable key for ${Math.round(elapsedMs / 60000)}min, auto-disabled ${disabled.changes} model(s)`);
+        console.log(`[PlatformKeyWatch] ${platform}: no usable key for ${Math.round(elapsedMs / 60000)}min, disabled ${disabled.changes} model(s)`);
       }
     }
   }
