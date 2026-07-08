@@ -4,6 +4,8 @@ import { z } from 'zod';
 import { getPool } from '../db/index.js';
 import { all, run, runReturningId } from '../db/pgCompat.js';
 import { encrypt, decrypt, maskKey } from '../lib/crypto.js';
+import { clearKeyState } from '../services/ratelimit.js';
+import { clearHealthState } from '../services/health.js';
 
 export const keysRouter = Router();
 
@@ -89,6 +91,13 @@ keysRouter.delete('/:id', async (req: Request, res: Response) => {
     res.status(404).json({ error: { message: 'Key not found' } });
     return;
   }
+
+  // Deletion is already immediately honored for routing (routeRequest
+  // re-queries api_keys fresh every call) — this just prevents the
+  // rate-limit/cooldown/health-failure state keyed by this id from becoming
+  // a permanently orphaned entry (found live 2026-07-08, Adam's check).
+  clearKeyState(id);
+  clearHealthState(id);
 
   res.json({ success: true });
 });

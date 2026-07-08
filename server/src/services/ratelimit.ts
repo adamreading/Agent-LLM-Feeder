@@ -147,3 +147,19 @@ export function getRateLimitStatus(
     tpm: { used: tpmUsed, limit: limits.tpm },
   };
 }
+
+// Found live 2026-07-08 (Adam's key-removal check): deleting an api_keys row
+// is already immediately honored for routing (routeRequest re-queries the
+// DB fresh on every call), but the window/cooldown Maps above are keyed by
+// this key's id and are never cleaned up — every entry becomes a permanently
+// orphaned, unreachable leak once the key is gone. Call this from the
+// DELETE /api/keys/:id handler so a key's footprint here doesn't outlive it.
+export function clearKeyState(keyId: number): void {
+  const suffix = `:${keyId}:`;
+  for (const key of windows.keys()) {
+    if (key.includes(suffix)) windows.delete(key);
+  }
+  for (const key of cooldowns.keys()) {
+    if (key.includes(suffix)) cooldowns.delete(key);
+  }
+}

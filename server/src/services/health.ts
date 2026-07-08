@@ -2,6 +2,7 @@ import { getPool } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
+import { checkPlatformKeyGaps } from './platformKeyWatch.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -58,7 +59,16 @@ export async function checkAllKeys(): Promise<void> {
     await checkKeyHealth(key.id);
   }
 
+  await checkPlatformKeyGaps(getPool());
+
   console.log(`[Health] Check complete.`);
+}
+
+// Found live 2026-07-08 (Adam's key-removal check): deleting an api_keys row
+// is already immediately honored for routing, but failureCount above is
+// never cleaned up — a permanently orphaned entry after the key is gone.
+export function clearHealthState(keyId: number): void {
+  failureCount.delete(keyId);
 }
 
 let intervalId: ReturnType<typeof setInterval> | null = null;

@@ -5,6 +5,9 @@ import {
   recordRequest,
   recordTokens,
   getRateLimitStatus,
+  setCooldown,
+  isOnCooldown,
+  clearKeyState,
 } from '../../services/ratelimit.js';
 
 describe('Rate Limiter', () => {
@@ -75,6 +78,36 @@ describe('Rate Limiter', () => {
       expect(status.rpm.limit).toBe(30);
       expect(status.rpd.used).toBe(2);
       expect(status.tpm.used).toBe(500);
+    });
+  });
+
+  // Found live 2026-07-08 (Adam's key-removal check): deleting an api_keys
+  // row is honored immediately for routing, but window/cooldown state keyed
+  // by that id was never cleaned up — a permanent, unreachable leak.
+  describe('clearKeyState', () => {
+    it('clears rate-limit window state for the given key id, without affecting other keys', () => {
+      const otherId = testId + 1;
+      recordRequest('groq', 'test-model', testId);
+      recordRequest('groq', 'test-model', testId);
+      recordRequest('groq', 'test-model', otherId);
+
+      clearKeyState(testId);
+
+      const cleared = getRateLimitStatus('groq', 'test-model', testId, { rpm: 30, rpd: null, tpm: null, tpd: null });
+      expect(cleared.rpm.used).toBe(0);
+      const untouched = getRateLimitStatus('groq', 'test-model', otherId, { rpm: 30, rpd: null, tpm: null, tpd: null });
+      expect(untouched.rpm.used).toBe(1);
+    });
+
+    it('clears cooldown state for the given key id, without affecting other keys', () => {
+      const otherId = testId + 1;
+      setCooldown('groq', 'test-model', testId, 60_000);
+      setCooldown('groq', 'test-model', otherId, 60_000);
+
+      clearKeyState(testId);
+
+      expect(isOnCooldown('groq', 'test-model', testId)).toBe(false);
+      expect(isOnCooldown('groq', 'test-model', otherId)).toBe(true);
     });
   });
 });

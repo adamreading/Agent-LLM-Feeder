@@ -31,6 +31,12 @@ export const models = pgTable(
     monthlyTokenBudget: text('monthly_token_budget').notNull().default(''),
     contextWindow: integer('context_window'),
     enabled: boolean('enabled').notNull().default(true),
+    // Set true only when services/platformKeyWatch.ts disabled this row
+    // because its platform had zero usable keys for 10+ minutes (Adam's
+    // directive, 2026-07-08) — distinguishes an auto-disable from a human
+    // manually disabling this specific model, so re-enabling on key-return
+    // only ever restores what THIS mechanism turned off.
+    autoDisabledNoKey: boolean('auto_disabled_no_key').notNull().default(false),
     // P2 two-gate inner enforcement: policy_matrix.cost_tier_ceiling compares
     // against this. All current catalog models are free-tier; paid models
     // (e.g. a future Codex integration) would be seeded with 'paid'.
@@ -87,6 +93,18 @@ export const canonicalModelAliases = pgTable(
   },
   (table) => [unique('canonical_model_aliases_alias_key_unique').on(table.aliasKey)]
 );
+
+// Tracks how long a platform has had ZERO usable keys (deleted, disabled, or
+// auto-disabled-after-failures — any cause, checked uniformly). Adam's
+// directive (2026-07-08): a platform dark for 10+ minutes should have its
+// models auto-disabled rather than stay silently unroutable-but-enabled;
+// this row is the clock that measures "10+ minutes," separate from
+// api_keys itself since a key row may not exist at all (never added, or
+// deleted) as easily as it may exist-but-be-disabled.
+export const platformKeyWatch = pgTable('platform_key_watch', {
+  platform: text('platform').primaryKey(),
+  keysMissingSince: timestamp('keys_missing_since', { withTimezone: true }),
+});
 
 export const apiKeys = pgTable('api_keys', {
   id: serial('id').primaryKey(),
