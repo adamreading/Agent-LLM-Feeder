@@ -368,20 +368,58 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   let preferredModel: number | undefined;
   if (requestedModel && !isAuto) {
     const pool = getPool();
-    const enabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ? AND enabled = true', [requestedModel]);
-    if (enabled) {
-      preferredModel = enabled.id;
+
+    // Explicit `platform/model_id` compound pin — required whenever a bare
+    // model_id collides across platforms (found live 2026-07-08: e.g.
+    // gpt-oss-120b exists on both cerebras and sambanova with materially
+    // different dialect/tool-support behavior — these are NOT interchangeable
+    // instances). Only takes effect if the left segment is a real platform,
+    // so it never misfires on a model_id that legitimately contains its own
+    // slash (e.g. groq's meta-llama/llama-4-scout-17b-16e-instruct).
+    let resolved: { id: number } | null = null;
+    const slashIdx = requestedModel.indexOf('/');
+    if (slashIdx > 0) {
+      const candidatePlatform = requestedModel.slice(0, slashIdx);
+      const candidateModelId = requestedModel.slice(slashIdx + 1);
+      resolved = await get<{ id: number }>(pool,
+        'SELECT id FROM models WHERE platform = ? AND model_id = ? AND enabled = true',
+        [candidatePlatform, candidateModelId]
+      );
+    }
+
+    if (resolved) {
+      preferredModel = resolved.id;
     } else {
-      const disabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ?', [requestedModel]);
-      const reason = disabled ? 'is disabled' : 'is not in the catalog';
-      res.status(400).json({
-        error: {
-          message: `Model '${requestedModel}' ${reason}. Omit the 'model' field to auto-route, or call /v1/models for the available list.`,
-          type: 'invalid_request_error',
-          code: 'model_not_found',
-        },
-      });
-      return;
+      // Bare model_id lookup. Fail closed on ambiguity (Lunk's "pinned must
+      // mean truly pinned" condition) rather than silently picking whichever
+      // row the DB happens to return first for a duplicated model_id.
+      const matches = await all<{ id: number; platform: string }>(pool,
+        'SELECT id, platform FROM models WHERE model_id = ? AND enabled = true',
+        [requestedModel]
+      );
+      if (matches.length === 1) {
+        preferredModel = matches[0].id;
+      } else if (matches.length > 1) {
+        res.status(400).json({
+          error: {
+            message: `Model id '${requestedModel}' is ambiguous — it exists on multiple platforms (${matches.map(m => m.platform).join(', ')}). Specify 'platform/${requestedModel}' to pin the exact instance.`,
+            type: 'invalid_request_error',
+            code: 'model_ambiguous',
+          },
+        });
+        return;
+      } else {
+        const disabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ?', [requestedModel]);
+        const reason = disabled ? 'is disabled' : 'is not in the catalog';
+        res.status(400).json({
+          error: {
+            message: `Model '${requestedModel}' ${reason}. Omit the 'model' field to auto-route, or call /v1/models for the available list.`,
+            type: 'invalid_request_error',
+            code: 'model_not_found',
+          },
+        });
+        return;
+      }
     }
   } else {
     preferredModel = getStickyModel(messages, explicitSessionId);
