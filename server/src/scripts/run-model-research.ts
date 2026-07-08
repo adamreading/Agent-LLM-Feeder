@@ -15,7 +15,9 @@ import { all } from '../db/pgCompat.js';
 import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
 
-const DELAY_MS = 1500;
+// Inter-model delay — raise it for a low-rpm writer (e.g. RESEARCH_DELAY_MS=
+// 30000 for a 2-rpm free tier) so the writer model isn't rate-limited.
+const DELAY_MS = Number(process.env.RESEARCH_DELAY_MS) || 1500;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main() {
@@ -56,6 +58,13 @@ async function main() {
     } catch (err: any) {
       failed++;
       console.log(`  ✗ ${c.name} — ${err.message}`);
+      // The web-search backend's rate limit (e.g. Ollama's hourly cap) stops
+      // the run cleanly — re-run later to fill the rest; already-written
+      // summaries persist (recordResearch never overwrites with null).
+      if (/429|rate.?limit|hourly|search .*limit/i.test(err.message ?? '')) {
+        console.log('\n⚠ Web-search rate limit reached — stopping. Re-run later to continue; done models are saved.');
+        break;
+      }
     }
     await sleep(DELAY_MS);
   }

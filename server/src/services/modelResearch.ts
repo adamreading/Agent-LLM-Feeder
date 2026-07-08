@@ -50,28 +50,40 @@ export async function getWriterModel(pool: pg.Pool): Promise<WriterCtx | null> {
 
 interface ResearchResult { summary: string | null; tasks: Record<string, number>; sources: string[] }
 
+// Robust JSON extraction — not every writer honors response_format cleanly:
+// some wrap the object in ```json fences or add a preamble. Try a direct
+// parse, then a fenced parse, then the first {...last} substring.
+function parseLooseJson(text: string): any | null {
+  const attempts = [text]
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fence) attempts.push(fence[1])
+  const first = text.indexOf('{'), last = text.lastIndexOf('}')
+  if (first !== -1 && last > first) attempts.push(text.slice(first, last + 1))
+  for (const a of attempts) {
+    try { const v = JSON.parse(a.trim()); if (v && typeof v === 'object') return v } catch { /* next */ }
+  }
+  return null
+}
+
 export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number, writer: WriterCtx): Promise<ResearchResult> {
-  const canonical = await get<{ name: string }>(pool, `SELECT name FROM canonical_models WHERE id = ?`, [canonicalId])
+  const canonical = await get<{ name: string; slug: string }>(pool, `SELECT name, slug FROM canonical_models WHERE id = ?`, [canonicalId])
   if (!canonical) throw new Error(`No canonical model ${canonicalId}`)
   const name = canonical.name
+  // The slug is the hyphenated id form (e.g. "gpt-oss-120b") — it searches far
+  // better than the space-mangled display name ("gpt oss 120b"), so use it as
+  // the primary search term with the display name as extra context.
+  const term = (canonical.slug || name).replace(/:free$/, '')
 
   const backend = getSearchBackend()
   if (!backend.isConfigured()) throw new Error(`Web-search backend '${backend.id}' is not configured (set its API key in .env).`)
 
-  // Two angles: general reputation + the arena leaderboard specifically.
-  const queries = [
-    `${name} LLM model strengths weaknesses what is it good at benchmarks`,
-    `${name} lmarena arena.ai leaderboard score ranking coding math reasoning`,
-  ]
-  const seen = new Set<string>()
-  const results: SearchResult[] = []
-  for (const q of queries) {
-    try {
-      for (const r of await backend.search(q, 4)) {
-        if (!seen.has(r.url)) { seen.add(r.url); results.push(r) }
-      }
-    } catch { /* one failed query shouldn't sink the pass */ }
-  }
+  // ONE combined query per model — keeps within the search backend's rate
+  // limits (Ollama's free tier caps searches per hour). A search rate-limit
+  // is thrown (not swallowed) so the runner can stop cleanly rather than
+  // churn through the whole catalog marking everything "no data".
+  const results: SearchResult[] = await backend.search(
+    `${term} LLM model strengths weaknesses what it is good at benchmarks arena leaderboard`, 6,
+  )
   // Fetch full text of the single most relevant result to deepen the corpus.
   let fetched = ''
   if (results[0]) { try { fetched = (await backend.fetch(results[0].url)).content.slice(0, 4000) } catch { /* snippet-only */ } }
@@ -105,8 +117,8 @@ ${corpus}`
   const content = result.choices?.[0]?.message?.content
   if (typeof content !== 'string') return { summary: null, tasks: {}, sources: results.map(r => r.url) }
 
-  let parsed: any
-  try { parsed = JSON.parse(content) } catch { return { summary: null, tasks: {}, sources: results.map(r => r.url) } }
+  const parsed = parseLooseJson(content)
+  if (!parsed) return { summary: null, tasks: {}, sources: results.map(r => r.url) }
 
   const summary = typeof parsed.summary === 'string' && parsed.summary.trim().length > 0 ? parsed.summary.trim() : null
   const tasks: Record<string, number> = {}
