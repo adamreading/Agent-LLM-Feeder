@@ -215,6 +215,14 @@ const chatCompletionSchema = z.object({
   exclude_providers: z.array(z.string()).optional(),
   max_attempts: z.number().int().positive().max(DEFAULT_MAX_RETRIES).optional(),
   latency_ceiling_ms: z.number().int().positive().optional(),
+  // Generic, opaque capability declaration — the caller states what its
+  // own call-site requires (e.g. a Hermes agentic turn declaring
+  // ['tools','ob_readwrite']); feeder enforces whatever's named here
+  // against model_capabilities without needing to know what any of it
+  // means. Added 2026-07-08 (Adam's architecture directive) to replace a
+  // hardcoded task_class→capability mapping that baked consumer-specific
+  // policy into the generic router — see router.ts's CapabilityNeed comment.
+  needs: z.array(z.string()).optional(),
   session_id: z.string().optional(),
   user: z.string().optional(), // OpenAI-standard field, also accepted as a sticky-session carrier
 });
@@ -281,6 +289,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const {
     model: requestedModel, temperature, max_tokens, top_p, stream, tools, tool_choice, parallel_tool_calls,
     response_format, reasoning_effort, exclude_providers, max_attempts, latency_ceiling_ms, session_id, user,
+    needs: declaredNeeds,
   } = parsed.data;
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
@@ -329,27 +338,26 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const { taskClass, isAuto } = parseModelField(requestedModel);
 
   // Tier-0 heuristics: derive capability needs directly from the request's
-  // own declared fields — no LLM, no task_class tuple required for this.
+  // own declared fields — universal, any OpenAI-compatible client, no
+  // knowledge of task_class or any particular consumer required.
   const needs: CapabilityNeed[] = [];
   if (response_format) needs.push('json_mode');
   if (reasoning_effort) needs.push('reasoning_control');
   if (tools && tools.length > 0) needs.push('tools');
 
-  // task_class → implied needs. Distinct from the heuristics above: "needs
-  // OB access" isn't a field a caller declares in the request body the way
-  // tools[] presence is — it's implied by WHICH kind of turn this is.
-  // wsl-claude, 2026-07-08 (pre-wire catch): agentic_chat is Lunk's real
-  // main-brain turn type and Adam's stated minimum bar for it is tools AND
-  // ctx-floor AND ob_readwrite — measuring ob_readwrite on some models
-  // isn't the same as this route refusing to land on an unmeasured one. A
-  // live 10x test before this fix showed 40% of agentic_chat+tools calls
-  // landing on models with no ob_readwrite data at all. 'tools' is included
-  // here too as a defensive backstop — normally already implied by the
-  // request carrying tools[], but agentic_chat should never be able to
-  // reach a non-tool-capable model even if a caller forgets to attach tools[].
-  if (taskClass === 'agentic_chat') {
-    if (!needs.includes('tools')) needs.push('tools');
-    needs.push('ob_readwrite');
+  // Caller-DECLARED needs (generic `needs[]` body field) — this is how a
+  // policy-aware consumer (e.g. Hermes's agentic call-site) states what ITS
+  // OWN task requires, without feeder having to know what task_class means
+  // or hardcode any consumer-specific capability. Corrected 2026-07-08
+  // (Adam's architecture directive): an earlier version of this hardcoded
+  // `taskClass === 'agentic_chat' → needs.push('ob_readwrite')` directly in
+  // feeder, which would have wrongly filtered a generic Open WebUI caller
+  // hitting the same auto/agentic_chat sentinel by a capability ("can write
+  // to Adam's personal Open Brain") it has no reason to know exists. The
+  // policy now lives entirely in the caller; feeder only enforces what's
+  // explicitly declared, keeping it a generic, use-case-agnostic provider.
+  for (const need of declaredNeeds ?? []) {
+    if (!needs.includes(need)) needs.push(need);
   }
 
   // Explicit `model` field (that isn't the 'auto' sentinel) pins routing. If

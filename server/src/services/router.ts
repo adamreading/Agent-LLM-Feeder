@@ -49,23 +49,24 @@ export interface RouteResult {
   contextLength: number;
 }
 
-// Capability need derived from the request itself (tier-0 heuristic — no LLM,
-// no task_class tuple required). A model whose provider doesn't declare
-// support for a needed capability is excluded from routing eligibility,
-// never silently sent the field anyway. json_mode/reasoning_control are
-// PROVIDER-level facts (DialectConfig); 'tools' is a PER-MODEL fact (varies
-// within a provider, especially aggregators) so it's checked against
-// model_capabilities in the DB instead — ob-claude review, 2026-07-07: a
-// tools[]-bearing request had NO capability gate at all before this, "landed
-// on a capable model by coincidence" is not "cannot land on an incapable one."
-// 'ob_readwrite' added 2026-07-08 (wsl-claude pre-wire catch): Adam's stated
-// minimum bar for agentic_chat is tools AND ctx-floor AND ob_readwrite, but
-// measuring the capability isn't the same as gating on it — proxy.ts maps
-// the auto/agentic_chat sentinel to this need explicitly (it can't be
-// derived from the request body the way tools[] presence works, since
-// "needs OB access" isn't a field a caller declares, it's implied by
-// task_class). Same per-model, source='measured'-only treatment as tools.
-export type CapabilityNeed = 'json_mode' | 'reasoning_control' | 'tools' | 'ob_readwrite';
+// Capability need — an OPAQUE string, deliberately not a closed union.
+// 'json_mode' and 'reasoning_control' are the two feeder-NATIVE special
+// cases (checked against provider.dialect, a wire-format fact feeder owns
+// as a translation layer). Anything else — 'tools', 'ob_readwrite', or a
+// future caller-invented name — is checked generically against the
+// model_capabilities table (per-model, source='measured' only) with zero
+// feeder-side knowledge of what the string MEANS.
+//
+// Corrected 2026-07-08 (Adam's architecture directive, after wsl-claude's
+// server-side agentic_chat→ob_readwrite sentinel mapping was found to bake
+// Hermes/Open-Brain-specific POLICY into feeder's generic router): a caller
+// that knows nothing about Open Brain (Open WebUI, any generic script)
+// must never be filtered by a capability it has no reason to know exists.
+// Feeder stays a generic, use-case-agnostic OpenAI-compatible provider
+// (like LiteLLM/Ollama) — callers DECLARE the needs[] their own call-site
+// requires (via the request body); feeder only ever enforces what's
+// declared, never infers consumer-specific policy from task_class itself.
+export type CapabilityNeed = string;
 
 export interface RouteOptions {
   estimatedTokens?: number;
@@ -257,47 +258,41 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     if (!provider) continue;
 
     // Capability/dialect gate: never send a field a provider can't honor.
+    // json_mode/reasoning_control are the two feeder-NATIVE concepts — they
+    // gate on HOW this layer talks to a provider's wire format
+    // (DialectConfig), which is inherently feeder's own job as a translation
+    // layer, same as any generic multi-provider proxy (LiteLLM, Ollama).
     if (needs?.includes('json_mode') && !provider.dialect.jsonMode) continue;
     if (needs?.includes('reasoning_control') && !provider.dialect.reasoning) continue;
 
-    // 'tools' is a PER-MODEL fact (varies within a provider, especially
-    // aggregators), so it's checked against model_capabilities, not a
-    // provider-level DialectConfig flag. A tools[]-bearing request MUST NOT
-    // land on a model with no confirmed tools support "by coincidence" —
-    // ob-claude review, 2026-07-07, confirmed empirically non-deterministic
-    // (wsl's probe: identical calls landed on different models call-to-call).
+    // Everything else in needs[] is an OPAQUE per-model capability string —
+    // feeder doesn't know or care what it MEANS (tools, ob_readwrite, or
+    // anything a future caller declares), only whether some caller has
+    // reported it measured-true for this specific model. This is what keeps
+    // feeder a generic, use-case-agnostic provider (Adam's architecture
+    // directive, 2026-07-08): consumer-specific policy (e.g. "agentic_chat
+    // needs ob_readwrite") lives in the CALLER, not hardcoded here — a
+    // generic client (Open WebUI, any script) that declares no needs[] gets
+    // pure priority + tools-from-request-body; a policy-aware caller
+    // (Hermes) declares exactly what its call-site requires.
     //
     // source = 'measured' ONLY, deliberately not falling back to 'declared'
-    // here (unlike scoring/ranking uses elsewhere, which do prefer-measured-
-    // fall-back-to-declared per the schema's general design). This is a hard
-    // safety gate, not a heuristic — the whole night's probe work exists
-    // because declared/spec-sheet claims (NVIDIA reasoning, Groq reasoning,
-    // Ollama context) turned out wrong often enough to matter live. The P3
-    // research cron populates 'declared' rows from web search; those are
-    // leads for the probe scheduler to verify, not something safe to trust
-    // directly for gating real tool-calling eligibility.
-    if (needs?.includes('tools')) {
-      const toolsRow = await get<{ supported: boolean }>(pool,
-        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'tools' AND supported = true AND source = 'measured' LIMIT 1`,
-        [model.id]
+    // — this is a hard safety gate, not a heuristic. The whole night's probe
+    // work exists because declared/spec-sheet claims (NVIDIA reasoning, Groq
+    // reasoning, Ollama context) turned out wrong often enough to matter
+    // live; an unverified claim must never satisfy a capability a caller is
+    // relying on for correctness (ob-claude's tools-gate review, 2026-07-07,
+    // generalizes to every opaque capability a caller might declare).
+    const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control');
+    let missingOpaqueNeed = false;
+    for (const need of opaqueNeeds) {
+      const row = await get<{ supported: boolean }>(pool,
+        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = ? AND supported = true AND source = 'measured' LIMIT 1`,
+        [model.id, need]
       );
-      if (!toolsRow) continue;
+      if (!row) { missingOpaqueNeed = true; break; }
     }
-
-    // 'ob_readwrite' — same per-model, measured-only treatment as tools.
-    // wsl-claude, 2026-07-08 (pre-wire catch): measuring this capability on
-    // 16 models is not the same as ENFORCING it — a live 10x agentic_chat
-    // test showed 40% of turns landing on models with unmeasured OB access,
-    // silently violating Adam's stated minimum bar. proxy.ts derives this
-    // need from the agentic_chat task_class sentinel (see parseModelField
-    // callers there), not from any request-body field.
-    if (needs?.includes('ob_readwrite')) {
-      const obRow = await get<{ supported: boolean }>(pool,
-        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'ob_readwrite' AND supported = true AND source = 'measured' LIMIT 1`,
-        [model.id]
-      );
-      if (!obRow) continue;
-    }
+    if (missingOpaqueNeed) continue;
 
     // Two-gate INNER enforcement: cost-tier ceiling (independent of the
     // outer per-key trust gate applied by the caller before routeRequest

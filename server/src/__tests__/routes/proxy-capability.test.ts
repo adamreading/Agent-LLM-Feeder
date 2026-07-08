@@ -103,13 +103,18 @@ describe('P2 DoD: response_format capability gate, live over HTTP', () => {
   });
 });
 
-// wsl-claude pre-wire catch, 2026-07-08: a live 10x test of auto/agentic_chat
-// (Lunk's real main-brain task_class) showed 40% of turns landing on models
-// with unmeasured ob_readwrite data — tools was gated, ob_readwrite was not,
-// because "needs OB access" isn't a request-body field the way tools[] is;
-// it has to be derived from the task_class sentinel itself. This is that
-// enforcement, demonstrated live over HTTP with no explicit `needs` param.
-describe('auto/agentic_chat sentinel enforces ob_readwrite, live over HTTP', () => {
+// History: wsl-claude's pre-wire catch (2026-07-08) found that measuring
+// ob_readwrite on 16 models wasn't the same as enforcing it, and the first
+// fix mapped auto/agentic_chat's task_class directly to needs:['ob_readwrite']
+// server-side. Adam's architecture directive (same day) correctly rejected
+// that: it baked Hermes/Open-Brain-specific POLICY into feeder's generic
+// router — a plain Open WebUI caller hitting the same auto/agentic_chat
+// sentinel would get filtered by a capability ("can write to Adam's
+// personal brain") it has no reason to know exists. The corrected design:
+// feeder enforces whatever a caller EXPLICITLY declares via the generic
+// `needs[]` body field; task_class is observability-only. This describes
+// both halves — enforcement when declared, and no filtering when not.
+describe('generic needs[] declaration enforces opaque capabilities, live over HTTP', () => {
   let app: Express;
   let drop: () => Promise<void>;
 
@@ -135,7 +140,7 @@ describe('auto/agentic_chat sentinel enforces ob_readwrite, live over HTTP', () 
     vi.restoreAllMocks();
   });
 
-  it('refuses with 422 when the only key is on a tools-confirmed but ob_readwrite-unmeasured model', async () => {
+  it('refuses with 422 when the caller explicitly declares needs:["tools","ob_readwrite"] and no model has both', async () => {
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
     await run(getPool(), `
       INSERT INTO model_capabilities (model_db_id, capability, supported, source)
@@ -147,13 +152,56 @@ describe('auto/agentic_chat sentinel enforces ob_readwrite, live over HTTP', () 
       model: 'auto/agentic_chat',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
+      needs: ['tools', 'ob_readwrite'],
     });
 
     expect(status).toBe(422);
     expect(body.error.code).toBe('NO_ELIGIBLE_MODEL');
   });
 
-  it('routes only to the model confirmed for BOTH tools and ob_readwrite', async () => {
+  it('does NOT filter on ob_readwrite when the caller declares no needs[] at all — a generic client must not be blocked by a capability it never asked for', async () => {
+    // This is the exact regression Adam's directive was about: a plain
+    // Open WebUI caller hitting auto/agentic_chat with no needs[] knowledge
+    // of Open Brain must succeed on ANY tools-confirmed model, not just the
+    // 4 ob_readwrite-confirmed ones.
+    await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
+    await run(getPool(), `
+      INSERT INTO model_capabilities (model_db_id, capability, supported, source)
+      SELECT id, 'tools', true, 'measured' FROM models WHERE platform = 'groq'
+    `);
+    // No ob_readwrite row anywhere — if this were still gated implicitly,
+    // this request would 422. It must not.
+
+    const origFetch = global.fetch;
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-generic',
+            object: 'chat.completion',
+            created: 123,
+            model: 'test-model',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'ok', tool_calls: null }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      model: 'auto/agentic_chat',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
+      // No needs[] — generic caller, no Open Brain awareness.
+    });
+
+    expect(status).toBe(200);
+  });
+
+  it('routes only to the model confirmed for BOTH declared needs (tools and ob_readwrite)', async () => {
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
     await run(getPool(), `
       INSERT INTO model_capabilities (model_db_id, capability, supported, source)
@@ -186,6 +234,7 @@ describe('auto/agentic_chat sentinel enforces ob_readwrite, live over HTTP', () 
       model: 'auto/agentic_chat',
       messages: [{ role: 'user', content: 'hi' }],
       tools: [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object', properties: {} } } }],
+      needs: ['tools', 'ob_readwrite'],
     });
 
     expect(status).toBe(200);
