@@ -10,6 +10,7 @@ import AnalyticsPage from '@/pages/AnalyticsPage'
 import AgentPage from '@/pages/AgentPage'
 import ModelWikiPage from '@/pages/ModelWikiPage'
 import ModelDetailPage from '@/pages/ModelDetailPage'
+import HowToPage from '@/pages/HowToPage'
 
 const queryClient = new QueryClient()
 
@@ -21,6 +22,7 @@ const NAV = [
   { to: '/keys', label: 'KEY VAULT' },
   { to: '/fallback', label: 'FALLBACK' },
   { to: '/analytics', label: 'ANALYTICS' },
+  { to: '/howto', label: 'HOW TO' },
 ]
 
 function NavItem({ to, label }: { to: string; label: string }) {
@@ -145,6 +147,7 @@ function AppShell() {
             <Route path="/keys" element={<KeysPage />} />
             <Route path="/fallback" element={<FallbackPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/howto" element={<HowToPage />} />
             <Route path="/test" element={<Navigate to="/playground" replace />} />
             <Route path="/health" element={<Navigate to="/keys" replace />} />
           </Routes>
