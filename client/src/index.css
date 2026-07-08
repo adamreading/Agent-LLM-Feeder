@@ -1,8 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
-@import "@fontsource-variable/geist-mono";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -147,3 +145,79 @@
         font-feature-settings: 'ss01';
     }
 }
+
+/* ────────────────────────────────────────────────────────────────────────
+   AGENT//FEEDER cyberpunk theme (Claude Design handoff, 2026-07-08).
+   A self-contained CSS-variable system layered over Tailwind — the re-themed
+   pages use these vars + the .cy-* helpers directly rather than the shadcn
+   colour tokens. Three "flavors" swap the palette via body[data-theme].
+   ──────────────────────────────────────────────────────────────────────── */
+body {
+    --bg: #0b0b16; --bg2: #0f0f22;
+    --panel: rgba(21,19,44,.78); --panel2: rgba(28,25,58,.6);
+    --acc: #8a5cff; --acc2: #ff6a00;
+    --ink: #eae7f8; --dim: #8f8ab0;
+    --line: rgba(138,92,255,.28); --glow: rgba(138,92,255,.45);
+    --good: #3dffa0; --warn: #ffd23d; --bad: #ff4d6b;
+
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    font-family: 'Chakra Petch', ui-sans-serif, system-ui, sans-serif;
+    background:
+        radial-gradient(1200px 500px at 70% -10%, var(--glow), transparent 60%),
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px),
+        var(--bg);
+    background-size: auto, 44px 44px, 44px 44px, auto;
+    background-attachment: fixed;
+}
+body[data-theme="noir"] {
+    --bg: #0a0a14; --bg2: #0e0d1d;
+    --panel: rgba(24,16,36,.8); --panel2: rgba(34,20,48,.6);
+    --acc: #ff2ea6; --acc2: #00e5ff;
+    --ink: #f2e9f4; --dim: #9d8fae;
+    --line: rgba(255,46,166,.3); --glow: rgba(255,46,166,.45);
+}
+body[data-theme="acid"] {
+    --bg: #050805; --bg2: #081008;
+    --panel: rgba(10,24,10,.82); --panel2: rgba(14,32,14,.65);
+    --acc: #39ff14; --acc2: #ffe600;
+    --ink: #e4f2e2; --dim: #7fa07a;
+    --line: rgba(57,255,20,.3); --glow: rgba(57,255,20,.35);
+}
+
+.cy-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.cy a { color: var(--acc2); text-decoration: none; }
+.cy a:hover { color: var(--acc); }
+.cy ::selection { background: var(--acc); color: #000; }
+
+/* Focus glow on cyberpunk inputs/selects */
+.cy-input:focus {
+    border-color: var(--acc) !important;
+    box-shadow: 0 0 0 1px var(--acc), 0 0 14px var(--glow) !important;
+}
+
+/* Hover helpers (React inline styles can't express :hover) */
+.cy-hover-acc { transition: border-color .15s, color .15s, box-shadow .15s, transform .15s; }
+.cy-hover-acc:hover { border-color: var(--acc); }
+.cy-hover-glow { transition: border-color .15s, box-shadow .15s, transform .15s; }
+.cy-hover-glow:hover { border-color: var(--acc); box-shadow: 0 0 20px var(--glow); transform: translateY(-2px); }
+.cy-hover-acc2:hover { border-color: var(--acc2) !important; color: var(--acc2) !important; }
+.cy-btn { transition: background .15s, color .15s, box-shadow .15s; cursor: pointer; }
+.cy-btn:hover { background: var(--acc); color: #000; box-shadow: 0 0 14px var(--glow); }
+.cy-txt-acc:hover { color: var(--acc); }
+.cy-txt-good:hover { border-color: var(--good) !important; color: var(--good) !important; }
+.cy-txt-bad:hover { background: var(--bad); color: #000; }
+.cy-glow-acc2:hover { text-shadow: 0 0 8px var(--acc2); }
+.cy-glow-bad:hover { text-shadow: 0 0 8px var(--bad); }
+
+/* Cyberpunk scrollbar (scoped to the app root to avoid touching other UIs) */
+.cy ::-webkit-scrollbar { width: 10px; height: 10px; }
+.cy ::-webkit-scrollbar-track { background: var(--bg); }
+.cy ::-webkit-scrollbar-thumb { background: var(--line); }
+.cy ::-webkit-scrollbar-thumb:hover { background: var(--acc); }
+
+@keyframes ledpulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+@keyframes scandrift { 0%{transform:translateY(-100%)} 100%{transform:translateY(100vh)} }
+@keyframes flickin { 0%{opacity:0;transform:translateY(6px)} 60%{opacity:.6} 70%{opacity:.2} 100%{opacity:1;transform:translateY(0)} }
