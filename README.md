@@ -1,488 +1,218 @@
-# LLM Chatbot
+# Agent-LLM-Feeder
 
-Local web app for onboarding free-tier LLM providers, saving API keys, and chatting through an automatic multi-provider fallback router.
+**An agent-agnostic, OpenAI-compatible intelligent supply of free-tier LLMs.**
 
-Languages: [English](#english) | [Francais](#francais) | [Espanol](#espanol)
+Point any OpenAI-compatible client — an agent framework, Open WebUI, a script, curl — at one local endpoint with one key, and get served the *right* free model for each request, with automatic, capability-honest failover across every free-tier provider you've connected.
 
----
+It behaves like LiteLLM/Ollama as a drop-in OpenAI endpoint, but adds a precomputed intelligence layer: it knows (from live probes and web research) what each model can actually do and how fast/healthy each supplier is right now, and routes accordingly — without passing your prompt through an extra LLM to decide.
 
-## English
-
-LLM Chatbot is a local web application that helps you create free-tier accounts with LLM providers, store their API keys, and chat with a model selected automatically by the router.
-
-This project is based on the open-source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) repository. It reuses its multi-provider router, encrypted API-key storage, health checks, and fallback chain. This version focuses on a simpler workflow: everything is done from the web interface.
-
-The interface is localized in English, French, and Spanish. Use the `EN` / `FR` / `ES` selector in the header, or open a page with `?lang=en`, `?lang=fr`, or `?lang=es`.
-
-### How It Works
-
-1. Open the app.
-2. Go to `Onboarding`.
-3. Create one or more free-tier provider accounts from the suggested links.
-4. Generate an API key and paste it into the interface.
-5. Run the key check.
-6. Open `Chatbot` and start chatting.
-
-One valid key is enough to test the chatbot. Adding several providers lets the router switch automatically when a model is unavailable, rate-limited, or failing.
-
-### Guided Providers
-
-The onboarding screen includes account and API-key links for:
-
-- Google AI Studio / Gemini
-- Groq
-- Cerebras
-- SambaNova
-- NVIDIA NIM
-- Mistral
-- OpenRouter
-- GitHub Models
-- Cohere
-- Cloudflare Workers AI
-- Z.ai / Zhipu
-- Ollama Cloud
-- Kilo Gateway
-- Pollinations
-- LLM7
-
-For Google Gemini, the API-key page is:
-
-```text
-https://aistudio.google.com/api-keys
-```
-
-### Run Locally
-
-Requirements: Node.js 20+ and npm.
-
-```powershell
-npm.cmd install
-npm.cmd run dev
-```
-
-Then open:
-
-```text
-http://localhost:5173/onboarding
-```
-
-On Windows, `npm.cmd` avoids PowerShell execution-policy issues with `npm.ps1`.
-
-### Local Configuration
-
-The server needs an encryption key to store provider API keys.
-
-If `.env` does not exist yet, create it:
-
-```env
-ENCRYPTION_KEY=replace-with-a-64-character-hex-key
-PORT=3001
-```
-
-Generate a key with:
-
-```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-### Using The App
-
-`Onboarding` is the guided setup flow: open provider signup pages, paste API keys, handle Cloudflare `account id` + token, enable anonymous providers with `anonymous`, check keys, then move to the chatbot.
-
-`Chatbot` sends messages to the local router. The router picks the best available model based on configured keys, known limits, and fallback order.
-
-You do not need to manually call an API, use `curl`, use an OpenAI SDK, or configure tool calling. Those technical capabilities remain in the FreeLLMAPI-based engine, but this project is meant to be used through the web interface.
-
-`Agent` turns the running app into a local coding-agent server for the current workspace. It can search files, read selected files as context, and ask the configured LLM router for coding help. It also exposes guarded local endpoints that a Visual Studio or VS Code extension can consume later:
-
-- `GET /api/agent/status`
-- `GET /api/agent/files?q=...`
-- `POST /api/agent/read`
-- `POST /api/agent/chat`
-- `POST /api/agent/replace`
-
-The replacement endpoint is intentionally conservative: it only edits text files inside the workspace, blocks sensitive paths such as `.env`, skips generated/vendor directories, and requires exactly one text match.
-
-`extensions/vscode` contains a first VS Code extension that consumes these local endpoints. It adds a ChatGPT-like chat panel inside VS Code, plus commands to check server status, ask the agent, explain a code selection, review the current file, and open the web Agent page.
-
-Build it with:
-
-```powershell
-npm.cmd run build -w llm-chatbot-agent
-```
-
-Package it as a `.vsix` with:
-
-```powershell
-npm.cmd run package -w llm-chatbot-agent
-```
-
-`Fallback` lets you edit the model priority order. When a request fails or a provider is rate-limited, the router tries the next model.
-
-`Keys` lets you directly manage provider keys: add, remove, verify, and inspect status.
-
-`Analytics` shows local activity: request volume, latency, errors, and provider distribution.
-
-### Screenshots
-
-| Onboarding | Chatbot |
-|---|---|
-| ![Onboarding screen](docs/screenshots/onboarding.png) | ![Chatbot screen](docs/screenshots/chatbot.png) |
-
-| Agent | Keys | Fallback | Analytics |
-|---|---|---|---|
-| ![Agent screen](docs/screenshots/agent.png) | ![Keys screen](docs/screenshots/keys.png) | ![Fallback screen](docs/screenshots/fallback.png) | ![Analytics screen](docs/screenshots/analytics.png) |
-
-### Production Build
-
-```powershell
-npm.cmd run build
-node server/dist/index.js
-```
-
-In production, the Express server serves both the local API and the compiled client.
-
-### Security And Limits
-
-- Provider keys are encrypted in SQLite with AES-256-GCM.
-- This project is intended for personal or experimental use.
-- Do not expose the app to the Internet without adding real authentication.
-- Free tiers change often: quotas, available models, terms, and limits may evolve.
-- If a key becomes invalid or rate-limited, health checks and fallback help continue with another configured provider.
-
-### Origin
-
-Technical base: [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi)
-
-This version adapts the project for an interface-first workflow:
-
-- guided free-tier account onboarding;
-- guided API-key entry;
-- directly usable chatbot;
-- no visible FreeLLMAPI branding in the interface.
-
-### License
-
-MIT, same as the original project.
+> Based on the open-source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) router (multi-provider fallback, encrypted key storage, health checks), evolved into an intelligent, capability-aware routing layer with a Postgres store, a model wiki, per-model web research, and a health/latency-aware selection engine. It is **agent-agnostic**: no consumer-specific policy lives in the router — callers declare what they need.
 
 ---
 
-## Francais
+## What it does
 
-LLM Chatbot est une application web locale pour creer des comptes free tier chez des fournisseurs LLM, enregistrer leurs cles API, puis discuter avec un modele choisi automatiquement par le routeur.
-
-Ce projet s'appuie sur le depot open source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). Il en reutilise le routeur multi-fournisseurs, le stockage chiffre des cles API, les controles de sante et la chaine de fallback. Cette version vise un parcours plus simple : tout se fait depuis l'interface web.
-
-L'interface est localisee en anglais, francais et espagnol. Utilisez le selecteur `EN` / `FR` / `ES` dans l'en-tete, ou ouvrez une page avec `?lang=en`, `?lang=fr` ou `?lang=es`.
-
-### Fonctionnement
-
-1. Ouvrir l'application.
-2. Aller sur `Onboarding`.
-3. Creer un compte free tier chez un ou plusieurs fournisseurs depuis les liens proposes.
-4. Generer une cle API, puis la coller dans l'interface.
-5. Lancer la verification des cles.
-6. Ouvrir `Chatbot` et discuter.
-
-Une seule cle suffit pour tester le chatbot. Ajouter plusieurs fournisseurs permet au routeur de basculer automatiquement si un modele est indisponible, rate limite, ou en erreur.
-
-### Fournisseurs Guides
-
-L'ecran d'embarquement inclut des liens de creation de compte et de generation de cle pour :
-
-- Google AI Studio / Gemini
-- Groq
-- Cerebras
-- SambaNova
-- NVIDIA NIM
-- Mistral
-- OpenRouter
-- GitHub Models
-- Cohere
-- Cloudflare Workers AI
-- Z.ai / Zhipu
-- Ollama Cloud
-- Kilo Gateway
-- Pollinations
-- LLM7
-
-Pour Google Gemini, le lien de creation de cle pointe vers :
-
-```text
-https://aistudio.google.com/api-keys
-```
-
-### Lancer En Local
-
-Prerequis : Node.js 20+ et npm.
-
-```powershell
-npm.cmd install
-npm.cmd run dev
-```
-
-Puis ouvrir :
-
-```text
-http://localhost:5173/onboarding
-```
-
-Sur Windows, `npm.cmd` evite les blocages PowerShell lies a `npm.ps1`.
-
-### Configuration Locale
-
-Le serveur a besoin d'une cle de chiffrement pour stocker les cles API fournisseurs.
-
-Si le fichier `.env` n'existe pas encore, creer :
-
-```env
-ENCRYPTION_KEY=remplacer-par-une-cle-hex-64-caracteres
-PORT=3001
-```
-
-Pour generer une cle :
-
-```powershell
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-### Utiliser L'application
-
-`Onboarding` sert de procedure guidee : ouvrir les pages de compte, coller les cles API, gerer Cloudflare avec `account id` + token, activer les fournisseurs anonymes avec `anonymous`, verifier les cles, puis passer au chatbot.
-
-`Chatbot` envoie les messages au routeur local. Le routeur choisit le meilleur modele disponible selon les cles configurees, les limites connues et la chaine de fallback.
-
-L'utilisateur n'a pas besoin d'appeler une API manuellement, d'utiliser `curl`, un SDK OpenAI, ou de manipuler du tool calling. Ces capacites restent dans le moteur technique herite de FreeLLMAPI, mais ce projet s'utilise depuis l'interface web.
-
-`Agent` transforme l'application lancee en serveur agentique local pour le workspace courant. Il peut chercher des fichiers, lire les fichiers selectionnes comme contexte, puis interroger le routeur LLM configure pour aider au code. Il expose aussi des endpoints locaux qu'une extension Visual Studio ou VS Code pourra consommer ensuite :
-
-- `GET /api/agent/status`
-- `GET /api/agent/files?q=...`
-- `POST /api/agent/read`
-- `POST /api/agent/chat`
-- `POST /api/agent/replace`
-
-L'endpoint de remplacement est volontairement prudent : il n'edite que des fichiers texte dans le workspace, bloque les chemins sensibles comme `.env`, ignore les dossiers generes/vendor, et exige une seule correspondance exacte.
-
-`extensions/vscode` contient une premiere extension VS Code qui consomme ces endpoints locaux. Elle ajoute un panneau de chat type ChatGPT directement dans VS Code, ainsi que des commandes pour verifier le serveur, interroger l'agent, expliquer une selection de code, relire le fichier courant et ouvrir la page web Agent.
-
-Pour la compiler :
-
-```powershell
-npm.cmd run build -w llm-chatbot-agent
-```
-
-Pour generer un paquet `.vsix` :
-
-```powershell
-npm.cmd run package -w llm-chatbot-agent
-```
-
-`Fallback` permet de modifier l'ordre de priorite des modeles. Quand une requete echoue ou qu'un fournisseur est rate limite, le routeur essaye le modele suivant.
-
-`Keys` permet d'administrer directement les cles : ajouter, supprimer, verifier et consulter l'etat.
-
-`Analytics` affiche l'activite locale : volumes de requetes, latence, erreurs et repartition par fournisseur.
-
-### Captures D'ecran
-
-| Embarquement | Chatbot |
-|---|---|
-| ![Ecran d'embarquement](docs/screenshots/onboarding.png) | ![Ecran chatbot](docs/screenshots/chatbot.png) |
-
-| Agent | Cles | Fallback | Analytics |
-|---|---|---|---|
-| ![Ecran agent](docs/screenshots/agent.png) | ![Ecran des cles](docs/screenshots/keys.png) | ![Ecran fallback](docs/screenshots/fallback.png) | ![Ecran analytics](docs/screenshots/analytics.png) |
-
-### Build Production
-
-```powershell
-npm.cmd run build
-node server/dist/index.js
-```
-
-En production, le serveur Express sert l'API locale et le client compile.
-
-### Securite Et Limites
-
-- Les cles fournisseurs sont chiffrees en SQLite avec AES-256-GCM.
-- Le projet est pense pour un usage personnel ou experimental.
-- Ne pas exposer l'application sur Internet sans ajouter une vraie couche d'authentification.
-- Les free tiers changent souvent : quotas, modeles disponibles, conditions et limites peuvent evoluer.
-- Si une cle devient invalide ou rate limitee, la verification de sante et le fallback aident a continuer avec un autre fournisseur configure.
-
-### Origine
-
-Base technique : [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi)
-
-Cette version adapte le projet pour un parcours oriente interface :
-
-- procedure d'embarquement pour creer les comptes free tier ;
-- saisie guidee des cles API ;
-- chatbot directement utilisable ;
-- suppression du branding visible FreeLLMAPI dans l'interface.
-
-### Licence
-
-MIT, comme le projet d'origine.
+- **Single endpoint.** `POST /v1/chat/completions` — the standard OpenAI shape. Omit `model` (or send `"auto"`) to let the router choose; pin `platform/model_id` to force one.
+- **Capability-honest routing.** A request that declares `needs: ["tools", ...]` only ever lands on a model *measured* (not just claimed) to support it. If nothing qualifies, you get a typed `422 NO_ELIGIBLE_MODEL` — never a silently-wrong model.
+- **Health & latency aware.** Within the eligible set, the router prefers fast, healthy suppliers and circuit-breaks ones that just timed out or rate-limited, so failover doesn't re-pay a dead provider's timeout. Latency's weight scales with the caller's declared `latency_ceiling_ms`.
+- **Automatic failover.** Rate-limited / erroring providers are skipped; the request walks the eligible set until one succeeds, or returns a typed `429 ALL_RATE_LIMITED`.
+- **Model wiki.** A browsable, searchable catalogue: every model grouped across the suppliers that offer it, with measured capabilities, live per-supplier health/latency, and a web-researched summary + per-task quality scores.
+- **Web UI** for onboarding providers, managing keys, browsing the model wiki, a chat playground, fallback ordering, analytics, and a How-To.
+- **Encrypted key storage** (AES-256-GCM). Provider keys never leave the machine and are never exposed to callers — they authenticate with a single unified key.
 
 ---
 
-## Espanol
+## Architecture
 
-LLM Chatbot es una aplicacion web local para crear cuentas free tier con proveedores LLM, guardar sus claves API y conversar con un modelo elegido automaticamente por el router.
-
-Este proyecto se basa en el repositorio open source [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). Reutiliza su router multi-proveedor, el almacenamiento cifrado de claves API, los chequeos de salud y la cadena de fallback. Esta version se centra en un flujo mas simple: todo se hace desde la interfaz web.
-
-La interfaz esta localizada en ingles, frances y espanol. Usa el selector `EN` / `FR` / `ES` del encabezado, o abre una pagina con `?lang=en`, `?lang=fr` o `?lang=es`.
-
-### Como Funciona
-
-1. Abrir la aplicacion.
-2. Ir a `Onboarding`.
-3. Crear una o varias cuentas free tier desde los enlaces propuestos.
-4. Generar una clave API y pegarla en la interfaz.
-5. Ejecutar la verificacion de claves.
-6. Abrir `Chatbot` y empezar a conversar.
-
-Una sola clave valida basta para probar el chatbot. Agregar varios proveedores permite que el router cambie automaticamente si un modelo no esta disponible, esta limitado por cuota, o falla.
-
-### Proveedores Guiados
-
-La pantalla de onboarding incluye enlaces para crear cuenta y generar clave API en:
-
-- Google AI Studio / Gemini
-- Groq
-- Cerebras
-- SambaNova
-- NVIDIA NIM
-- Mistral
-- OpenRouter
-- GitHub Models
-- Cohere
-- Cloudflare Workers AI
-- Z.ai / Zhipu
-- Ollama Cloud
-- Kilo Gateway
-- Pollinations
-- LLM7
-
-Para Google Gemini, la pagina de claves API es:
-
-```text
-https://aistudio.google.com/api-keys
+```
+client/   React + Vite web UI (the cyberpunk "AGENT//FEEDER" interface)
+server/   Express + TypeScript API, the router, providers, probes, research
+shared/   Types shared between client and server
 ```
 
-### Ejecutar En Local
+- **Store:** local **Postgres** (Drizzle ORM). Holds the model catalogue, per-model measured capabilities, canonical-model grouping, per-task quality scores, live model health, quota snapshots, request logs, consumer keys, and the policy matrix.
+- **Providers:** each supplier is a `BaseProvider` adapter (`server/src/providers/`) that translates the OpenAI shape to the provider's wire format (tools, JSON mode, reasoning control, context length, schema quirks — e.g. the Gemini schema sanitizer).
+- **Router:** `server/src/services/router.ts` — filters the catalogue by capability/cost/context/latency (fresh per attempt), orders the survivors by a health × latency × quality score, and returns the pick. Pure filtered-SQL-sort; no inline LLM decision.
+- **Probes:** `server/src/services/probes/` — actively test each model on the wire (tools, JSON mode, long-context needle recall, reachability) and record `source='measured'` capability facts. Hard routing gates trust `measured` only, never `declared`.
+- **Research:** `server/src/services/modelResearch.ts` — web-searches each model and has one of your own models write a summary + per-task scores (see below).
 
-Requisitos: Node.js 20+ y npm.
+---
 
-```powershell
-npm.cmd install
-npm.cmd run dev
-```
+## Quick start
 
-Luego abrir:
+**Prerequisites:** Node 20+, a local Postgres instance, and at least one free-tier provider API key.
 
-```text
-http://localhost:5173/onboarding
-```
+```bash
+# 1. Install
+npm install
 
-En Windows, `npm.cmd` evita problemas de politicas de ejecucion de PowerShell con `npm.ps1`.
-
-### Configuracion Local
-
-El servidor necesita una clave de cifrado para almacenar las claves API de los proveedores.
-
-Si el archivo `.env` todavia no existe, crearlo:
-
-```env
-ENCRYPTION_KEY=reemplazar-por-una-clave-hex-de-64-caracteres
-PORT=3001
-```
-
-Para generar una clave:
-
-```powershell
+# 2. Configure — copy the example and fill in ENCRYPTION_KEY + DATABASE_URL
+cp .env.example .env
+#    generate an encryption key:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+#    create the database (example): createdb feeder
+
+# 3. Apply the schema
+cd server && npx drizzle-kit migrate && cd ..
+
+# 4. Run the server (serves the API on :3001 and, in prod, the built UI)
+cd server && npm run dev        # or: npm run build && npm start
+
+# 5. Run the web UI (dev) — Vite on :5173, proxies /api + /v1 to :3001
+cd client && npm run dev
 ```
 
-### Usar La Aplicacion
+Open the UI, go to **Onboarding**, add one or more provider keys, then use the **Chatbot** page or hit the endpoint directly (see **Using the endpoint**).
 
-`Onboarding` es el flujo guiado: abrir paginas de registro, pegar claves API, manejar Cloudflare con `account id` + token, activar proveedores anonimos con `anonymous`, verificar claves y pasar al chatbot.
+> The server seeds/updates the model catalogue on startup and auto-groups models into the wiki's canonical entries. One valid key is enough to start; more keys = more failover headroom.
 
-`Chatbot` envia los mensajes al router local. El router elige el mejor modelo disponible segun las claves configuradas, los limites conocidos y el orden de fallback.
+---
 
-El usuario no necesita llamar una API manualmente, usar `curl`, usar un SDK de OpenAI ni configurar tool calling. Esas capacidades tecnicas siguen existiendo en el motor basado en FreeLLMAPI, pero este proyecto esta pensado para usarse desde la interfaz web.
+## Configuration (`.env`)
 
-`Agente` convierte la app en ejecucion en un servidor agentico local para el workspace actual. Puede buscar archivos, leer archivos seleccionados como contexto y consultar el router LLM configurado para ayudar con codigo. Tambien expone endpoints locales que una extension de Visual Studio o VS Code podra consumir despues:
+| Variable | Required | Purpose |
+|---|---|---|
+| `ENCRYPTION_KEY` | ✅ | 64-char hex; encrypts stored provider keys (AES-256-GCM). |
+| `DATABASE_URL` | ✅ | Postgres connection string for the feeder database. |
+| `PORT` | – | API port (default `3001`). |
+| `WEB_SEARCH_BACKEND` | – | Web-search backend for model research (default `ollama`). |
+| `OLLAMA_API_KEY` | – | Key for the Ollama hosted web-search API (needed when the backend is `ollama`). |
+| `RESEARCH_MODEL` | – | `platform/model_id` of the model that writes research summaries. If unset, the smartest reachable JSON-capable keyed model is auto-picked. |
 
-- `GET /api/agent/status`
-- `GET /api/agent/files?q=...`
-- `POST /api/agent/read`
-- `POST /api/agent/chat`
-- `POST /api/agent/replace`
+`.env` is gitignored — never commit real keys.
 
-El endpoint de reemplazo es deliberadamente prudente: solo edita archivos de texto dentro del workspace, bloquea rutas sensibles como `.env`, ignora carpetas generadas/vendor y exige una unica coincidencia exacta.
+---
 
-`extensions/vscode` contiene una primera extension de VS Code que consume estos endpoints locales. Agrega un panel de chat tipo ChatGPT dentro de VS Code, ademas de comandos para verificar el servidor, preguntar al agente, explicar una seleccion de codigo, revisar el archivo actual y abrir la pagina web Agent.
+## The web UI
 
-Para compilarla:
+Cyberpunk-themed, with three switchable colour "flavors" (holo / noir / acid) and a CRT-scanlines toggle in the header.
 
-```powershell
-npm.cmd run build -w llm-chatbot-agent
-```
-
-Para generar un paquete `.vsix`:
-
-```powershell
-npm.cmd run package -w llm-chatbot-agent
-```
-
-`Fallback` permite modificar el orden de prioridad de los modelos. Cuando una peticion falla o un proveedor esta limitado por cuota, el router intenta con el siguiente modelo.
-
-`Keys` permite administrar directamente las claves: agregar, eliminar, verificar y consultar su estado.
-
-`Analytics` muestra la actividad local: volumen de peticiones, latencia, errores y distribucion por proveedor.
-
-### Capturas
-
-| Onboarding | Chatbot |
+| Page | What it's for |
 |---|---|
-| ![Pantalla de onboarding](docs/screenshots/onboarding.png) | ![Pantalla del chatbot](docs/screenshots/chatbot.png) |
+| **Onboarding** | Guided links to grab free-tier keys from each provider, with a connect-progress bar. |
+| **Model Wiki** (`/wiki`) | Every model, grouped across suppliers, with capability pills, arena scores, and a per-model detail page (capability matrix, task scores, served-by table with live latency). |
+| **Chatbot** | A playground to chat through the router (auto or a pinned model), showing which model served each turn + latency + fallback hops. |
+| **Agent** | Attach workspace files as context and task a local agent through the router. |
+| **Key Vault** | Manage the unified key + per-provider keys, with live health/status. |
+| **Fallback** | Drag-to-reorder the fallback chain, toggle models, and view the monthly token budget. |
+| **Analytics** | Requests / latency / errors over time, per provider and per model. |
+| **How To** | How to connect any external client/agent to the endpoint (also summarised below). |
 
-| Agente | Claves | Fallback | Analitica |
-|---|---|---|---|
-| ![Pantalla del agente](docs/screenshots/agent.png) | ![Pantalla de claves](docs/screenshots/keys.png) | ![Pantalla de fallback](docs/screenshots/fallback.png) | ![Pantalla de analitica](docs/screenshots/analytics.png) |
+---
 
-### Build De Produccion
+## Using the endpoint
 
-```powershell
-npm.cmd run build
-node server/dist/index.js
+Feeder is a standard **OpenAI Chat Completions** endpoint.
+
+```bash
+curl http://localhost:3001/v1/chat/completions \
+  -H "Authorization: Bearer <your unified key>" \
+  -H "Content-Type: application/json" \
+  -d '{ "messages": [{"role":"user","content":"Say hi in 3 words."}] }'
 ```
 
-En produccion, el servidor Express sirve la API local y el cliente compilado.
+- **Auth:** the **unified key** (from the Key Vault) as the Bearer token. Provider keys stay encrypted behind it.
+- **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
+- **Model list:** `GET /v1/models`.
 
-### Seguridad Y Limites
+### Optional routing fields
 
-- Las claves de proveedores se cifran en SQLite con AES-256-GCM.
-- El proyecto esta pensado para uso personal o experimental.
-- No expongas la aplicacion en Internet sin agregar una autenticacion real.
-- Los free tiers cambian a menudo: cuotas, modelos disponibles, condiciones y limites pueden evolucionar.
-- Si una clave se vuelve invalida o queda limitada, los chequeos de salud y el fallback ayudan a continuar con otro proveedor configurado.
+All optional; omit for sensible defaults.
 
-### Origen
+| Field | Effect |
+|---|---|
+| `needs: string[]` | Only route to models *measured* to support every listed capability (e.g. `["tools","long_context"]`). |
+| `latency_ceiling_ms: number` | Prefer fast models; exclude ones whose historical p95 exceeds this. Also weights the ranker toward speed. |
+| `exclude_reasoning: boolean` | Strip raw chain-of-thought from the reply (never fold it into content). |
+| `exclude_providers: string[]` | Never use these platforms for this call. |
+| `max_attempts: number` | Cap failover hops (≤20). |
+| `session_id` / `user` | Sticky routing — keep one conversation on one model across turns. |
 
-Base tecnica: [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi)
+### Typed errors
 
-Esta version adapta el proyecto a un flujo centrado en la interfaz:
+- `422 NO_ELIGIBLE_MODEL` — nothing in the catalogue satisfies the request (capability / cost / context / latency), or no key is configured for one that does. The caller should fall back to its own local/pinned option.
+- `429 ALL_RATE_LIMITED` — eligible models exist but every key on every one is currently exhausted/cooling.
 
-- onboarding guiado para crear cuentas free tier;
-- entrada guiada de claves API;
-- chatbot listo para usar;
-- sin branding visible FreeLLMAPI en la interfaz.
+### Open WebUI
 
-### Licencia
+Settings → Connections → OpenAI API → **+**. Base URL `http://localhost:3001/v1`, API key = your unified key. Feeder's models then appear in the picker; add a model literally named `auto` to let the router choose.
 
-MIT, igual que el proyecto original.
+### Agents
+
+Register feeder as a custom OpenAI-compatible provider (base URL + unified key). Have each call-site declare what it needs via `extra_body` (`needs`, `exclude_reasoning`, `latency_ceiling_ms`, …). Because `needs[]` is caller-declared, the router never needs to know anything about your agent — it honours what's asked and refuses cleanly (422) if nothing qualifies, so your agent can fall back to a local model. See the **How To** page for a full example + system prompt.
+
+---
+
+## How routing works
+
+1. **Derive needs** from the request (tools present → `tools`; `response_format` → `json_mode`; `reasoning_effort` → `reasoning_control`) plus any caller-declared `needs[]`.
+2. **Hard filter** the catalogue, fresh per attempt: capability match (`json_mode`/`reasoning_control` against the provider dialect; everything else against `source='measured'` capability rows), cost-tier ceiling, context window vs estimated tokens, TPM ceiling, latency ceiling, a configured key, and not circuit-broken.
+3. **Rank** the survivors by `health × (quality + latency)`, where latency's weight scales with the declared `latency_ceiling_ms` (tight → speed dominates for chat; loose → quality dominates for batch). Quality comes from web-researched per-task scores; until those exist it falls back to the curated intelligence rank.
+4. **Attempt** the top pick; on a retryable error, skip that model+key (cooldown it) and re-filter → next. Exhaustion → the typed errors above.
+
+Capability facts are **measured, not assumed** — the probe suite exists because provider spec sheets and docs were wrong often enough to matter live (silent context truncation, unsupported reasoning params, ignored JSON mode, tool-schema rejection). A `declared` (docs/web) fact is a lead for the probe scheduler, never trusted for a hard gate.
+
+---
+
+## Model capabilities & probes
+
+Each model's capabilities are stored per-supplier-instance with a `source`:
+
+- **`measured`** — actually tested on the wire (probes). The only source hard gates trust.
+- **`declared`** — sourced from docs/web by research; a lead, not a gate.
+
+Probes (`server/src/services/probes/methods.ts`) test tools (with a realistic nested schema, not a toy), JSON mode (parsed against a schema, not just "no error"), long-context needle recall (scaled to the model's own declared window), and reachability. A full sweep across every keyed model:
+
+```bash
+cd server && npx tsx src/scripts/run-full-catalog-sweep.ts [--limit N]
+```
+
+Consumers can also report their own measured capability facts via `POST /api/capabilities` (generic — feeder never needs to know what the capability *means*).
+
+---
+
+## Model research (per-model summaries + task scores)
+
+The **Model Wiki** shows a written summary of what each model is good at, plus per-task quality scores — grounded in real web data (arena leaderboards + general search) and written by one of *your own* connected models.
+
+- **Web-search backend** is pluggable (`server/src/services/webSearch.ts`), Ollama's hosted search by default. Add another (Tavily/Brave/SearXNG) by implementing `SearchBackend` and setting `WEB_SEARCH_BACKEND`.
+- **Writer model** is `RESEARCH_MODEL` (pick one strong at writing) or auto-picked.
+- **Grounded, not fabricated:** the writer uses only the fetched sources and nulls any score it can't support. Scores are `source='benchmark'` (an external claim), never presented as something feeder measured.
+
+Run it:
+
+```bash
+cd server && npm run research            # all canonical models
+cd server && npm run research -- --limit 10
+# or per-model from the UI / API: POST /api/canon/:id/research
+```
+
+Re-runs are idempotent — they only fill gaps (a written summary is never overwritten with null). Note: free web-search tiers cap requests per hour, so a full catalogue populate fills in across re-runs.
+
+It is **not** wired to a persistent schedule by default — a standing job that spends provider/search quota on a timer is an operator decision; the mechanism is built and runnable on demand.
+
+---
+
+## Model health & auto-disable
+
+- **Health** (`server/src/services/modelHealth.ts`) is derived on a 5-minute cadence from the request log — passively, no extra probe traffic. It tracks recent median latency, success rate, a circuit-breaker cooldown on fresh 429s/timeouts, and conservative quota-aware benching.
+- **No-key grace period:** if a platform loses its last usable key and it isn't replaced within 10 minutes, that platform's models are auto-disabled until a key returns.
+- A single `disabled_reason` (`no_key` / `unhealthy` / `manual`) ensures the auto-disable mechanisms and a human's manual toggle never fight each other.
+
+---
+
+## Development
+
+```bash
+cd server && npm test          # vitest — full suite
+cd server && npm run build     # tsc
+cd client && npm run build     # vite
+```
+
+Schema changes: edit `server/src/db/schema.ts`, then `npx drizzle-kit generate` + `npx drizzle-kit migrate`.
+
+---
+
+## Credits
+
+Built on [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi). The UI design is a Claude Design handoff implementation.
