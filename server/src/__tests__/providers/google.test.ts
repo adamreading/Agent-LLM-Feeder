@@ -358,6 +358,59 @@ describe('GoogleProvider', () => {
     expect(assistantEntry.parts[0].functionCall.name).toBe('get_weather');
   });
 
+  it('re-injects a cached thought_signature when the client round-trip drops it', async () => {
+    // Gemini 3 400s if a follow-up functionCall omits the signature. A client
+    // may carry it under a different field (e.g. Hermes uses `extra_content`)
+    // that doesn't survive the OpenAI-compat round-trip. Feeder self-heals:
+    // it cached the signature by tool_call id on extraction and re-injects it
+    // even though the echoed tool_call has NO thought_signature field at all.
+    let capturedBody: any;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          candidates: [{
+            content: {
+              parts: [{
+                thoughtSignature: 'sig_selfheal',
+                functionCall: { id: 'call_selfheal', name: 'get_weather', args: { city: 'Paris' } },
+              }],
+            },
+            finishReason: 'STOP',
+          }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      } as any;
+    });
+
+    // 1. First turn — feeder extracts and caches the signature under the id.
+    await provider.chatCompletion('test-key', [{ role: 'user', content: 'Weather?' }], 'gemini-3-flash-preview');
+
+    // 2. Follow-up where the echoed tool_call has NO thought_signature.
+    await provider.chatCompletion(
+      'test-key',
+      [
+        { role: 'user', content: 'Weather?' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{
+            id: 'call_selfheal',
+            type: 'function',
+            function: { name: 'get_weather', arguments: '{"city":"Paris"}' },
+            // no thought_signature — the client dropped it
+          }],
+        },
+        { role: 'tool', tool_call_id: 'call_selfheal', content: '{"temp": 18}' },
+      ],
+      'gemini-3-flash-preview',
+    );
+
+    const assistantEntry = capturedBody.contents.find((c: any) => c.role === 'model');
+    expect(assistantEntry.parts[0].thoughtSignature).toBe('sig_selfheal');
+  });
+
   // ── Streaming ──────────────────────────────────────────────────────────────
   // Build a Response-shaped object backed by a ReadableStream so the provider's
   // `res.body.getReader()` path executes for real (Node 20+ has both globally).

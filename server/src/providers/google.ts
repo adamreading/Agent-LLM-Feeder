@@ -11,6 +11,44 @@ import { BaseProvider, type CompletionOptions, type DialectConfig } from './base
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
+// Gemini 3 thinking models REJECT a follow-up (400 "Function call is missing a
+// thought_signature in functionCall") whose prior functionCall omits the
+// thoughtSignature Gemini issued. That signature is a NON-STANDARD extension to
+// the OpenAI tool_call schema, so it does not reliably survive a client's
+// round-trip: one client carries it top-level (`thought_signature`), another
+// nests it under `extra_content`, and if the field names don't line up on BOTH
+// legs it silently vanishes and the next turn 400s.
+//
+// Feeder is the translation/resilience layer, so it self-heals instead of
+// depending on any client's field shape: remember the signature keyed by the
+// tool_call id we hand out when we EXTRACT it, and re-inject it on echo-back if
+// the client didn't return one. The id round-trips verbatim (client echoes the
+// exact id feeder gave it), so the key always matches — robust to ANY client.
+const sigCache = new Map<string, { sig: string; ts: number }>();
+const SIG_TTL_MS = 30 * 60 * 1000; // matches the proxy sticky-session TTL
+const SIG_MAX = 2000;
+
+function rememberSig(id: string, sig: string | undefined): void {
+  if (!sig) return;
+  sigCache.set(id, { sig, ts: Date.now() });
+  if (sigCache.size > SIG_MAX) {
+    const cutoff = Date.now() - SIG_TTL_MS;
+    for (const [k, v] of sigCache) if (v.ts < cutoff) sigCache.delete(k);
+    while (sigCache.size > SIG_MAX) {
+      const oldest = sigCache.keys().next().value;
+      if (oldest === undefined) break;
+      sigCache.delete(oldest);
+    }
+  }
+}
+
+function recallSig(id: string): string | undefined {
+  const e = sigCache.get(id);
+  if (!e) return undefined;
+  if (Date.now() - e.ts > SIG_TTL_MS) { sigCache.delete(id); return undefined; }
+  return e.sig;
+}
+
 interface GeminiPart {
   text?: string;
   thoughtSignature?: string;
@@ -188,7 +226,9 @@ function toGeminiContents(messages: ChatMessage[]) {
 
         for (const call of m.tool_calls ?? []) {
           parts.push({
-            thoughtSignature: call.thought_signature,
+            // Self-heal: prefer the client-echoed signature, else the one we
+            // cached when we handed this tool_call id out (see sigCache).
+            thoughtSignature: call.thought_signature ?? recallSig(call.id),
             functionCall: {
               id: call.id,
               name: call.function.name,
@@ -247,6 +287,9 @@ function extractToolCalls(parts: GeminiPart[] | undefined): ChatToolCall[] {
     if (!part.functionCall?.name) continue;
 
     const id = part.functionCall.id ?? `call_${Date.now()}_${fallbackIndex++}`;
+    // Remember the signature under the id we're about to hand out, so we can
+    // re-inject it on the follow-up even if the client's round-trip drops it.
+    rememberSig(id, part.thoughtSignature);
     calls.push({
       id,
       type: 'function',
