@@ -67,6 +67,47 @@ function toGeminiFinishReason(finishReason?: string): string {
   return 'stop';
 }
 
+// JSON-schema keywords Google's function-declaration + responseSchema parser
+// (a strict OpenAPI-3.0 subset) rejects outright with a 400. Found live
+// 2026-07-08 (wsl, on a real Lunk Discord turn): Lunk's real tool schemas use
+// `additionalProperties` — valid JSON-schema, accepted by every OTHER provider
+// — and Gemini 400s ("Unknown name 'additionalProperties'"), 502ing the whole
+// turn and forcing a degraded local fallback. windows confirmed the same class
+// hits json_mode responseSchema for OB's structured-extraction call-sites.
+// Gemini genuinely tool-calls and honors JSON schema; its parser just can't
+// tolerate these keywords, so we strip them before dispatch — the dialect/
+// compat layer's job, exactly like the reasoning-dialect translation. This
+// helps ALL consumers (Lunk, OB, Open WebUI), not just one, so it lives here
+// in the provider adapter, not in any caller.
+const GEMINI_UNSUPPORTED_SCHEMA_KEYS = new Set([
+  'additionalProperties', 'unevaluatedProperties', 'patternProperties', 'additionalItems',
+  'unevaluatedItems', '$schema', '$id', '$ref', '$defs', 'definitions', '$comment', '$anchor',
+]);
+
+// Recursively strip the unsupported keywords. Careful with `properties`: its
+// child keys are arbitrary PROPERTY NAMES, not schema keywords, so a parameter
+// legitimately named e.g. "additionalProperties" must survive — only strip a
+// blocklisted key when it's acting as a schema keyword, never as a prop name.
+export function sanitizeSchemaForGemini(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(sanitizeSchemaForGemini);
+  if (!node || typeof node !== 'object') return node;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+    if (GEMINI_UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
+    if (key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const props: Record<string, unknown> = {};
+      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+        props[propName] = sanitizeSchemaForGemini(propSchema); // recurse into the schema, keep the name verbatim
+      }
+      out[key] = props;
+      continue;
+    }
+    out[key] = sanitizeSchemaForGemini(value);
+  }
+  return out;
+}
+
 function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclarations: Array<Record<string, unknown>> }> | undefined {
   if (!tools || tools.length === 0) return undefined;
 
@@ -74,7 +115,7 @@ function toGeminiTools(tools?: ChatToolDefinition[]): Array<{ functionDeclaratio
     functionDeclarations: tools.map(t => ({
       name: t.function.name,
       description: t.function.description,
-      parameters: t.function.parameters,
+      parameters: sanitizeSchemaForGemini(t.function.parameters),
     })),
   }];
 }
@@ -94,7 +135,9 @@ function toGeminiGenerationConfig(options?: CompletionOptions): Record<string, u
     config.responseMimeType = 'application/json';
   } else if (options?.response_format?.type === 'json_schema' && options.response_format.json_schema) {
     config.responseMimeType = 'application/json';
-    config.responseSchema = options.response_format.json_schema.schema;
+    // Same strict-parser sanitize as tool parameters (windows' finding: OB's
+    // structured-extraction response schemas hit the identical rejection).
+    config.responseSchema = sanitizeSchemaForGemini(options.response_format.json_schema.schema);
   }
   return config;
 }

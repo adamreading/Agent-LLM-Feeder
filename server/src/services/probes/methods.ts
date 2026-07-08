@@ -16,15 +16,40 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
   const start = Date.now();
   try {
     const result = await ctx.provider.chatCompletion(ctx.apiKey, [
-      { role: 'user', content: 'What is the weather in Paris? Use the get_weather tool.' },
+      { role: 'user', content: 'What is the weather in Paris, France in celsius? Use the get_weather tool.' },
     ], ctx.modelId, {
       max_tokens: 100,
       tools: [{
         type: 'function',
         function: {
           name: 'get_weather',
-          description: 'Get the current weather for a city',
-          parameters: { type: 'object', properties: { city: { type: 'string' } }, required: ['city'] },
+          description: 'Get the current weather for a location',
+          // REALISTIC schema, not a toy (fix for the probe-vs-reality gap wsl
+          // caught live 2026-07-08): nested object params + additionalProperties
+          // at multiple levels, mirroring the shape real consumers (Lunk's ~59
+          // tools, OB's extraction) actually send. A provider that passes a
+          // trivial flat get_weather but chokes on additionalProperties (Gemini,
+          // pre-sanitizer) must now FAIL this probe — so tools=true reflects
+          // real-world tool use. With the Google sanitizer in place, Gemini's
+          // probe call is cleaned on dispatch and passes correctly.
+          parameters: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              location: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  city: { type: 'string', description: 'City name' },
+                  country: { type: 'string', description: 'Country name' },
+                },
+                required: ['city'],
+              },
+              units: { type: 'string', enum: ['celsius', 'fahrenheit'] },
+              extra: { type: 'object', additionalProperties: { type: 'string' } },
+            },
+            required: ['location'],
+          },
         },
       }],
       tool_choice: 'required',

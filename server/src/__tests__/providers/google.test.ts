@@ -1,5 +1,93 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { GoogleProvider } from '../../providers/google.js';
+import { GoogleProvider, sanitizeSchemaForGemini } from '../../providers/google.js';
+
+// wsl found live (2026-07-08, real Lunk turn): Gemini 400s on JSON-schema
+// `additionalProperties` in tool parameters (valid schema, accepted by every
+// other provider), 502ing the whole turn. windows confirmed the same hits
+// json_mode responseSchema for OB's structured extraction. These prove the
+// dialect-compat sanitizer strips the keywords Gemini rejects — recursively,
+// at every nesting level, in both tool params and response schemas — while
+// leaving legitimate schema intact.
+describe('sanitizeSchemaForGemini', () => {
+  it('strips additionalProperties at every nesting level', () => {
+    const dirty = {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        location: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { city: { type: 'string' } },
+          required: ['city'],
+        },
+        extra: { type: 'object', additionalProperties: { type: 'string' } },
+      },
+      required: ['location'],
+    };
+    const clean = JSON.stringify(sanitizeSchemaForGemini(dirty));
+    expect(clean).not.toContain('additionalProperties');
+    // legitimate structure preserved
+    const parsed = JSON.parse(clean);
+    expect(parsed.type).toBe('object');
+    expect(parsed.properties.location.properties.city.type).toBe('string');
+    expect(parsed.properties.location.required).toEqual(['city']);
+    expect(parsed.required).toEqual(['location']);
+    expect(parsed.properties.extra.type).toBe('object');
+  });
+
+  it('strips $schema/$ref/$defs/definitions meta keywords', () => {
+    const dirty = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      $defs: { foo: { type: 'string' } },
+      definitions: { bar: { type: 'number' } },
+      type: 'object',
+      properties: { x: { $ref: '#/$defs/foo' } },
+    };
+    const parsed: any = sanitizeSchemaForGemini(dirty);
+    expect(parsed.$schema).toBeUndefined();
+    expect(parsed.$defs).toBeUndefined();
+    expect(parsed.definitions).toBeUndefined();
+    expect(parsed.properties.x.$ref).toBeUndefined();
+    expect(parsed.type).toBe('object');
+  });
+
+  it('preserves a property LEGITIMATELY named "additionalProperties" (it is a property name, not a schema keyword there)', () => {
+    const dirty = {
+      type: 'object',
+      properties: {
+        additionalProperties: { type: 'boolean', description: 'a real user-facing flag' },
+        name: { type: 'string' },
+      },
+      required: ['name'],
+    };
+    const parsed: any = sanitizeSchemaForGemini(dirty);
+    // The property named "additionalProperties" survives...
+    expect(parsed.properties.additionalProperties).toBeDefined();
+    expect(parsed.properties.additionalProperties.type).toBe('boolean');
+    // ...and its nested schema is still sanitized normally.
+    expect(parsed.properties.name.type).toBe('string');
+  });
+
+  it('recurses through arrays (e.g. anyOf / items lists)', () => {
+    const dirty = {
+      type: 'object',
+      properties: {
+        val: { anyOf: [{ type: 'string' }, { type: 'object', additionalProperties: false, properties: {} }] },
+        list: { type: 'array', items: { type: 'object', additionalProperties: true, properties: { a: { type: 'string' } } } },
+      },
+    };
+    const clean = JSON.stringify(sanitizeSchemaForGemini(dirty));
+    expect(clean).not.toContain('additionalProperties');
+    const parsed = JSON.parse(clean);
+    expect(parsed.properties.val.anyOf[0].type).toBe('string');
+    expect(parsed.properties.list.items.properties.a.type).toBe('string');
+  });
+
+  it('leaves a schema with no offending keys untouched', () => {
+    const clean = { type: 'object', properties: { city: { type: 'string', enum: ['a', 'b'] } }, required: ['city'] };
+    expect(sanitizeSchemaForGemini(clean)).toEqual(clean);
+  });
+});
 
 describe('GoogleProvider', () => {
   let provider: GoogleProvider;
@@ -91,6 +179,45 @@ describe('GoogleProvider', () => {
     expect(capturedBody.systemInstruction).toEqual({ parts: [{ text: 'You are helpful' }] });
     expect(capturedBody.contents).toHaveLength(1);
     expect(capturedBody.contents[0].role).toBe('user');
+  });
+
+  it('sanitizes tool parameter schemas on the wire — the outgoing Gemini payload carries no additionalProperties', async () => {
+    let capturedBody: any;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      } as any;
+    });
+
+    await provider.chatCompletion(
+      'test-key',
+      [{ role: 'user', content: 'Weather?' }],
+      'gemini-2.5-pro',
+      {
+        tools: [{
+          type: 'function',
+          function: {
+            name: 'get_weather',
+            description: 'weather',
+            parameters: {
+              type: 'object',
+              additionalProperties: false,
+              properties: { location: { type: 'object', additionalProperties: false, properties: { city: { type: 'string' } } } },
+            },
+          },
+        }],
+      },
+    );
+
+    const wire = JSON.stringify(capturedBody);
+    expect(wire).not.toContain('additionalProperties');
+    // but the real structure is intact
+    expect(capturedBody.tools[0].functionDeclarations[0].parameters.properties.location.properties.city.type).toBe('string');
   });
 
   it('should translate OpenAI tools/tool_choice to Gemini tools/toolConfig', async () => {
