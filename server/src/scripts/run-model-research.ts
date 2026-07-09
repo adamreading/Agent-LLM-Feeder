@@ -12,7 +12,7 @@
 import '../env.js';
 import { initDb, closeDb, getPool } from '../db/index.js';
 import { all } from '../db/pgCompat.js';
-import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
+import { researchWriterAvailable, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
 import { loadSearchConfigIntoEnv } from '../services/searchConfig.js';
 
@@ -28,15 +28,14 @@ async function main() {
   await loadSearchConfigIntoEnv(pool);
 
   if (!searchConfigured()) {
-    console.error('No web-search backend configured. Set WEB_SEARCH_BACKEND (default "ollama") and its API key (e.g. OLLAMA_API_KEY) in .env.');
+    console.error('No web-search backend configured. Set WEB_SEARCH_BACKEND (default "tavily"/"ollama") and its API key in .env or the onboarding UI.');
     process.exit(1);
   }
-  const writer = await getWriterModel(pool);
-  if (!writer) {
-    console.error('No writer model available. Set RESEARCH_MODEL=platform/model_id in .env, or add a key for a json_mode-capable model.');
+  if (!(await researchWriterAvailable(pool))) {
+    console.error('No writer model available. Add a key for a json_mode-capable model.');
     process.exit(1);
   }
-  console.log(`Writer model: ${writer.platform}/${writer.modelId}`);
+  console.log('Writer: feeder auto/research (routes to the best available json_mode model, fails over across the pool)');
 
   const limitArg = process.argv.indexOf('--limit');
   const limit = limitArg !== -1 ? parseInt(process.argv[limitArg + 1], 10) : undefined;
@@ -54,7 +53,7 @@ async function main() {
   let ok = 0, empty = 0, failed = 0;
   for (const c of canonicals) {
     try {
-      const res = await researchCanonicalModel(pool, c.id, writer);
+      const res = await researchCanonicalModel(pool, c.id);
       if (res.summary || Object.keys(res.tasks).length) {
         await recordResearch(pool, c.id, res);
         ok++;

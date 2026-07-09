@@ -4,7 +4,7 @@ import { getPool } from '../db/index.js';
 import { get, all, run } from '../db/pgCompat.js';
 import { matchModels, linkToExistingCanonical, createCanonicalFromModel } from '../services/modelCanon.js';
 import { recordTaskScore, getTaskScores, TASK_TYPES } from '../services/taskScores.js';
-import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
+import { researchWriterAvailable, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
 import { startMissingResearch, getResearchStatus } from '../services/researchRunner.js';
 
@@ -202,13 +202,12 @@ canonRouter.post('/:id/research', async (req, res) => {
     return;
   }
   const pool = getPool();
-  const writer = await getWriterModel(pool);
-  if (!writer) {
-    res.status(503).json({ error: { message: 'No writer model available (set RESEARCH_MODEL or add a json_mode-capable key).', type: 'not_configured' } });
+  if (!(await researchWriterAvailable(pool))) {
+    res.status(503).json({ error: { message: 'No writer model available (add a key for a json_mode-capable model).', type: 'not_configured' } });
     return;
   }
   try {
-    const result = await researchCanonicalModel(pool, id, writer);
+    const result = await researchCanonicalModel(pool, id);
     await recordResearch(pool, id, result);
     res.status(200).json({ summary: result.summary, tasks: result.tasks, sources: result.sources });
   } catch (err: any) {

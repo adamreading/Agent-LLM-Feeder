@@ -1,51 +1,38 @@
 import type pg from 'pg';
 import { all, get, run } from '../db/pgCompat.js';
-import { getProvider } from '../providers/index.js';
-import { decrypt } from '../lib/crypto.js';
 import { getSearchBackend, type SearchResult } from './webSearch.js';
 import { recordTaskScore, TASK_TYPES } from './taskScores.js';
+import { routedChat } from './routedCompletion.js';
 
 // Per-model "street research" (Adam's brief): a nicely-written summary of what
 // each model is actually good at, plus per-task quality scores — grounded in
 // real web data (arena.ai/leaderboard + general search about the model), and
-// WRITTEN by one of the fleet's own models chosen for writing/research. The
-// web-search backend is pluggable (services/webSearch.ts, Ollama by default);
-// the writer model is configurable (RESEARCH_MODEL) or auto-picked.
+// WRITTEN by one of the fleet's own models — chosen DYNAMICALLY by feeder's own
+// router (routedChat, task 'research', needs json_mode), so it always uses the
+// best available writer and fails over across the pool. The web-search backend
+// is pluggable (services/webSearch.ts, Tavily/DDG/Ollama).
 //
 // Discipline (same as the capability probes): grounded, never fabricated — the
 // writer is told to use ONLY the supplied sources and to null a score it can't
 // support, rather than guess. Scores are source='benchmark' (external claim),
 // never presented as something feeder measured on the wire.
 
-interface WriterCtx { platform: string; modelId: string; apiKey: string }
-
-// Pick the model that writes the summaries. RESEARCH_MODEL=platform/model_id
-// overrides; otherwise auto-pick the smartest reachable, json_mode-capable,
-// keyed model (good structured output + strong writing correlate with rank).
-export async function getWriterModel(pool: pg.Pool): Promise<WriterCtx | null> {
-  const explicit = process.env.RESEARCH_MODEL
-  if (explicit && explicit.includes('/')) {
-    const platform = explicit.slice(0, explicit.indexOf('/'))
-    const modelId = explicit.slice(explicit.indexOf('/') + 1)
-    const keyRow = await get<{ encrypted_key: string; iv: string; auth_tag: string }>(pool,
-      `SELECT encrypted_key, iv, auth_tag FROM api_keys WHERE platform = ? AND enabled = true AND status != 'invalid' LIMIT 1`, [platform])
-    if (keyRow) return { platform, modelId, apiKey: decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag) }
-  }
-  // Auto-pick: smartest model that is (a) json_mode-capable, (b) confirmed
-  // REACHABLE (both measured), (c) enabled with a live key. The reachable
-  // requirement avoids picking a catalog entry whose endpoint 404s.
-  const row = await get<{ platform: string; model_id: string; encrypted_key: string; iv: string; auth_tag: string }>(pool, `
-    SELECT m.platform, m.model_id, k.encrypted_key, k.iv, k.auth_tag
+// Is a research writer available at all? The writer now routes through feeder's
+// own router (routedChat, task 'research', needs json_mode), so "available"
+// just means the catalog has an enabled, keyed, json_mode-capable model the
+// router could pick. Used as a cheap gate by the routes/runner before spending
+// a search call. RESEARCH_MODEL is no longer a pin — routing chooses the best
+// AVAILABLE writer dynamically and fails over across the pool (Adam's call).
+export async function researchWriterAvailable(pool: pg.Pool): Promise<boolean> {
+  const row = await get<{ id: number }>(pool, `
+    SELECT m.id
     FROM models m
     JOIN api_keys k ON k.platform = m.platform AND k.enabled = true AND k.status != 'invalid'
     WHERE m.enabled = true
       AND EXISTS (SELECT 1 FROM model_capabilities c WHERE c.model_db_id = m.id AND c.capability = 'json_mode' AND c.supported = true AND c.source = 'measured')
-      AND EXISTS (SELECT 1 FROM model_capabilities c WHERE c.model_db_id = m.id AND c.capability = 'reachable' AND c.supported = true AND c.source = 'measured')
-    ORDER BY m.intelligence_rank ASC
     LIMIT 1
   `)
-  if (!row) return null
-  return { platform: row.platform, modelId: row.model_id, apiKey: decrypt(row.encrypted_key, row.iv, row.auth_tag) }
+  return !!row
 }
 
 interface Modalities { vision: boolean | null; audio: boolean | null; video: boolean | null }
@@ -66,7 +53,7 @@ function parseLooseJson(text: string): any | null {
   return null
 }
 
-export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number, writer: WriterCtx): Promise<ResearchResult> {
+export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number): Promise<ResearchResult> {
   const canonical = await get<{ name: string; slug: string }>(pool, `SELECT name, slug FROM canonical_models WHERE id = ?`, [canonicalId])
   if (!canonical) throw new Error(`No canonical model ${canonicalId}`)
   const name = canonical.name
@@ -118,31 +105,20 @@ Rules: omit any task the sources don't address (do not guess). For vision/audio/
 Search results:
 ${corpus}`
 
-  const provider = getProvider(writer.platform as any)
-  if (!provider) throw new Error(`Writer platform ${writer.platform} has no provider`)
-  // The writer is a rate-limited provider like any other (nvidia mistral-large-3
-  // is 40 rpm) — retry its 429s/timeouts with backoff so a transient limit skips
-  // nothing. This error is deliberately NOT tagged isSearchError: if it exhausts
-  // retries the model is skipped, but the whole run does NOT stop.
-  let result: Awaited<ReturnType<typeof provider.chatCompletion>> | null = null
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      result = await provider.chatCompletion(writer.apiKey, [{ role: 'user', content: prompt }], writer.modelId, {
-        max_tokens: 600,
-        response_format: { type: 'json_object' },
-      })
-      break
-    } catch (err: any) {
-      const msg = err?.message ?? ''
-      if (attempt < 3 && /429|too many|rate.?limit|aborted|timeout|ETIMEDOUT|ECONNRESET/i.test(msg)) {
-        await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)))
-        continue
-      }
-      throw err
-    }
-  }
-  if (!result) return { summary: null, tasks: {}, modalities: noModalities, sources: results.map(r => r.url) }
-  const content = result.choices?.[0]?.message?.content
+  // The writer routes through feeder's OWN router as `auto/research` (Adam's
+  // call): no single pinned model that stalls when it rate-limits — it fails
+  // over across the pool and always uses the best AVAILABLE writer, scored on
+  // instruction-following (must honor the JSON schema) and filtered to
+  // json_mode-capable providers. exclude_reasoning keeps raw CoT out of the JSON.
+  const routed = await routedChat([{ role: 'user', content: prompt }], {
+    taskClass: 'research',
+    needs: ['json_mode'],
+    responseFormat: { type: 'json_object' },
+    excludeReasoning: true,
+    maxTokens: 600,
+    maxAttempts: 6,
+  })
+  const content = routed?.content
   if (typeof content !== 'string') return { summary: null, tasks: {}, modalities: noModalities, sources: results.map(r => r.url) }
 
   const parsed = parseLooseJson(content)

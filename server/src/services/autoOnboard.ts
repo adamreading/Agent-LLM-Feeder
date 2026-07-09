@@ -1,7 +1,7 @@
 import type pg from 'pg';
 import { all } from '../db/pgCompat.js';
 import { probeNeverProbed, reprobeSuspects } from './probes/scheduler.js';
-import { getWriterModel, researchCanonicalModel, recordResearch } from './modelResearch.js';
+import { researchWriterAvailable, researchCanonicalModel, recordResearch } from './modelResearch.js';
 import { searchConfigured } from './webSearch.js';
 
 // Auto-onboard on arrival (Adam's ask): when a new model/supplier appears, it
@@ -34,13 +34,12 @@ export async function autoOnboardNewArrivals(pool: pg.Pool): Promise<void> {
     `);
     if (missing.length === 0) { log('no un-researched canonical models'); return; }
     if (!searchConfigured()) { log(`${missing.length} un-researched models, but no web-search backend configured — skipping research`); return; }
-    const writer = await getWriterModel(pool);
-    if (!writer) { log(`${missing.length} un-researched models, but no writer model available — skipping research`); return; }
+    if (!(await researchWriterAvailable(pool))) { log(`${missing.length} un-researched models, but no writer model available — skipping research`); return; }
 
-    log(`researching ${missing.length} new canonical model(s) with ${writer.platform}/${writer.modelId}`);
+    log(`researching ${missing.length} new canonical model(s) via auto/research`);
     for (const c of missing) {
       try {
-        const res = await researchCanonicalModel(pool, c.id, writer);
+        const res = await researchCanonicalModel(pool, c.id);
         if (res.summary || Object.keys(res.tasks).length) {
           await recordResearch(pool, c.id, res);
           log(`researched ${c.name}`);

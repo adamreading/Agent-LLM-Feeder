@@ -232,6 +232,9 @@ const TASK_CLASS_TO_TASK_TYPE: Record<string, string> = {
   chat: 'multi_turn', agentic_chat: 'multi_turn', conversation: 'multi_turn', multi_turn: 'multi_turn',
   long: 'long_query', long_query: 'long_query', long_context: 'long_query',
   instruction: 'instruction_following', instruction_following: 'instruction_following',
+  // feeder's OWN research writer routes as auto/research — it must follow a
+  // strict JSON schema, so it's scored on instruction-following.
+  research: 'instruction_following', extraction: 'instruction_following',
 };
 function taskTypeFor(taskClass: string | null | undefined): string {
   if (!taskClass) return 'overall';

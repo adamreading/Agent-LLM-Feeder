@@ -1,6 +1,6 @@
 import type pg from 'pg';
 import { all } from '../db/pgCompat.js';
-import { getWriterModel, researchCanonicalModel, recordResearch } from './modelResearch.js';
+import { researchWriterAvailable, researchCanonicalModel, recordResearch } from './modelResearch.js';
 import { searchConfigured } from './webSearch.js';
 
 // Background "research everything without a summary" runner, shared by the
@@ -52,8 +52,7 @@ export async function getResearchStatus(pool: pg.Pool): Promise<ResearchStatus> 
 export async function startMissingResearch(pool: pg.Pool): Promise<ResearchStatus & { started: boolean; reason?: string }> {
   if (status.running) return { ...status, started: false, reason: 'A research pass is already running.' };
   if (!searchConfigured()) return { ...status, started: false, reason: 'No web-search backend configured (set WEB_SEARCH_BACKEND + its API key).' };
-  const writer = await getWriterModel(pool);
-  if (!writer) return { ...status, started: false, reason: 'No writer model available (set RESEARCH_MODEL or add a json_mode-capable key).' };
+  if (!(await researchWriterAvailable(pool))) return { ...status, started: false, reason: 'No writer model available (add a key for a json_mode-capable model).' };
 
   const targets = await all<{ id: number; name: string }>(pool, `
     SELECT id, name FROM canonical_models WHERE summary IS NULL OR summary = '' ORDER BY name ASC
@@ -68,7 +67,7 @@ export async function startMissingResearch(pool: pg.Pool): Promise<ResearchStatu
     for (const t of targets) {
       status.current = t.name;
       try {
-        const res = await researchCanonicalModel(pool, t.id, writer);
+        const res = await researchCanonicalModel(pool, t.id);
         if (res.summary || Object.keys(res.tasks).length) {
           await recordResearch(pool, t.id, res);
           status.done++;
