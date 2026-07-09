@@ -7,13 +7,11 @@ const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
 interface FallbackEntry {
   modelDbId: number
-  priority: number
-  enabled: boolean
   platform: string
   modelId: string
   displayName: string
-  sizeLabel: string
   keyCount: number
+  status: 'eligible' | 'disabled' | 'no_key' | 'cooling'
 }
 
 interface ChatMessage {
@@ -46,8 +44,8 @@ export default function PlaygroundPage() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: keyData } = useQuery<{ apiKey: string }>({ queryKey: ['unified-key'], queryFn: () => apiFetch('/api/settings/api-key') })
-  const { data: fallbackEntries = [] } = useQuery<FallbackEntry[]>({ queryKey: ['fallback'], queryFn: () => apiFetch('/api/fallback') })
-  const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.enabled)
+  const { data: fallbackEntries = [] } = useQuery<FallbackEntry[]>({ queryKey: ['fallback-order'], queryFn: async () => (await apiFetch<{ rows: FallbackEntry[] }>('/api/fallback/order')).rows })
+  const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
   useEffect(() => { saveChatSession(messages) }, [messages])

@@ -535,3 +535,78 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     'All eligible models exhausted. Add more API keys or wait for rate limits to reset.',
   );
 }
+
+// ── Read-only routing "reality" view (fallback page) ────────────────────────
+// Returns the REAL current effective ordering with the score breakdown, using
+// the SAME candidateScore + structural checks routeRequest uses — so the UI can
+// DISPLAY exactly how models would be prioritised right now, without the page
+// controlling anything. Pass a taskClass to see task-specific ordering.
+export interface RoutingExplainRow {
+  modelDbId: number;
+  platform: string;
+  modelId: string;
+  displayName: string;
+  intelligenceRank: number;
+  taskScore: number | null;      // 0-1 arena score for the (task) type shown
+  penalty: number;               // live in-memory 429 penalty
+  healthScore: number | null;    // 0-1
+  latencyMs: number | null;      // recent median
+  effectiveScore: number;        // composite (lower = tried earlier)
+  keyCount: number;
+  cooling: boolean;              // live circuit-breaker cooldown
+  costTier: string;
+  status: 'eligible' | 'disabled' | 'no_key' | 'cooling';
+}
+
+export async function explainRouting(taskClass?: string | null): Promise<{ taskType: string; rows: RoutingExplainRow[] }> {
+  const pool = getPool();
+  const taskType = taskTypeFor(taskClass);
+
+  const models = await all<{
+    id: number; platform: string; model_id: string; display_name: string;
+    intelligence_rank: number; cost_tier: string; model_enabled: boolean;
+    fc_enabled: boolean; disabled_reason: string | null; key_count: string;
+  }>(pool, `
+    SELECT m.id, m.platform, m.model_id, m.display_name, m.intelligence_rank,
+           m.cost_tier, m.enabled AS model_enabled, m.disabled_reason,
+           fc.enabled AS fc_enabled,
+           (SELECT count(*) FROM api_keys k WHERE k.platform = m.platform AND k.enabled = true AND k.status != 'invalid') AS key_count
+    FROM fallback_config fc
+    JOIN models m ON m.id = fc.model_db_id
+  `);
+
+  const healthMap = await getHealthMap(pool);
+  const taskRows = await all<{ model_db_id: number; score: number }>(pool, `
+    SELECT m.id AS model_db_id, ts.score
+    FROM models m
+    JOIN task_scores ts ON ts.canonical_model_id = m.canonical_model_id AND ts.task_type = ?
+  `, [taskType]);
+  const taskScoreMap = new Map(taskRows.map(r => [r.model_db_id, Number(r.score)]));
+
+  const now = Date.now();
+  const rows: RoutingExplainRow[] = models.map(m => {
+    const health = healthMap.get(m.id);
+    const taskScore = taskScoreMap.has(m.id) ? taskScoreMap.get(m.id)! : null;
+    const keyCount = Number(m.key_count);
+    const cooling = !!(health?.cooldown_until && new Date(health.cooldown_until).getTime() > now);
+    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined);
+    const status: RoutingExplainRow['status'] =
+      (!m.model_enabled || !m.fc_enabled) ? 'disabled'
+        : keyCount === 0 ? 'no_key'
+          : cooling ? 'cooling'
+            : 'eligible';
+    return {
+      modelDbId: m.id, platform: m.platform, modelId: m.model_id, displayName: m.display_name,
+      intelligenceRank: m.intelligence_rank, taskScore, penalty: getPenalty(m.id),
+      healthScore: health ? Math.max(0, Math.min(1, health.health_score)) : null,
+      latencyMs: health?.recent_latency_ms ?? null,
+      effectiveScore, keyCount, cooling, costTier: m.cost_tier, status,
+    };
+  });
+
+  // Disabled/no-key models sort to the bottom regardless of score (they can't
+  // actually be picked), then by effective score — the true reality order.
+  const rank = (r: RoutingExplainRow) => (r.status === 'disabled' || r.status === 'no_key') ? 1 : 0;
+  rows.sort((a, b) => rank(a) - rank(b) || a.effectiveScore - b.effectiveScore);
+  return { taskType, rows };
+}
