@@ -450,6 +450,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
   let lastError: any = null;
+  let lastWasRetryable = false;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     let route: RouteResult;
@@ -564,33 +565,39 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       const latency = Math.round(performance.now() - start);
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, taskClass, consumer, needs);
 
-      if (isRetryableError(err)) {
-        // Put this model+key on cooldown and try the next one
-        const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
-        skipKeys.add(skipId);
-        setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-        recordRateLimitHit(route.modelDbId);
-        lastError = err;
-        if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
-          void markCapabilitySuspect(route.modelDbId, 'tools');
-          console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);
-        }
-        console.log(`[Proxy] ${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${maxRetries})`);
-        continue;
-      }
+      lastError = err;
+      const retryable = isRetryableError(err);
+      lastWasRetryable = retryable;
 
-      // Non-retryable error (auth, 4xx, etc.): don't retry
-      res.status(502).json({
-        error: {
-          message: `Provider error (${route.displayName}): ${err.message}`,
-          type: 'provider_error',
-        },
-      });
-      return;
+      // FAIL OVER on ANY error, retryable or not. A single model's 403/404/400
+      // (e.g. a keyed model the key can't actually access, like Ollama Cloud
+      // returning 403 for a model the plan doesn't include) must NOT kill a
+      // request when other models can serve it — that was a hard 502 before,
+      // and the intelligence-first ordering surfaced such models to the front.
+      // Skip this model+key and move on; cooldown+penalty so an erroring model
+      // sinks out of the lead instead of being retried first every request.
+      const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
+      skipKeys.add(skipId);
+      setCooldown(route.platform, route.modelId, route.keyId, 120_000);
+      recordRateLimitHit(route.modelDbId);
+      if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
+        void markCapabilitySuspect(route.modelDbId, 'tools');
+        console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);
+      }
+      console.log(`[Proxy] ${retryable ? '' : '(non-retryable) '}${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${maxRetries})`);
+      continue;
     }
   }
 
-  // Exhausted all retries
+  // Exhausted all attempts. If the last failure was a genuine provider error
+  // (not a rate limit), surface 502 so a caller can tell "everything broke" from
+  // "everything's throttled, retry later" (429, which Hermes's fallback keys on).
+  if (lastError && !lastWasRetryable) {
+    res.status(502).json({
+      error: { message: `All models failed; last provider error: ${lastError?.message}`, type: 'provider_error' },
+    });
+    return;
+  }
   res.status(429).json({
     error: {
       message: `All models rate-limited after ${maxRetries} attempts. Last: ${lastError?.message}`,
