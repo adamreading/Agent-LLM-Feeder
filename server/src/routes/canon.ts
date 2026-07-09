@@ -7,6 +7,7 @@ import { recordTaskScore, getTaskScores, TASK_TYPES } from '../services/taskScor
 import { researchWriterAvailable, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
 import { startMissingResearch, getResearchStatus } from '../services/researchRunner.js';
+import { LONG_CONTEXT_THRESHOLD } from '../services/router.js';
 
 export const canonRouter = Router();
 
@@ -50,12 +51,20 @@ canonRouter.get('/', async (_req, res) => {
     // deactivated supplier drops off a still-served model's list. This is why
     // removing the Ollama key removes its models from the wiki (Adam, 2026-07-09).
     if (instances.length === 0) continue;
-    const capRollup = await all<{ capability: string; supported: boolean }>(pool, `
+    const capRollupRaw = await all<{ capability: string; supported: boolean }>(pool, `
       SELECT capability, bool_or(supported) as supported
       FROM model_capabilities
       WHERE model_db_id = ANY(?::int[]) AND source = 'measured'
       GROUP BY capability
     `, [instances.map((i) => i.id)]);
+    // long_context is DERIVED from the declared window (≥128k), never a probe —
+    // a low-target needle probe had been tagging 8k models "long context". Drop
+    // any measured long_context row and set it purely on the max enabled window.
+    const maxWindow = Math.max(0, ...instances.map((i) => i.context_window ?? 0));
+    const capRollup = [
+      ...capRollupRaw.filter((c) => c.capability !== 'long_context'),
+      { capability: 'long_context', supported: maxWindow >= LONG_CONTEXT_THRESHOLD },
+    ];
 
     const taskScores = await all<{ task_type: string; score: number; rank: number | null; source: string }>(pool, `
       SELECT task_type, score, rank, source FROM task_scores WHERE canonical_model_id = ? ORDER BY score DESC

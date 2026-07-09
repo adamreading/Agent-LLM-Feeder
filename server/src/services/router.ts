@@ -208,6 +208,11 @@ const LATENCY_LOOSE_CAP = 4;         // quality/curated prior dominates for batc
 // this is what makes "math → high-math model, prose → high-creative model" real.
 const TASK_QUALITY_WEIGHT = 12;
 
+// A model counts as "long context" only if its declared window clears this bar.
+// Adam's call (2026-07-09): don't label an 8k/32k model long-context off a
+// low-target needle probe — require a genuinely large window.
+export const LONG_CONTEXT_THRESHOLD = 128_000;
+
 // Exploration: with this probability, a random model from the top-K enabled
 // candidates is tried FIRST, so every in-range model periodically gets a turn
 // and we accrue true latency/health data instead of hammering one winner.
@@ -391,6 +396,13 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     if (needs?.includes('json_mode') && !provider.dialect.jsonMode) continue;
     if (needs?.includes('reasoning_control') && !provider.dialect.reasoning) continue;
 
+    // long_context is DERIVED from the declared context window, not a probe —
+    // a needle probe was awarding it at absurdly low targets (~5k), tagging an
+    // 8k model "long context". A model IS long-context iff its window clears a
+    // real bar. Per-candidate, so the 8k SambaNova instance of a model is
+    // excluded while the 131k NVIDIA/Groq instances qualify.
+    if (needs?.includes('long_context') && (model.context_window == null || model.context_window < LONG_CONTEXT_THRESHOLD)) continue;
+
     // Everything else in needs[] is an OPAQUE per-model capability string —
     // feeder doesn't know or care what it MEANS (tools, or anything a caller
     // declares), only whether some caller has reported it measured-true for
@@ -407,7 +419,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // context) turned out wrong often enough to matter live; an unverified
     // claim must never satisfy a capability a caller is relying on for
     // correctness.
-    const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control');
+    const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control' && n !== 'long_context');
     let missingOpaqueNeed = false;
     for (const need of opaqueNeeds) {
       const row = await get<{ supported: boolean }>(pool,
