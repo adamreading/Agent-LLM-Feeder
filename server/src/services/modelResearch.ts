@@ -48,7 +48,8 @@ export async function getWriterModel(pool: pg.Pool): Promise<WriterCtx | null> {
   return { platform: row.platform, modelId: row.model_id, apiKey: decrypt(row.encrypted_key, row.iv, row.auth_tag) }
 }
 
-interface ResearchResult { summary: string | null; tasks: Record<string, number>; sources: string[] }
+interface Modalities { vision: boolean | null; audio: boolean | null; video: boolean | null }
+interface ResearchResult { summary: string | null; tasks: Record<string, number>; modalities: Modalities; sources: string[] }
 
 // Robust JSON extraction — not every writer honors response_format cleanly:
 // some wrap the object in ```json fences or add a preamble. Try a direct
@@ -98,7 +99,8 @@ export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number,
     fetched ? `[full: ${results[0].url}]\n${fetched}` : '',
   ].filter(Boolean).join('\n\n---\n\n').slice(0, 14000)
 
-  if (!corpus) return { summary: null, tasks: {}, sources: [] }
+  const noModalities: Modalities = { vision: null, audio: null, video: null }
+  if (!corpus) return { summary: null, tasks: {}, modalities: noModalities, sources: [] }
 
   const taskList = TASK_TYPES.join(', ')
   const prompt = `You are writing a concise, punchy reference entry about the LLM "${name}" for a developer-facing model wiki. Use ONLY the search results below — do not invent facts. Be specific about what it's genuinely good and bad at.
@@ -106,9 +108,12 @@ export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number,
 Respond with ONLY a JSON object of this exact shape:
 {
   "summary": "2-3 sentences: what this model is, its real strengths, and what to avoid using it for. Punchy and factual.",
-  "tasks": { <for any of these tasks the sources support, a 0-100 quality score>: ${taskList} }
+  "tasks": { <for any of these tasks the sources support, a 0-100 quality score>: ${taskList} },
+  "vision": <true if the sources say it accepts IMAGE input, false if they say it's text-only, null if unclear>,
+  "audio": <true if it accepts audio input, false if not, null if unclear>,
+  "video": <true if it accepts video input, false if not, null if unclear>
 }
-Rules: omit any task the sources don't address (do not guess). If the sources say nothing useful about the model at all, return {"summary": null, "tasks": {}}.
+Rules: omit any task the sources don't address (do not guess). For vision/audio/video answer ONLY from the sources — use null when the sources don't clearly say. If the sources say nothing useful about the model at all, return {"summary": null, "tasks": {}, "vision": null, "audio": null, "video": null}.
 
 Search results:
 ${corpus}`
@@ -136,12 +141,12 @@ ${corpus}`
       throw err
     }
   }
-  if (!result) return { summary: null, tasks: {}, sources: results.map(r => r.url) }
+  if (!result) return { summary: null, tasks: {}, modalities: noModalities, sources: results.map(r => r.url) }
   const content = result.choices?.[0]?.message?.content
-  if (typeof content !== 'string') return { summary: null, tasks: {}, sources: results.map(r => r.url) }
+  if (typeof content !== 'string') return { summary: null, tasks: {}, modalities: noModalities, sources: results.map(r => r.url) }
 
   const parsed = parseLooseJson(content)
-  if (!parsed) return { summary: null, tasks: {}, sources: results.map(r => r.url) }
+  if (!parsed) return { summary: null, tasks: {}, modalities: noModalities, sources: results.map(r => r.url) }
 
   const summary = typeof parsed.summary === 'string' && parsed.summary.trim().length > 0 ? parsed.summary.trim() : null
   const tasks: Record<string, number> = {}
@@ -151,11 +156,14 @@ ${corpus}`
       if (TASK_TYPES.includes(k as any) && Number.isFinite(n) && n >= 0 && n <= 100) tasks[k] = n
     }
   }
-  return { summary, tasks, sources: results.map(r => r.url) }
+  const bool = (v: unknown): boolean | null => (v === true ? true : v === false ? false : null)
+  const modalities: Modalities = { vision: bool(parsed.vision), audio: bool(parsed.audio), video: bool(parsed.video) }
+  return { summary, tasks, modalities, sources: results.map(r => r.url) }
 }
 
 // Persist a research outcome: the summary paragraph + per-task benchmark
-// scores (0-1 normalized), evidence pointing at the sources used.
+// scores (0-1 normalized) + web-DECLARED modality flags (vision/audio/video),
+// evidence pointing at the sources used.
 export async function recordResearch(pool: pg.Pool, canonicalId: number, res: ResearchResult): Promise<void> {
   const evidence = res.sources.slice(0, 3).join(' ') || 'web research'
   if (res.summary) {
@@ -163,5 +171,18 @@ export async function recordResearch(pool: pg.Pool, canonicalId: number, res: Re
   }
   for (const [taskType, score] of Object.entries(res.tasks)) {
     await recordTaskScore(pool, canonicalId, { taskType, score: score / 100, source: 'benchmark', evidence })
+  }
+  // Modality flags: web-DECLARED capability discovery (Adam's "fast vision
+  // discovery without burning tokens"). Only overwrite a column when research
+  // has a definite true/false — never clobber an existing value with null.
+  // These are the wiki's modality flags; they are NOT the measured hard gate
+  // (a caller needing guaranteed vision still requires a probe-measured row).
+  const sets: string[] = []; const params: any[] = []
+  for (const [col, val] of [['vision', res.modalities.vision], ['audio', res.modalities.audio], ['video', res.modalities.video]] as const) {
+    if (val !== null) { sets.push(`${col} = ?`); params.push(val) }
+  }
+  if (sets.length) {
+    params.push(canonicalId)
+    await run(pool, `UPDATE canonical_models SET ${sets.join(', ')}, updated_at = now() WHERE id = ?`, params)
   }
 }
