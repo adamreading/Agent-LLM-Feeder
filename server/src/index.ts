@@ -1,13 +1,17 @@
 import './env.js';
 import { createApp } from './app.js';
-import { initDb, closeDb } from './db/index.js';
+import { initDb, closeDb, getPool } from './db/index.js';
 import { startHealthChecker, stopHealthChecker } from './services/health.js';
+import { loadSearchConfigIntoEnv } from './services/searchConfig.js';
 import type { Server } from 'http';
 
 const PORT = process.env.PORT ?? 3001;
 
 async function main() {
   await initDb();
+  // Bridge UI-managed web-search config (backend + keys) from the DB into env
+  // before anything reads it (the research feature's webSearch.ts).
+  await loadSearchConfigIntoEnv(getPool());
   const app = createApp();
 
   const server: Server = app.listen(Number(PORT), '0.0.0.0', () => {

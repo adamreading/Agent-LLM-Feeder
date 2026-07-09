@@ -14,6 +14,7 @@ import { initDb, closeDb, getPool } from '../db/index.js';
 import { all } from '../db/pgCompat.js';
 import { getWriterModel, researchCanonicalModel, recordResearch } from '../services/modelResearch.js';
 import { searchConfigured } from '../services/webSearch.js';
+import { loadSearchConfigIntoEnv } from '../services/searchConfig.js';
 
 // Inter-model delay — raise it for a low-rpm writer (e.g. RESEARCH_DELAY_MS=
 // 30000 for a 2-rpm free tier) so the writer model isn't rate-limited.
@@ -23,6 +24,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function main() {
   await initDb();
   const pool = getPool();
+  // Pick up the UI-managed backend + key (e.g. Tavily) the same as the server.
+  await loadSearchConfigIntoEnv(pool);
 
   if (!searchConfigured()) {
     console.error('No web-search backend configured. Set WEB_SEARCH_BACKEND (default "ollama") and its API key (e.g. OLLAMA_API_KEY) in .env.');
