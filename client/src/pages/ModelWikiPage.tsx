@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, makerFromName, prettyCtx,
-  bestIntel, maxCtx, supportedCaps, overallScore,
+  bestIntel, maxCtx, supportedCaps, overallScore, researchScore,
 } from '@/lib/cyber'
 
 const FILTERS = [
@@ -96,7 +96,16 @@ export default function ModelWikiPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    let list = [...models].sort((a, b) => (bestIntel(a) ?? 99) - (bestIntel(b) ?? 99))
+    // Dynamic, research-driven order: models with research scores rank first
+    // (highest score = top), un-researched fall to the bottom ordered by the
+    // static intelligence_rank as a fallback tiebreak.
+    let list = [...models].sort((a, b) => {
+      const ra = researchScore(a), rb = researchScore(b)
+      if (ra != null && rb != null) return rb - ra
+      if (ra != null) return -1
+      if (rb != null) return 1
+      return (bestIntel(a) ?? 99) - (bestIntel(b) ?? 99)
+    })
     if (filter !== 'all') list = list.filter(m => m.capabilities.some(c => c.capability === filter && c.supported))
     if (q) list = list.filter(m =>
       (m.name + ' ' + makerFromName(m.name) + ' ' + m.slug).toLowerCase().includes(q) ||
@@ -153,6 +162,8 @@ export default function ModelWikiPage() {
             const intel = bestIntel(m)
             const caps = supportedCaps(m).slice(0, 5)
             const overall = overallScore(m)
+            const research = researchScore(m)          // overall, else task mean
+            const barLabel = overall != null ? 'ARENA SCORE' : (research != null ? 'RESEARCH SCORE' : 'ARENA SCORE')
             const platforms = [...new Set(m.instances.map(i => i.platform))]
             const hostLine = `${m.instances.length} FREE HOST${m.instances.length === 1 ? '' : 'S'} · ${platforms.slice(0, 3).map(p => p.toUpperCase()).join(' / ')}`
             return (
@@ -184,11 +195,11 @@ export default function ModelWikiPage() {
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', ...label, fontSize: 9.5, color: 'var(--dim)', marginBottom: 4 }}>
-                    <span>ARENA SCORE</span>
-                    <span style={{ color: 'var(--ink)' }}>{overall != null ? Math.round(overall * 100) : 'PENDING'}</span>
+                    <span>{barLabel}</span>
+                    <span style={{ color: 'var(--ink)' }}>{research != null ? Math.round(research * 100) : 'PENDING'}</span>
                   </div>
                   <div style={{ height: 6, background: 'var(--bg2)', border: '1px solid var(--line)' }}>
-                    <div style={{ height: '100%', width: `${overall != null ? Math.round(overall * 100) : 0}%`, background: 'linear-gradient(90deg, var(--acc), var(--acc2))', boxShadow: '0 0 8px var(--glow)' }} />
+                    <div style={{ height: '100%', width: `${research != null ? Math.round(research * 100) : 0}%`, background: 'linear-gradient(90deg, var(--acc), var(--acc2))', boxShadow: '0 0 8px var(--glow)' }} />
                   </div>
                 </div>
 

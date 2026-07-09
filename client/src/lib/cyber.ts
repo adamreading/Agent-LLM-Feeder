@@ -152,3 +152,15 @@ export const supportedCaps = (m: CanonModel) =>
   m.capabilities.filter(c => c.supported && !c.capability.startsWith('best_use_') && c.capability !== 'reachable')
 export const overallScore = (m: CanonModel) =>
   m.taskScores.find(s => s.task_type === 'overall')?.score ?? null
+
+// Research-driven ranking score (0-1). Prefer the true arena 'overall' ELO;
+// otherwise fall back to the mean of whatever per-task benchmark scores the
+// research produced. null only when a model has NO research scores at all.
+// Drives the wiki's dynamic ordering so better-researched models rise.
+export const researchScore = (m: CanonModel): number | null => {
+  const overall = m.taskScores.find(s => s.task_type === 'overall')?.score
+  if (overall != null) return overall
+  const cats = m.taskScores.filter(s => s.task_type !== 'overall').map(s => s.score)
+  if (!cats.length) return null
+  return cats.reduce((a, b) => a + b, 0) / cats.length
+}
