@@ -8,6 +8,7 @@ import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type Rou
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
+import { benchUnreachableModel } from '../services/modelHealth.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -238,6 +239,17 @@ const chatCompletionSchema = z.object({
   // providers/base.ts. Generic; any caller sets it, feeder never imposes it.
   exclude_reasoning: z.boolean().optional(),
 });
+
+// A non-retryable error that means THIS model/key can't serve the request at
+// all — as opposed to a request-shaped 400 (bad params, context too long) which
+// must NOT bench a healthy model. Used to auto-bench unreachable models.
+function isUnreachableError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('403') || msg.includes('forbidden')
+    || msg.includes('404') || msg.includes('not found')
+    || msg.includes('does not exist') || msg.includes('no such model')
+    || msg.includes('not authorized') || msg.includes('unauthorized');
+}
 
 function isRetryableError(err: any): boolean {
   const msg = (err.message ?? '').toLowerCase();
@@ -583,6 +595,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
         void markCapabilitySuspect(route.modelDbId, 'tools');
         console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);
+      }
+      // Auto-bench a model a live request proved UNREACHABLE (403/404/model-
+      // not-found = the key can't serve it — persistent, not transient). Stops
+      // it leading + failing over on every request. Never benches on a 400
+      // (that's request-shaped, not model-fatal).
+      if (!retryable && isUnreachableError(err)) {
+        void benchUnreachableModel(getPool(), route.modelDbId, `${route.displayName}: ${err.message}`);
+        console.log(`[Proxy] AUTO-BENCH (unreachable): ${route.displayName} — ${err.message.slice(0, 60)}`);
       }
       console.log(`[Proxy] ${retryable ? '' : '(non-retryable) '}${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${maxRetries})`);
       continue;

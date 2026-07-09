@@ -131,6 +131,23 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
   }
 }
 
+// Bench a model a live request proved UNREACHABLE — a non-retryable 403/404 /
+// "model not found" means the key can't actually serve it (Ollama Cloud 403 for
+// a plan-excluded model, a stale NIM slug 404, etc). That's a persistent fact,
+// not transient rate-limiting, so the model shouldn't keep leading and failing
+// over every request. disabled_reason='unreachable' is deliberately NOT
+// auto-revived by reviveUnhealthyModels ('unhealthy') or platformKeyWatch
+// ('no_key'), and never overrides a human 'manual' bench — it clears only when
+// the model is re-probed/re-enabled. Guarded so it only ever benches a model
+// that's currently live (disabled_reason NULL) or already 'unreachable'.
+export async function benchUnreachableModel(pool: pg.Pool, modelDbId: number, evidence: string): Promise<void> {
+  await run(pool, `
+    UPDATE models SET enabled = false, disabled_reason = 'unreachable'
+    WHERE id = ? AND (disabled_reason IS NULL OR disabled_reason = 'unreachable')
+  `, [modelDbId]);
+  console.log(`[ModelHealth] model ${modelDbId} benched (disabled_reason=unreachable): ${evidence.slice(0, 100)}`);
+}
+
 // Daily revival poll — the ONE active call this module makes. For each model
 // benched with disabled_reason='unhealthy' whose health row is stale enough,
 // send one cheap reachability ping; a clean response revives it. A single
