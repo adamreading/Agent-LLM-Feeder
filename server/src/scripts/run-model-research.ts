@@ -66,10 +66,11 @@ async function main() {
     } catch (err: any) {
       failed++;
       console.log(`  ✗ ${c.name} — ${err.message}`);
-      // The web-search backend's rate limit (e.g. Ollama's hourly cap) stops
-      // the run cleanly — re-run later to fill the rest; already-written
-      // summaries persist (recordResearch never overwrites with null).
-      if (/429|rate.?limit|hourly|search .*limit/i.test(err.message ?? '')) {
+      // Only a SEARCH-backend rate-limit (tagged isSearchError) stops the run
+      // cleanly — re-run later to fill the rest; written summaries persist. A
+      // writer-model 429 is retried internally then, if still failing, just
+      // skips THAT model (failed++), never halting the whole catalog.
+      if (err?.isSearchError && /429|rate.?limit|hourly|anomaly|session usage|limit/i.test(err.message ?? '')) {
         console.log('\n⚠ Web-search rate limit reached — stopping. Re-run later to continue; done models are saved.');
         break;
       }

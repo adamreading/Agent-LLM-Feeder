@@ -113,16 +113,16 @@ describe('Step-3 health/latency-aware selection', () => {
     await expect(routeRequest({})).rejects.toMatchObject({ code: 'ALL_RATE_LIMITED' });
   });
 
-  it('with no health data, ordering is unchanged (backward compatible — lowest base priority wins)', async () => {
+  it('with no health data, base ordering follows intelligence_rank (lowest rank wins)', async () => {
     const [a, b] = groqModels;
     await isolate([a.id, b.id]);
     await addKey('groq');
-    // No model_health rows at all. Whichever has the lower fallback priority wins.
-    const prios = await all<{ model_db_id: number; priority: number }>(getPool(), `SELECT model_db_id, priority FROM fallback_config WHERE model_db_id IN (?, ?)`, [a.id, b.id]);
-    const winnerId = prios.sort((x, y) => x.priority - y.priority)[0].model_db_id;
-    const winnerModelId = groqModels.find((m) => m.id === winnerId)!.model_id;
+    // No model_health rows at all. The base ordering prior is intelligence_rank
+    // now (not the drift-prone fallback_config.priority). Give a the better rank.
+    await run(getPool(), 'UPDATE models SET intelligence_rank = 3 WHERE id = ?', [a.id]);
+    await run(getPool(), 'UPDATE models SET intelligence_rank = 9 WHERE id = ?', [b.id]);
 
     const route = await routeRequest({});
-    expect(route.modelId).toBe(winnerModelId);
+    expect(route.modelId).toBe(a.model_id);
   });
 });

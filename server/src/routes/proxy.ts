@@ -462,6 +462,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         needs: needs.length > 0 ? needs : undefined,
         costTierCeiling,
         latencyCeilingMs: latency_ceiling_ms,
+        taskClass,
       });
     } catch (err: any) {
       if (err instanceof RoutingError) {

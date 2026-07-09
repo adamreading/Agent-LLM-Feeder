@@ -77,13 +77,18 @@ export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number,
   const backend = getSearchBackend()
   if (!backend.isConfigured()) throw new Error(`Web-search backend '${backend.id}' is not configured (set its API key in .env).`)
 
-  // ONE combined query per model — keeps within the search backend's rate
-  // limits (Ollama's free tier caps searches per hour). A search rate-limit
-  // is thrown (not swallowed) so the runner can stop cleanly rather than
-  // churn through the whole catalog marking everything "no data".
-  const results: SearchResult[] = await backend.search(
-    `${term} LLM model strengths weaknesses what it is good at benchmarks arena leaderboard`, 6,
-  )
+  // ONE combined query per model. A SEARCH-backend rate-limit is tagged
+  // (isSearchError) and rethrown so the runner can stop cleanly rather than
+  // churn through the catalog marking everything "no data" — but a WRITER
+  // model 429 (below) is NOT a search error and must only skip that one model.
+  let results: SearchResult[]
+  try {
+    results = await backend.search(
+      `${term} LLM model strengths weaknesses what it is good at benchmarks arena leaderboard`, 6,
+    )
+  } catch (err: any) {
+    throw Object.assign(new Error(`search backend '${backend.id}': ${err?.message ?? err}`), { isSearchError: true })
+  }
   // Fetch full text of the single most relevant result to deepen the corpus.
   let fetched = ''
   if (results[0]) { try { fetched = (await backend.fetch(results[0].url)).content.slice(0, 4000) } catch { /* snippet-only */ } }
@@ -110,10 +115,28 @@ ${corpus}`
 
   const provider = getProvider(writer.platform as any)
   if (!provider) throw new Error(`Writer platform ${writer.platform} has no provider`)
-  const result = await provider.chatCompletion(writer.apiKey, [{ role: 'user', content: prompt }], writer.modelId, {
-    max_tokens: 600,
-    response_format: { type: 'json_object' },
-  })
+  // The writer is a rate-limited provider like any other (nvidia mistral-large-3
+  // is 40 rpm) — retry its 429s/timeouts with backoff so a transient limit skips
+  // nothing. This error is deliberately NOT tagged isSearchError: if it exhausts
+  // retries the model is skipped, but the whole run does NOT stop.
+  let result: Awaited<ReturnType<typeof provider.chatCompletion>> | null = null
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      result = await provider.chatCompletion(writer.apiKey, [{ role: 'user', content: prompt }], writer.modelId, {
+        max_tokens: 600,
+        response_format: { type: 'json_object' },
+      })
+      break
+    } catch (err: any) {
+      const msg = err?.message ?? ''
+      if (attempt < 3 && /429|too many|rate.?limit|aborted|timeout|ETIMEDOUT|ECONNRESET/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, attempt)))
+        continue
+      }
+      throw err
+    }
+  }
+  if (!result) return { summary: null, tasks: {}, sources: results.map(r => r.url) }
   const content = result.choices?.[0]?.message?.content
   if (typeof content !== 'string') return { summary: null, tasks: {}, sources: results.map(r => r.url) }
 

@@ -205,6 +205,11 @@ describe('Proxy tool-calling support', () => {
       SELECT id, 'tools', true, 'measured' FROM models
       WHERE platform = 'groq' AND model_id IN ('openai/gpt-oss-120b', 'llama-3.3-70b-versatile')
     `);
+    // Routing now orders by intelligence_rank; force llama to lead so it's the
+    // one that hits the (mocked) tool-capability regression and triggers the
+    // L9 fallback + suspect-marking this test asserts on.
+    await run(pool, `UPDATE models SET intelligence_rank = 1 WHERE platform = 'groq' AND model_id = 'llama-3.3-70b-versatile'`);
+    await run(pool, `UPDATE models SET intelligence_rank = 5 WHERE platform = 'groq' AND model_id = 'openai/gpt-oss-120b'`);
 
     const origFetch = global.fetch;
     const calledModels: string[] = [];

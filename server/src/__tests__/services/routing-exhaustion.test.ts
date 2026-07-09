@@ -46,6 +46,10 @@ describe('Routing Key Exhaustion', () => {
 
     await run(pool, "INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 1, true)", [proId]);
     await run(pool, "INSERT INTO fallback_config (model_db_id, priority, enabled) VALUES (?, 2, true)", [flashId]);
+    // Isolate to just these two — routing now orders by intelligence_rank over
+    // the whole enabled catalog (initDb seeds the real one), so disable the rest
+    // to keep this test about Pro-vs-Flash exhaustion only.
+    await run(pool, "UPDATE fallback_config SET enabled = false WHERE model_db_id NOT IN (?, ?)", [proId, flashId]);
 
     // Setup: 2 keys for Google
     await run(pool, "INSERT INTO api_keys (platform, label, encrypted_key, iv, auth_tag, status, enabled) VALUES ('google', 'Key A', 'enc', 'iv', 'tag', 'healthy', true)");

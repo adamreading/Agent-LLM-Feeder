@@ -31,8 +31,8 @@ interface KeyRow {
 
 interface FallbackRow {
   model_db_id: number;
-  priority: number;
   enabled: boolean;
+  intelligence_rank: number;
 }
 
 export interface RouteResult {
@@ -83,6 +83,9 @@ export interface RouteOptions {
   costTierCeiling?: 'free' | 'paid';
   /** L2: caller's declared latency ceiling (ms) — candidates whose historical p95 exceeds it are excluded */
   latencyCeilingMs?: number;
+  /** caller-declared task class (from the `auto/<task_class>` sentinel) — maps to
+   *  an arena task_type so routing prefers models measured good at THAT task */
+  taskClass?: string | null;
 }
 
 // L11: typed error contract. NO_ELIGIBLE_MODEL means no candidate matched
@@ -199,6 +202,41 @@ const LATENCY_TIGHT_DIVISOR = 500;   // chat (tight ceiling): +1 position per 50
 const LATENCY_TIGHT_CAP = 24;        // a 12s model sinks hard for chat
 const LATENCY_LOOSE_DIVISOR = 5000;  // batch (no ceiling): +1 per 5s — latency barely matters
 const LATENCY_LOOSE_CAP = 4;         // quality/curated prior dominates for batch
+// Dynamic quality: a model's researched arena score for the request's task
+// (0-1, higher=better) LIFTS it by up to this many positions. Comparable to
+// HEALTH_WEIGHT so genuine task quality competes with the intelligence prior —
+// this is what makes "math → high-math model, prose → high-creative model" real.
+const TASK_QUALITY_WEIGHT = 12;
+
+// Exploration: with this probability, a random model from the top-K enabled
+// candidates is tried FIRST, so every in-range model periodically gets a turn
+// and we accrue true latency/health data instead of hammering one winner.
+// Read at call time (not module load) so it's overridable; forced OFF under
+// vitest so routing tests stay deterministic.
+const EXPLORE_TOPK = 6;
+function exploreEpsilon(): number {
+  if (process.env.VITEST) return 0;
+  return Number(process.env.ROUTE_EXPLORE_EPSILON ?? 0.15);
+}
+
+// Map a caller's task_class (free-form, from `auto/<task_class>`) to an lmarena
+// task_type we hold benchmark scores for. Unknown/absent → 'overall' (the
+// general quality prior), so routing is always arena-aware, never worse than
+// today. Kept deliberately small + generic (no consumer-specific policy).
+const TASK_CLASS_TO_TASK_TYPE: Record<string, string> = {
+  coding: 'coding', code: 'coding', programming: 'coding',
+  math: 'math', maths: 'math',
+  reasoning: 'reasoning', puzzle: 'reasoning', logic: 'reasoning',
+  creative: 'creative_writing', creative_writing: 'creative_writing',
+  writing: 'creative_writing', prose: 'creative_writing', poetry: 'creative_writing',
+  chat: 'multi_turn', agentic_chat: 'multi_turn', conversation: 'multi_turn', multi_turn: 'multi_turn',
+  long: 'long_query', long_query: 'long_query', long_context: 'long_query',
+  instruction: 'instruction_following', instruction_following: 'instruction_following',
+};
+function taskTypeFor(taskClass: string | null | undefined): string {
+  if (!taskClass) return 'overall';
+  return TASK_CLASS_TO_TASK_TYPE[taskClass.toLowerCase()] ?? 'overall';
+}
 
 // Composite ordering score (lower = tried earlier). health/success-rate always
 // counts; latency's WEIGHT scales with the caller's declared latency_ceiling
@@ -210,9 +248,16 @@ function candidateScore(
   modelDbId: number,
   health: ModelHealthRow | undefined,
   latencyCeilingMs: number | undefined,
+  taskScore: number | undefined,
 ): number {
   let score = basePriority + getPenalty(modelDbId);
-  if (!health) return score; // no data → today's behavior, don't invent a penalty
+
+  // Dynamic quality lift: a researched arena score for THIS task pulls the
+  // model up (higher score = lower composite = tried earlier). Applies whether
+  // or not health data exists, so quality steers even a cold pool.
+  if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT;
+
+  if (!health) return score; // no health data → intelligence prior + task quality only
 
   const clampedHealth = Math.max(0, Math.min(1, health.health_score));
   score += (1 - clampedHealth) * HEALTH_WEIGHT;
@@ -256,26 +301,41 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     needs,
     costTierCeiling,
     latencyCeilingMs,
+    taskClass,
   } = options;
 
   const pool = getPool();
 
-  // Get fallback chain ordered by priority
+  // The base ordering prior is the model's CURRENT intelligence_rank — not the
+  // fallback_config.priority column, which had drifted to catalog insertion
+  // order as models were added over time (a genuinely-smarter new model was
+  // being appended BELOW older weaker ones). fc.enabled is still honored as a
+  // manual on/off; ordering is the algorithm's job (intelligence + task quality
+  // + health + latency + exploration), not a hand-maintained priority list.
   const fallbackChain = await all<FallbackRow>(pool, `
-    SELECT fc.model_db_id, fc.priority, fc.enabled
+    SELECT fc.model_db_id, fc.enabled, m.intelligence_rank
     FROM fallback_config fc
-    ORDER BY fc.priority ASC
+    JOIN models m ON m.id = fc.model_db_id
+    ORDER BY m.intelligence_rank ASC
   `);
 
-  // Step-3 selection: order by the composite health/latency-aware score
-  // (see candidateScore). healthMap is the persisted, cron-derived summary
-  // from model_health — one cheap read per route call, no per-candidate DB
-  // hit for it. With no health data the score == (priority + penalty), so
-  // this is a strict superset of the old priority ordering.
+  // Preload the arena task score for THIS request's task (one query, keyed by
+  // model_db_id via the model's canonical grouping). taskType defaults to
+  // 'overall' so plain requests still get the general quality prior.
+  const taskType = taskTypeFor(taskClass);
+  const taskScoreRows = await all<{ model_db_id: number; score: number }>(pool, `
+    SELECT m.id AS model_db_id, ts.score
+    FROM models m
+    JOIN task_scores ts ON ts.canonical_model_id = m.canonical_model_id AND ts.task_type = ?
+  `, [taskType]);
+  const taskScoreMap = new Map(taskScoreRows.map(r => [r.model_db_id, Number(r.score)]));
+
+  // Step-3 selection: order by the composite score (see candidateScore).
+  // healthMap is the persisted cron-derived summary — one cheap read per call.
   const healthMap = await getHealthMap(pool);
   const sortedChain = fallbackChain.map(entry => ({
     ...entry,
-    effectivePriority: candidateScore(entry.priority, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs),
+    effectivePriority: candidateScore(entry.intelligence_rank, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs, taskScoreMap.get(entry.model_db_id)),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
   // Sticky session: move preferred model to front of chain
@@ -284,6 +344,19 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     if (idx > 0) {
       const [preferred] = sortedChain.splice(idx, 1);
       sortedChain.unshift(preferred);
+    }
+  } else if (exploreEpsilon() > 0 && Math.random() < exploreEpsilon()) {
+    // ε-greedy exploration (only when NOT pinned to a sticky model): give a
+    // random one of the top-K enabled candidates the first shot. It still
+    // passes every capability/latency/quota filter in the walk below, so this
+    // never serves an ineligible model — it just spreads real traffic across
+    // in-range models so we accrue true latency/health instead of hammering
+    // one winner. 85% of the time the best-scored model still leads.
+    const top = sortedChain.filter(e => e.enabled).slice(0, EXPLORE_TOPK);
+    if (top.length > 1) {
+      const pick = top[Math.floor(Math.random() * top.length)];
+      const idx = sortedChain.indexOf(pick);
+      if (idx > 0) { sortedChain.splice(idx, 1); sortedChain.unshift(pick); }
     }
   }
 

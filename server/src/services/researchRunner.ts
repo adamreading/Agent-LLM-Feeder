@@ -77,9 +77,9 @@ export async function startMissingResearch(pool: pg.Pool): Promise<ResearchStatu
         }
       } catch (err: any) {
         const msg = err?.message ?? String(err);
-        // The search backend's hourly cap stops the pass cleanly — remaining
-        // models fill in on the next run (summaries already written persist).
-        if (/429|rate.?limit|hourly|search .*limit/i.test(msg)) {
+        // Only a SEARCH-backend rate-limit (tagged) stops the pass; a writer
+        // 429 is retried internally then skips just that model.
+        if (err?.isSearchError && /429|rate.?limit|hourly|anomaly|session usage|limit/i.test(msg)) {
           status.rateLimited = true;
           status.lastError = 'Web-search rate limit reached — stopped; re-run later to continue.';
           break;
