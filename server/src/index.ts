@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { initDb, closeDb, getPool } from './db/index.js';
 import { startHealthChecker, stopHealthChecker } from './services/health.js';
 import { loadSearchConfigIntoEnv } from './services/searchConfig.js';
+import { autoOnboardNewArrivals } from './services/autoOnboard.js';
 import type { Server } from 'http';
 
 const PORT = process.env.PORT ?? 3001;
@@ -18,6 +19,10 @@ async function main() {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
     console.log(`Proxy endpoint: http://0.0.0.0:${PORT}/v1/chat/completions`);
     startHealthChecker();
+    // Auto-probe + auto-research any new/never-onboarded models, in the
+    // background a few seconds after boot so it never delays serving. Idempotent
+    // — only genuine new arrivals / gaps trigger work (see autoOnboard.ts).
+    setTimeout(() => { void autoOnboardNewArrivals(getPool()); }, 8000);
   });
 
   // Drain-and-flip cutover support: stop accepting new connections, let

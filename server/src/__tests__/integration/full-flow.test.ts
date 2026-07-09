@@ -60,11 +60,11 @@ describe('Full Integration Flow', () => {
   });
 
   it('Step 2: Verify fallback chain is populated', async () => {
-    const { status, body } = await req(app, 'GET', '/api/fallback');
+    const { status, body } = await req(app, 'GET', '/api/fallback/order');
     expect(status).toBe(200);
-    expect(body.length).toBeGreaterThanOrEqual(50);
-    expect(body[0]).toHaveProperty('priority');
-    expect(body[0]).toHaveProperty('enabled');
+    expect(body.rows.length).toBeGreaterThanOrEqual(50);
+    expect(body.rows[0]).toHaveProperty('effectiveScore');
+    expect(body.rows[0]).toHaveProperty('status');
   });
 
   it('Step 3: Proxy returns a routing error with no keys', async () => {
@@ -124,12 +124,13 @@ describe('Full Integration Flow', () => {
     expect(body.totalRequests).toBeGreaterThanOrEqual(0);
   });
 
-  it('Step 7: Sort fallback by speed', async () => {
-    const { status } = await req(app, 'POST', '/api/fallback/sort/speed');
+  it('Step 7: Fallback order reflects a task view (display-only, not controllable)', async () => {
+    // Ordering is the algorithm's job now; the page can only VIEW it, optionally
+    // per task. No sort/reorder endpoint exists to change it.
+    const { status, body } = await req(app, 'GET', '/api/fallback/order?taskClass=coding');
     expect(status).toBe(200);
-
-    const { body } = await req(app, 'GET', '/api/fallback');
-    expect(body[0].speedRank).toBe(1);
+    expect(body.taskType).toBe('coding');
+    expect(body.rows.length).toBeGreaterThan(0);
   });
 
   it('Step 8: Health endpoint works', async () => {

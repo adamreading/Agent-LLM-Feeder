@@ -20,7 +20,7 @@ async function request(app: Express, method: string, path: string, body?: any) {
   return { status: res.status, body: data };
 }
 
-describe('Fallback API', () => {
+describe('Fallback API (read-only reality view)', () => {
   let app: Express;
   let drop: () => Promise<void>;
 
@@ -37,78 +37,49 @@ describe('Fallback API', () => {
     await drop();
   });
 
-  it('GET /api/fallback returns fallback chain', async () => {
-    const { status, body } = await request(app, 'GET', '/api/fallback');
+  it('GET /api/fallback/order returns the live effective order', async () => {
+    const { status, body } = await request(app, 'GET', '/api/fallback/order');
     expect(status).toBe(200);
-    expect(Array.isArray(body)).toBe(true);
-    expect(body.length).toBeGreaterThan(0);
-    // Should be sorted by priority
-    for (let i = 1; i < body.length; i++) {
-      expect(body[i].priority).toBeGreaterThanOrEqual(body[i - 1].priority);
+    expect(body).toHaveProperty('taskType', 'overall');
+    expect(Array.isArray(body.rows)).toBe(true);
+    expect(body.rows.length).toBeGreaterThan(0);
+    // Rows are ordered by effectiveScore, with disabled/no-key sunk to the end.
+    const rank = (r: any) => (r.status === 'disabled' || r.status === 'no_key') ? 1 : 0;
+    for (let i = 1; i < body.rows.length; i++) {
+      const a = body.rows[i - 1], b = body.rows[i];
+      if (rank(a) === rank(b)) expect(b.effectiveScore).toBeGreaterThanOrEqual(a.effectiveScore);
+      else expect(rank(b)).toBeGreaterThanOrEqual(rank(a));
     }
   });
 
-  it('GET /api/fallback entries have expected fields', async () => {
-    const { body } = await request(app, 'GET', '/api/fallback');
-    const first = body[0];
-    expect(first).toHaveProperty('modelDbId');
-    expect(first).toHaveProperty('priority');
-    expect(first).toHaveProperty('enabled');
-    expect(first).toHaveProperty('platform');
-    expect(first).toHaveProperty('displayName');
-    expect(first).toHaveProperty('intelligenceRank');
-  });
-
-  it('PUT /api/fallback updates order', async () => {
-    const { body: original } = await request(app, 'GET', '/api/fallback');
-
-    // Reverse the order
-    const reversed = original.map((e: any, i: number) => ({
-      modelDbId: e.modelDbId,
-      priority: original.length - i,
-      enabled: e.enabled,
-    }));
-
-    const { status } = await request(app, 'PUT', '/api/fallback', reversed);
-    expect(status).toBe(200);
-
-    // Verify order changed
-    const { body: after } = await request(app, 'GET', '/api/fallback');
-    expect(after[0].modelDbId).toBe(original[original.length - 1].modelDbId);
-
-    // Restore original order
-    const restore = original.map((e: any, i: number) => ({
-      modelDbId: e.modelDbId,
-      priority: i + 1,
-      enabled: e.enabled,
-    }));
-    await request(app, 'PUT', '/api/fallback', restore);
-  });
-
-  it('POST /api/fallback/sort/intelligence sorts by intelligence', async () => {
-    const { status } = await request(app, 'POST', '/api/fallback/sort/intelligence');
-    expect(status).toBe(200);
-
-    const { body } = await request(app, 'GET', '/api/fallback');
-    // Should be sorted ascending by intelligence rank
-    for (let i = 1; i < body.length; i++) {
-      expect(body[i].intelligenceRank).toBeGreaterThanOrEqual(body[i - 1].intelligenceRank);
+  it('GET /api/fallback/order rows have the expected breakdown fields', async () => {
+    const { body } = await request(app, 'GET', '/api/fallback/order');
+    const first = body.rows[0];
+    for (const f of ['modelDbId', 'platform', 'modelId', 'displayName', 'intelligenceRank', 'effectiveScore', 'keyCount', 'status']) {
+      expect(first).toHaveProperty(f);
     }
+    expect(['eligible', 'disabled', 'no_key', 'cooling']).toContain(first.status);
   });
 
-  it('POST /api/fallback/sort/speed sorts by speed', async () => {
-    const { status } = await request(app, 'POST', '/api/fallback/sort/speed');
+  it('GET /api/fallback/order?taskClass=math re-scores for that task', async () => {
+    const { status, body } = await request(app, 'GET', '/api/fallback/order?taskClass=math');
     expect(status).toBe(200);
-
-    const { body } = await request(app, 'GET', '/api/fallback');
-    // Should be sorted ascending by speed rank
-    for (let i = 1; i < body.length; i++) {
-      expect(body[i].speedRank).toBeGreaterThanOrEqual(body[i - 1].speedRank);
-    }
+    expect(body.taskType).toBe('math');
   });
 
-  it('POST /api/fallback/sort/invalid returns 400', async () => {
-    const { status } = await request(app, 'POST', '/api/fallback/sort/invalid');
-    expect(status).toBe(400);
+  it('the old order-controlling endpoints are gone (page no longer sets order)', async () => {
+    // PUT / and POST /sort were removed by design — the page displays order,
+    // it does not control it.
+    const put = await request(app, 'PUT', '/api/fallback', []);
+    expect(put.status).toBe(404);
+    const sort = await request(app, 'POST', '/api/fallback/sort/intelligence');
+    expect(sort.status).toBe(404);
+  });
+
+  it('GET /api/fallback/token-usage still serves the budget bar', async () => {
+    const { status, body } = await request(app, 'GET', '/api/fallback/token-usage');
+    expect(status).toBe(200);
+    expect(body).toHaveProperty('totalBudget');
+    expect(body).toHaveProperty('models');
   });
 });
