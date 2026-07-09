@@ -41,8 +41,15 @@ canonRouter.get('/', async (_req, res) => {
              h.recent_latency_ms, h.health_score, h.status AS health_status
       FROM models m
       LEFT JOIN model_health h ON h.model_db_id = m.id
-      WHERE m.canonical_model_id = ? ORDER BY m.platform ASC
+      WHERE m.canonical_model_id = ? AND m.enabled = true ORDER BY m.platform ASC
     `, [c.id]);
+
+    // The wiki shows models feeder can actually serve — so a model whose only
+    // suppliers are DEACTIVATED (key removed → disabled_reason='no_key',
+    // manually benched, or auto-benched unreachable) drops out entirely, and a
+    // deactivated supplier drops off a still-served model's list. This is why
+    // removing the Ollama key removes its models from the wiki (Adam, 2026-07-09).
+    if (instances.length === 0) continue;
     const capRollup = await all<{ capability: string; supported: boolean }>(pool, `
       SELECT capability, bool_or(supported) as supported
       FROM model_capabilities
