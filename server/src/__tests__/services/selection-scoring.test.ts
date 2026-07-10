@@ -113,6 +113,20 @@ describe('Step-3 health/latency-aware selection', () => {
     await expect(routeRequest({})).rejects.toMatchObject({ code: 'ALL_RATE_LIMITED' });
   });
 
+  it('relaxes the latency ceiling as a last resort instead of 422 when only slow models fit', async () => {
+    const [a] = groqModels;
+    await isolate([a.id]);
+    await addKey('groq');
+    // Drive this model's p95 well above the ceiling via real request rows.
+    for (let i = 0; i < 5; i++) {
+      await run(getPool(), `INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, is_probe) VALUES ('groq', ?, 'success', 10, 10, 20000, false)`, [a.model_id]);
+    }
+    // The only eligible model is slower than the 8s ceiling → would be NO_ELIGIBLE.
+    // Relax-on-empty must return it (a slow real answer beats 422 → weak fallback).
+    const route = await routeRequest({ latencyCeilingMs: 8000 });
+    expect(route.modelId).toBe(a.model_id);
+  });
+
   it('with no health data, base ordering follows intelligence_rank (lowest rank wins)', async () => {
     const [a, b] = groqModels;
     await isolate([a.id, b.id]);

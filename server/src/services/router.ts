@@ -86,6 +86,9 @@ export interface RouteOptions {
   /** caller-declared task class (from the `auto/<task_class>` sentinel) — maps to
    *  an arena task_type so routing prefers models measured good at THAT task */
   taskClass?: string | null;
+  /** internal: set on the self-retry that relaxes the latency ceiling as a last
+   *  resort (see the NO_ELIGIBLE_MODEL handler) — prevents infinite recursion */
+  _relaxedLatency?: boolean;
 }
 
 // L11: typed error contract. NO_ELIGIBLE_MODEL means no candidate matched
@@ -539,6 +542,18 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   }
 
   if (!anyStructurallyEligible) {
+    // Relax-on-empty (L8/L11 failure mode, seen live 2026-07-10): a large-context
+    // request can filter to ZERO eligible models purely because every model that
+    // FITS the context is slower than the latency ceiling. A slow real answer
+    // from a capable model beats a 422 that drops the caller to a weaker local
+    // fallback — so if a ceiling was set and NOTHING qualified under it, retry
+    // once ignoring the ceiling. This only ever fires when the ceiling would
+    // otherwise yield nothing, so it never picks slow-when-fast-exists (short-
+    // context/voice always has fast models that fit → never relaxes).
+    if (latencyCeilingMs != null && !options._relaxedLatency) {
+      console.log('[Router] NO_ELIGIBLE within latency ceiling — relaxing ceiling as last resort (slow answer beats 422→weak fallback)');
+      return routeRequest({ ...options, latencyCeilingMs: undefined, _relaxedLatency: true });
+    }
     throw new RoutingError(
       'NO_ELIGIBLE_MODEL',
       'No usable model exists for this request: either nothing in the catalog satisfies the declared requirements ' +
