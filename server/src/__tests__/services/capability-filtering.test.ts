@@ -162,6 +162,26 @@ describe('P2: capability/dialect filtering, two-gate trust, context-length aware
       expect(result.platform).toBe('groq');
     });
 
+    it("accepts a source='observed' capability (verified-by-real-use) the same as 'measured' — the token-free live harvest", async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      // No 'measured' probe row — only a live observation from real traffic.
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'observed')`, [groqId]);
+      const result = await routeRequest({ needs: ['tools'] });
+      expect(result.platform).toBe('groq');
+    });
+
+    it("does NOT accept a source='declared' capability for the hard gate — an unverified spec-sheet claim must never satisfy it", async () => {
+      const groqId = await firstModelId('groq');
+      await isolateCandidates([groqId]);
+      await addKey('groq', 'test');
+      await run(getPool(), `INSERT INTO model_capabilities (model_db_id, capability, supported, source) VALUES (?, 'tools', true, 'declared')`, [groqId]);
+      await expect(routeRequest({ needs: ['tools'] })).rejects.toMatchObject({
+        code: 'NO_ELIGIBLE_MODEL',
+      });
+    });
+
     it('is a PER-MODEL fact, not per-provider: confirming tools on one model does not make a sibling model on the same provider eligible', async () => {
       const pool = getPool();
       await run(pool, `

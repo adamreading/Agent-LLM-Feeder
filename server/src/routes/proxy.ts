@@ -7,6 +7,7 @@ import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
+import { observeCapabilities } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { benchUnreachableModel } from '../services/modelHealth.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
@@ -560,6 +561,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         recordSuccess(route.modelDbId);
         setStickyModel(messages, route.modelDbId, explicitSessionId);
         void harvestQuotaHeaders(route.platform, route.modelId, route.keyId, result._rate_limit_headers);
+        // Passive capability observation: record what this model demonstrably
+        // DID on real traffic (returned tool_calls / honored response_format)
+        // as source='observed' — the token-free live version of the probes
+        // (Adam, 2026-07-10). Fire-and-forget; never blocks the response.
+        void observeCapabilities(route.modelDbId, { hadTools: !!(tools && tools.length > 0), hadResponseFormat: !!response_format }, result);
 
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));

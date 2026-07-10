@@ -416,17 +416,22 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // pure priority + tools-from-request-body; a policy-aware caller declares
     // exactly what its call-site requires.
     //
-    // source = 'measured' ONLY, deliberately not falling back to 'declared'
-    // — this is a hard safety gate, not a heuristic. Probe work exists because
+    // source IN ('measured','observed') — deliberately NOT 'declared'. This is
+    // a hard safety gate, not a heuristic. Probe work exists because
     // declared/spec-sheet claims (NVIDIA reasoning, Groq reasoning, Ollama
     // context) turned out wrong often enough to matter live; an unverified
     // claim must never satisfy a capability a caller is relying on for
-    // correctness.
+    // correctness. 'observed' is admitted because it is VERIFIED-BY-REAL-USE
+    // (the model actually returned tool_calls on production traffic — see
+    // capabilityObserve.ts) — proof at least as strong as a synthetic probe,
+    // and the token-free way we collect this now that active probe sweeps are
+    // banned (Adam, 2026-07-10). The safety property is preserved: only real
+    // evidence counts, never a spec-sheet claim.
     const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control' && n !== 'long_context');
     let missingOpaqueNeed = false;
     for (const need of opaqueNeeds) {
       const row = await get<{ supported: boolean }>(pool,
-        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = ? AND supported = true AND source = 'measured' LIMIT 1`,
+        `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = ? AND supported = true AND source IN ('measured','observed') LIMIT 1`,
         [model.id, need]
       );
       if (!row) { missingOpaqueNeed = true; break; }

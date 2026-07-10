@@ -82,4 +82,36 @@ describe('P3: quota header harvest', () => {
     const row = await get<any>(getPool(), 'SELECT * FROM quota_snapshots WHERE platform = ? AND model_id = ?', ['groq', 'test-model']);
     expect(row.reset_at).toBeNull();
   });
+
+  // Passive TPM vetting (Adam's "collect what the probes were getting, live"):
+  // the per-minute TOKEN limit header feeds models.tpm_limit — the column the
+  // router's structural filter reads — turning an unknown (NULL) tpm_limit into
+  // a real ceiling from ordinary traffic, no active probing.
+  describe('feeds models.tpm_limit from the token-limit header', () => {
+    beforeEach(async () => {
+      await run(getPool(), `DELETE FROM models WHERE platform = 'groq' AND model_id = 'tpm-probe-model'`);
+      await run(getPool(), `
+        INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, tpm_limit)
+        VALUES ('groq', 'tpm-probe-model', 'TPM Probe Model', 50, 50, NULL)
+      `);
+    });
+
+    it('populates a NULL tpm_limit from x-ratelimit-limit-tokens', async () => {
+      await harvestQuotaHeaders('groq', 'tpm-probe-model', keyId, {
+        'x-ratelimit-limit-tokens': '6000',
+        'x-ratelimit-remaining-tokens': '5900',
+      });
+      const row = await get<any>(getPool(), `SELECT tpm_limit FROM models WHERE platform = 'groq' AND model_id = 'tpm-probe-model'`);
+      expect(Number(row.tpm_limit)).toBe(6000);
+    });
+
+    it('does NOT write tpm_limit from a request-count limit (only the token limit is a TPM)', async () => {
+      await harvestQuotaHeaders('groq', 'tpm-probe-model', keyId, {
+        'x-ratelimit-limit-requests': '30',
+        'x-ratelimit-remaining-requests': '29',
+      });
+      const row = await get<any>(getPool(), `SELECT tpm_limit FROM models WHERE platform = 'groq' AND model_id = 'tpm-probe-model'`);
+      expect(row.tpm_limit).toBeNull();
+    });
+  });
 });
