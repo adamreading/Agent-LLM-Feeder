@@ -66,6 +66,39 @@ describe('P2 DoD: response_format capability gate, live over HTTP', () => {
     expect(body.error.type).toBe('routing_error');
   });
 
+  it('IGNORE-AND-ROUTE: a top-level reasoning_effort field never empties the pool — routes to a no-reasoning-dialect provider instead of 422', async () => {
+    // The v0.18.2 blackout: a stray reasoning_effort='medium' used to push a
+    // hard reasoning_control need and 422 when no provider had a reasoning
+    // dialect. Now it's a soft hint — Groq (no reasoning dialect) still serves.
+    await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });
+
+    const origFetch = global.fetch;
+    vi.spyOn(global, 'fetch').mockImplementation(async (url, init) => {
+      const urlStr = typeof url === 'string' ? url : url.toString();
+      if (urlStr.includes('api.groq.com/openai/v1/chat/completions')) {
+        // The reasoning_effort field must NOT be forwarded to a no-dialect
+        // provider (would 400) — assert it's absent from the body.
+        const sentBody = init?.body ? JSON.parse(init.body as string) : {};
+        expect(sentBody.reasoning_effort).toBeUndefined();
+        return {
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'chatcmpl-reason', object: 'chat.completion', created: 1, model: 'test-model',
+            choices: [{ index: 0, message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+          }),
+        } as any;
+      }
+      return origFetch(url, init);
+    });
+
+    const { status } = await request(app, 'POST', '/v1/chat/completions', {
+      messages: [{ role: 'user', content: 'hi' }],
+      reasoning_effort: 'medium',
+    });
+    expect(status).toBe(200);
+  });
+
   it('routes to a json_mode-capable provider when both a capable and incapable key exist — never sends it to Kilo', async () => {
     await request(app, 'POST', '/api/keys', { platform: 'kilo', key: 'test-kilo-key' });
     await request(app, 'POST', '/api/keys', { platform: 'groq', key: 'test-groq-key' });

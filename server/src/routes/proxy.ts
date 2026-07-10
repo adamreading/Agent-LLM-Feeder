@@ -370,8 +370,18 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // knowledge of task_class or any particular consumer required.
   const needs: CapabilityNeed[] = [];
   if (response_format) needs.push('json_mode');
-  if (reasoning_effort) needs.push('reasoning_control');
   if (tools && tools.length > 0) needs.push('tools');
+  // reasoning_effort is IGNORE-AND-ROUTE, not a hard filter (Adam, 2026-07-10,
+  // after a stray top-level reasoning_effort='medium' from Hermes v0.18.2 emptied
+  // the eligible pool → 422 → 15h Discord blackout). Unlike json_mode/tools/vision
+  // (ignoring them = broken/corrupt output), ignoring a reasoning HINT only means
+  // the model reasons at its default level — degraded-at-worst, never wrong — so it
+  // must never make the pool empty. The param still flows to the provider in
+  // CompletionOptions: a provider WITH a reasoning dialect honors it, one WITHOUT
+  // silently drops it (applyReasoningDialect in openai-compat.ts adds nothing when
+  // this.dialect.reasoning is unset — no 400). A call-site that GENUINELY requires
+  // reasoning control (e.g. voice think-off) still gets a HARD gate by declaring
+  // 'reasoning_control' explicitly in needs[] below — that path is unchanged.
 
   // Caller-DECLARED needs (generic `needs[]` body field) — this is how a
   // policy-aware consumer (e.g. an agent's agentic call-site) states what ITS
