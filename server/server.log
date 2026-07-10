@@ -1,0 +1,32 @@
+◇ injected env (5) from ../.env // tip: ◈ encrypted .env [www.dotenvx.com]
+Database initialized (Postgres) at localhost:5432/feeder
+Server running on http://0.0.0.0:3001
+Proxy endpoint: http://0.0.0.0:3001/v1/chat/completions
+[Health] Starting health checker (every 300s)
+[AutoOnboard] [nvidia/meta/llama-4-maverick-17b-128e-instruct] tools: SKIPPED (transient)
+[Proxy] OpenRouter API error 404: This model is unavailable for free from MiniMax M2.5 (free), falling back (attempt 1/20)
+[AutoOnboard] [nvidia/meta/llama-4-maverick-17b-128e-instruct] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/google/gemma-4-26b-a4b-it:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/google/gemma-4-26b-a4b-it:free] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/liquid/lfm-2.5-1.2b-thinking:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/liquid/lfm-2.5-1.2b-thinking:free] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/meta-llama/llama-3.3-70b-instruct:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/meta-llama/llama-3.3-70b-instruct:free] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/openai/gpt-oss-120b:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/openai/gpt-oss-120b:free] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/qwen/qwen3-coder:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/qwen/qwen3-coder:free] json_mode: SKIPPED (transient)
+[AutoOnboard] [openrouter/qwen/qwen3-next-80b-a3b-instruct:free] tools: SKIPPED (transient)
+[AutoOnboard] [openrouter/qwen/qwen3-next-80b-a3b-instruct:free] json_mode: SKIPPED (transient)
+[AutoOnboard] researching 1 new canonical model(s) via auto/research
+[Health] Checking 12 keys...
+[Health] Key 19 transport error: Cloudflare key must be in format "account_id:api_token"
+[Health] Key 5 transport error: This operation was aborted
+[Health] Check complete.
+[Health] Checking 12 keys...
+[Health] Key 19 transport error: Cloudflare key must be in format "account_id:api_token"
+[Health] Check complete.
+[Proxy] Google API error 429: You exceeded your current quota, pleas from Gemini 3.1 Pro Preview, falling back (attempt 1/20)
+[Health] Checking 12 keys...
+[Health] Key 19 transport error: Cloudflare key must be in format "account_id:api_token"
+[Health] Check complete.

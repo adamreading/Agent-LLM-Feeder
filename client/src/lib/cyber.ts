@@ -5,7 +5,7 @@ export const platformColors: Record<string, string> = {
   google: '#4285f4', groq: '#f55036', cerebras: '#8b5cf6', sambanova: '#14b8a6',
   nvidia: '#76b900', mistral: '#f59e0b', openrouter: '#ec4899', github: '#6e7b8b',
   cohere: '#d946ef', cloudflare: '#f38020', zhipu: '#06b6d4', ollama: '#c9c9d6',
-  kilo: '#7c3aed', pollinations: '#a855f7', llm7: '#0ea5e9',
+  kilo: '#7c3aed', pollinations: '#a855f7', llm7: '#0ea5e9', opencode: '#22c55e',
 }
 export const platformColor = (p: string) => platformColors[p] ?? '#94a3b8'
 
@@ -15,7 +15,7 @@ export const PLATFORM_NAMES: Record<string, string> = {
   google: 'Google AI Studio', groq: 'Groq', cerebras: 'Cerebras', sambanova: 'SambaNova',
   nvidia: 'NVIDIA NIM', mistral: 'Mistral', openrouter: 'OpenRouter', github: 'GitHub Models',
   cohere: 'Cohere', cloudflare: 'Cloudflare Workers AI', zhipu: 'Z.ai / Zhipu', ollama: 'Ollama Cloud',
-  kilo: 'Kilo Gateway', pollinations: 'Pollinations', llm7: 'LLM7',
+  kilo: 'Kilo Gateway', pollinations: 'Pollinations', llm7: 'LLM7', opencode: 'OpenCode Zen',
 }
 export const PLATFORM_IDS = Object.keys(PLATFORM_NAMES)
 export const platformName = (p: string) => PLATFORM_NAMES[p] ?? p

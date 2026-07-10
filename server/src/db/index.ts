@@ -36,6 +36,7 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV9(pool);
   await migrateModelsV10(pool);
   await migrateModelsV11(pool);
+  await migrateModelsV12(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
   // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
@@ -745,6 +746,36 @@ async function migrateModelsV11(pool: pg.Pool) {
     ['llm7', 'codestral-latest', 'Codestral (LLM7)', 16, 8, 'Medium', 100, null, null, null, '~2-3M (100/hr)', 32000],
     ['llm7', 'ministral-8b-2512', 'Ministral 8B (LLM7)', 28, 10, 'Small', 100, null, null, null, '~2-3M (100/hr)', 131072],
     ['llm7', 'GLM-4.6V-Flash', 'GLM-4.6V Flash (LLM7)', 15, 9, 'Large', 100, null, null, null, '~2-3M (100/hr)', 131072],
+  ];
+  await transaction(pool, async (client) => {
+    for (const a of additions) await run(client, insertSql, a);
+    await addMissingFallbackEntries(client);
+  });
+}
+
+/**
+ * V12 (2026-07-10) — add OpenCode Zen (opencode.ai/zen), from the upstream
+ * freellmapi review. Its public /v1/models list has 5 genuinely-free routes
+ * (…-free suffix, confirmed live via a token-free GET); the rest of its catalog
+ * is paid frontier models we deliberately don't seed. Numeric limits unknown —
+ * left null so the passive quota-harvest fills tpm_limit from real response
+ * headers rather than guessing. Ranks/context are best-effort estimates the
+ * research writer + observation refine over time; ON CONFLICT DO NOTHING makes
+ * this idempotent, and there is deliberately NO removals list that could fight
+ * these inserts on restart (the L12 delete/re-insert-war lesson).
+ */
+async function migrateModelsV12(pool: pg.Pool) {
+  const insertSql = `
+    INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, size_label, rpm_limit, rpd_limit, tpm_limit, tpd_limit, monthly_token_budget, context_window)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (platform, model_id) DO NOTHING
+  `;
+  const additions: Array<[string, string, string, number, number, string, number | null, number | null, number | null, number | null, string, number | null]> = [
+    ['opencode', 'nemotron-3-ultra-free', 'Nemotron 3 Ultra (free)', 3, 9, 'Frontier', null, null, null, null, 'free tier', 262144],
+    ['opencode', 'deepseek-v4-flash-free', 'DeepSeek V4 Flash (free)', 5, 5, 'Large', null, null, null, null, 'free tier', 131072],
+    ['opencode', 'hy3-free', 'Hunyuan 3 (free)', 6, 8, 'Large', null, null, null, null, 'free tier', 262144],
+    ['opencode', 'mimo-v2.5-free', 'MiMo v2.5 (free)', 9, 5, 'Medium', null, null, null, null, 'free tier', 131072],
+    ['opencode', 'north-mini-code-free', 'North Mini Code (free)', 12, 4, 'Medium', null, null, null, null, 'free tier', 131072],
   ];
   await transaction(pool, async (client) => {
     for (const a of additions) await run(client, insertSql, a);

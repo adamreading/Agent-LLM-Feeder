@@ -5,7 +5,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
-import { recordRequest, recordTokens, setCooldown } from '../services/ratelimit.js';
+import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
@@ -250,6 +250,23 @@ function isUnreachableError(err: any): boolean {
     || msg.includes('404') || msg.includes('not found')
     || msg.includes('does not exist') || msg.includes('no such model')
     || msg.includes('not authorized') || msg.includes('unauthorized');
+}
+
+// Is there ANOTHER key for this platform that could still serve this model —
+// one that isn't the key that just failed, isn't already skipped this request,
+// and isn't on a live cooldown? Drives the per-key-vs-per-model penalty
+// decision: if yes, the model is fine (just this key is limited) so we don't
+// sink the model's routing priority. One cheap query, only on the error path.
+async function hasOtherUsableKey(platform: string, modelId: string, failingKeyId: number, skipKeys: Set<string>): Promise<boolean> {
+  const keys = await all<{ id: number }>(getPool(),
+    `SELECT id FROM api_keys WHERE platform = ? AND enabled = true AND status != 'invalid'`, [platform]);
+  for (const k of keys) {
+    if (k.id === failingKeyId) continue;
+    if (skipKeys.has(`${platform}:${modelId}:${k.id}`)) continue;
+    if (isOnCooldown(platform, modelId, k.id)) continue;
+    return true;
+  }
+  return false;
 }
 
 function isRetryableError(err: any): boolean {
@@ -617,7 +634,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
       skipKeys.add(skipId);
       setCooldown(route.platform, route.modelId, route.keyId, 120_000);
-      recordRateLimitHit(route.modelDbId);
+      // Per-key-vs-per-model cooldown (ported from upstream freellmapi, 2026-07-10):
+      // only DEMOTE THE MODEL (sink its routing priority) when no OTHER usable key
+      // could still serve it — a single key's 429 must not sink the whole model when
+      // another key is available. When another usable key exists we only cooled the
+      // failing KEY above, so the very next attempt re-picks the same (still-strong)
+      // model on the other key instead of failing over to a weaker model.
+      const otherKeyUsable = await hasOtherUsableKey(route.platform, route.modelId, route.keyId, skipKeys);
+      if (!otherKeyUsable) recordRateLimitHit(route.modelDbId);
       if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
         void markCapabilitySuspect(route.modelDbId, 'tools');
         console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);

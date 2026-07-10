@@ -192,6 +192,20 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://api.llm7.io/v1',
 }));
 
+// OpenCode Zen (opencode.ai/zen) — OpenAI-compatible gateway. Added 2026-07-10
+// from the upstream freellmapi review (Adam's call). Its public /v1/models list
+// includes 5 genuinely free routes (…-free suffix: deepseek-v4-flash-free,
+// mimo-v2.5-free, hy3-free, nemotron-3-ultra-free, north-mini-code-free); the
+// rest of its catalog is paid frontier models (Claude/GPT/Gemini) we don't seed.
+// It fronts many unrelated model families like an aggregator, so dialect is left
+// UNDECLARED (no jsonMode/reasoning claim) — capability is vetted per-model by
+// observation/probe before json/tools traffic can land, same as OpenRouter/Kilo.
+register(new OpenAICompatProvider({
+  platform: 'opencode',
+  name: 'OpenCode Zen',
+  baseUrl: 'https://opencode.ai/zen/v1',
+}));
+
 // Chutes was evaluated for V11 and dropped: probe with a free-tier key
 // returned 402 on every model — "Quota exceeded and account balance is
 // $0.0, please pay with fiat or send tao". The "free" tier requires a
