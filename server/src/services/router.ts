@@ -280,6 +280,11 @@ const TASK_CLASS_TO_TASK_TYPE: Record<string, string> = {
   // feeder's OWN research writer routes as auto/research — it must follow a
   // strict JSON schema, so it's scored on instruction-following.
   research: 'instruction_following', extraction: 'instruction_following',
+  // Hermes's OB-write quality signal (task_class:'ob_write', wsl's locked
+  // emitter, 2026-07-10): capturing a well-formed thought is structured
+  // instruction-following, so its realtime_quality lands on that dimension
+  // rather than diluting the general 'overall' prior.
+  ob_write: 'instruction_following',
 };
 export function taskTypeFor(taskClass: string | null | undefined): string {
   if (!taskClass) return 'overall';
