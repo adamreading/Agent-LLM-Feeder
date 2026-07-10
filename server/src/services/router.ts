@@ -33,6 +33,7 @@ interface FallbackRow {
   model_db_id: number;
   enabled: boolean;
   intelligence_rank: number;
+  size_label: string;
 }
 
 export interface RouteResult {
@@ -211,6 +212,42 @@ const LATENCY_LOOSE_CAP = 4;         // quality/curated prior dominates for batc
 // this is what makes "math → high-math model, prose → high-creative model" real.
 const TASK_QUALITY_WEIGHT = 12;
 
+// Intelligence/size weighting of the arena lift (Adam, 2026-07-10): a 580B
+// model with arena 90 is genuinely better than an 8B with arena 90, so a raw
+// arena score must not let a small model leapfrog a big one. We have no exact
+// param count — size_label is a coarse capability bucket — so we scale the
+// task-quality LIFT by a size factor: a Frontier/Large model gets the full
+// lift from its arena score, a Small model only a fraction of it. Model
+// intelligence is ALSO already the base ordering prior (intelligence_rank), so
+// between the two a bigger/smarter model is favoured on both axes. Unknown/
+// unlabelled → a neutral 0.75 (never zero — a strong arena score on an
+// unlabelled model shouldn't be discarded, just not over-trusted).
+const SIZE_QUALITY_FACTOR: Record<string, number> = {
+  frontier: 1.0,
+  large: 0.85,
+  medium: 0.7,
+  small: 0.5,
+};
+function sizeFactor(sizeLabel: string | null | undefined): number {
+  if (!sizeLabel) return 0.75;
+  return SIZE_QUALITY_FACTOR[sizeLabel.trim().toLowerCase()] ?? 0.75;
+}
+
+// Data-collection fairness (Adam, 2026-07-10): since every real call now
+// collects live data (latency/health/quota/observed capabilities), routing
+// should give under-observed models a fair turn so we accrue data across the
+// WHOLE catalog, not just today's winners. A model we have NO response data
+// for gets the STRONGEST pull; once every model has data, the one whose data
+// is OLDEST gets the pull — a monotonic staleness bonus (never-seen = maximal
+// staleness). Bounded so it nudges ordering without letting a weak stale model
+// hijack a quality-sensitive turn, and scaled DOWN under a tight latency
+// ceiling (interactive chat — protect Lunk's quality) vs UP with a loose/absent
+// one (batch — cheap to explore). Complements the ε-greedy random-K spread,
+// which Adam asked to keep; this is the principled, information-gain half.
+const COVERAGE_WEIGHT_TIGHT = 3;      // interactive: gentle nudge only
+const COVERAGE_WEIGHT_LOOSE = 8;      // batch: explore harder for coverage
+const COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000; // untouched ≥24h → full staleness bonus
+
 // A model counts as "long context" only if its declared window clears this bar.
 // Adam's call (2026-07-09): don't label an 8k/32k model long-context off a
 // low-target needle probe — require a genuinely large window.
@@ -244,9 +281,43 @@ const TASK_CLASS_TO_TASK_TYPE: Record<string, string> = {
   // strict JSON schema, so it's scored on instruction-following.
   research: 'instruction_following', extraction: 'instruction_following',
 };
-function taskTypeFor(taskClass: string | null | undefined): string {
+export function taskTypeFor(taskClass: string | null | undefined): string {
   if (!taskClass) return 'overall';
   return TASK_CLASS_TO_TASK_TYPE[taskClass.toLowerCase()] ?? 'overall';
+}
+
+// How much a REAL-USAGE quality score (source='realtime_quality', from the
+// answer-evaluation capture) pulls the routing quality away from the external
+// benchmark prior when both exist for a model+task (Adam's "dynamic evolving
+// system", 2026-07-10). Bounded < 0.5 so the arena prior still anchors — a few
+// noisy early real-usage samples nudge, they don't swing routing. Grows in
+// influence naturally as more samples accumulate into the stored average.
+const REALTIME_QUALITY_BLEND = 0.4;
+
+// Blend the per-(model,task) rows across sources into ONE score per model.
+// Before this, the routing join had no source filter and silently kept
+// whichever row the DB returned last when a model had both a 'benchmark' and a
+// 'realtime_quality' row — nondeterministic and it discarded one signal.
+// Now: the benchmark/measured/declared rows form the PRIOR (arena leaderboard);
+// realtime_quality is real-usage evidence that blends over the prior.
+function blendTaskScores(
+  rows: Array<{ model_db_id: number; score: number; source: string }>,
+): Map<number, number> {
+  const byModel = new Map<number, { prior: number | null; realtime: number | null }>();
+  for (const r of rows) {
+    const entry = byModel.get(r.model_db_id) ?? { prior: null, realtime: null };
+    if (r.source === 'realtime_quality') entry.realtime = Number(r.score);
+    else entry.prior = Number(r.score); // benchmark / measured / declared
+    byModel.set(r.model_db_id, entry);
+  }
+  const out = new Map<number, number>();
+  for (const [modelDbId, { prior, realtime }] of byModel) {
+    let blended: number | null = null;
+    if (prior != null && realtime != null) blended = prior * (1 - REALTIME_QUALITY_BLEND) + realtime * REALTIME_QUALITY_BLEND;
+    else blended = prior ?? realtime; // whichever exists
+    if (blended != null) out.set(modelDbId, blended);
+  }
+  return out;
 }
 
 // Composite ordering score (lower = tried earlier). health/success-rate always
@@ -260,15 +331,28 @@ function candidateScore(
   health: ModelHealthRow | undefined,
   latencyCeilingMs: number | undefined,
   taskScore: number | undefined,
+  sizeQualityFactor: number,
+  dataAgeMs: number | null,
 ): number {
   let score = basePriority + getPenalty(modelDbId);
 
   // Dynamic quality lift: a researched arena score for THIS task pulls the
-  // model up (higher score = lower composite = tried earlier). Applies whether
-  // or not health data exists, so quality steers even a cold pool.
-  if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT;
+  // model up (higher score = lower composite = tried earlier). Scaled by the
+  // model's size/capability factor so a big model beats a small one at equal
+  // arena score (Adam, 2026-07-10). Applies whether or not health data exists,
+  // so quality steers even a cold pool.
+  if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT * sizeQualityFactor;
 
-  if (!health) return score; // no health data → intelligence prior + task quality only
+  // Data-collection fairness: pull under-observed models up so we accrue live
+  // data across the whole catalog. Never-seen (dataAgeMs == null) = maximal
+  // staleness = full bonus; a model seen ≥COVERAGE_FULL_AGE_MS ago also gets
+  // the full bonus; a just-used model gets ~none. Weight scales with the
+  // latency ceiling (explore less on tight interactive turns).
+  const coverageWeight = latencyCeilingMs != null ? COVERAGE_WEIGHT_TIGHT : COVERAGE_WEIGHT_LOOSE;
+  const staleFrac = dataAgeMs == null ? 1 : Math.min(1, dataAgeMs / COVERAGE_FULL_AGE_MS);
+  score -= coverageWeight * staleFrac;
+
+  if (!health) return score; // no health data → intelligence prior + task quality + coverage only
 
   const clampedHealth = Math.max(0, Math.min(1, health.health_score));
   score += (1 - clampedHealth) * HEALTH_WEIGHT;
@@ -324,7 +408,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   // manual on/off; ordering is the algorithm's job (intelligence + task quality
   // + health + latency + exploration), not a hand-maintained priority list.
   const fallbackChain = await all<FallbackRow>(pool, `
-    SELECT fc.model_db_id, fc.enabled, m.intelligence_rank
+    SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
     ORDER BY m.intelligence_rank ASC
@@ -334,19 +418,35 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   // model_db_id via the model's canonical grouping). taskType defaults to
   // 'overall' so plain requests still get the general quality prior.
   const taskType = taskTypeFor(taskClass);
-  const taskScoreRows = await all<{ model_db_id: number; score: number }>(pool, `
-    SELECT m.id AS model_db_id, ts.score
+  const taskScoreRows = await all<{ model_db_id: number; score: number; source: string }>(pool, `
+    SELECT m.id AS model_db_id, ts.score, ts.source
     FROM models m
     JOIN task_scores ts ON ts.canonical_model_id = m.canonical_model_id AND ts.task_type = ?
   `, [taskType]);
-  const taskScoreMap = new Map(taskScoreRows.map(r => [r.model_db_id, Number(r.score)]));
+  const taskScoreMap = blendTaskScores(taskScoreRows);
+
+  // Data-collection fairness (Adam, 2026-07-10): preload how long ago we last
+  // got a real (non-probe) response from each model — the freshness of ALL its
+  // response-derived data (latency/health/quota/observed capabilities). A model
+  // absent from this map has never been exercised → strongest exploration pull.
+  const dataAgeRows = await all<{ model_db_id: number; age_ms: string }>(pool, `
+    SELECT m.id AS model_db_id, EXTRACT(EPOCH FROM (now() - max(r.created_at))) * 1000 AS age_ms
+    FROM models m
+    JOIN requests r ON r.platform = m.platform AND r.model_id = m.model_id AND r.is_probe = false
+    GROUP BY m.id
+  `);
+  const dataAgeMap = new Map(dataAgeRows.map(r => [r.model_db_id, Number(r.age_ms)]));
 
   // Step-3 selection: order by the composite score (see candidateScore).
   // healthMap is the persisted cron-derived summary — one cheap read per call.
   const healthMap = await getHealthMap(pool);
   const sortedChain = fallbackChain.map(entry => ({
     ...entry,
-    effectivePriority: candidateScore(entry.intelligence_rank, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs, taskScoreMap.get(entry.model_db_id)),
+    effectivePriority: candidateScore(
+      entry.intelligence_rank, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs,
+      taskScoreMap.get(entry.model_db_id), sizeFactor(entry.size_label),
+      dataAgeMap.has(entry.model_db_id) ? dataAgeMap.get(entry.model_db_id)! : null,
+    ),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
   // Sticky session: move preferred model to front of chain
@@ -582,10 +682,12 @@ export interface RoutingExplainRow {
   modelId: string;
   displayName: string;
   intelligenceRank: number;
-  taskScore: number | null;      // 0-1 arena score for the (task) type shown
+  taskScore: number | null;      // 0-1 blended (benchmark prior + realtime_quality) score for the (task) type shown
   penalty: number;               // live in-memory 429 penalty
   healthScore: number | null;    // 0-1
   latencyMs: number | null;      // recent median
+  sizeLabel: string;             // capability bucket driving the arena-lift weighting
+  dataAgeMs: number | null;      // ms since last real response (null = never exercised → strongest coverage pull)
   effectiveScore: number;        // composite (lower = tried earlier)
   keyCount: number;
   cooling: boolean;              // live circuit-breaker cooldown
@@ -599,10 +701,10 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
 
   const models = await all<{
     id: number; platform: string; model_id: string; display_name: string;
-    intelligence_rank: number; cost_tier: string; model_enabled: boolean;
+    intelligence_rank: number; size_label: string; cost_tier: string; model_enabled: boolean;
     fc_enabled: boolean; disabled_reason: string | null; key_count: string;
   }>(pool, `
-    SELECT m.id, m.platform, m.model_id, m.display_name, m.intelligence_rank,
+    SELECT m.id, m.platform, m.model_id, m.display_name, m.intelligence_rank, m.size_label,
            m.cost_tier, m.enabled AS model_enabled, m.disabled_reason,
            fc.enabled AS fc_enabled,
            (SELECT count(*) FROM api_keys k WHERE k.platform = m.platform AND k.enabled = true AND k.status != 'invalid') AS key_count
@@ -611,20 +713,29 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
   `);
 
   const healthMap = await getHealthMap(pool);
-  const taskRows = await all<{ model_db_id: number; score: number }>(pool, `
-    SELECT m.id AS model_db_id, ts.score
+  const taskRows = await all<{ model_db_id: number; score: number; source: string }>(pool, `
+    SELECT m.id AS model_db_id, ts.score, ts.source
     FROM models m
     JOIN task_scores ts ON ts.canonical_model_id = m.canonical_model_id AND ts.task_type = ?
   `, [taskType]);
-  const taskScoreMap = new Map(taskRows.map(r => [r.model_db_id, Number(r.score)]));
+  const taskScoreMap = blendTaskScores(taskRows);
+
+  const dataAgeRows = await all<{ model_db_id: number; age_ms: string }>(pool, `
+    SELECT m.id AS model_db_id, EXTRACT(EPOCH FROM (now() - max(r.created_at))) * 1000 AS age_ms
+    FROM models m
+    JOIN requests r ON r.platform = m.platform AND r.model_id = m.model_id AND r.is_probe = false
+    GROUP BY m.id
+  `);
+  const dataAgeMap = new Map(dataAgeRows.map(r => [r.model_db_id, Number(r.age_ms)]));
 
   const now = Date.now();
   const rows: RoutingExplainRow[] = models.map(m => {
     const health = healthMap.get(m.id);
     const taskScore = taskScoreMap.has(m.id) ? taskScoreMap.get(m.id)! : null;
+    const dataAgeMs = dataAgeMap.has(m.id) ? dataAgeMap.get(m.id)! : null;
     const keyCount = Number(m.key_count);
     const cooling = !!(health?.cooldown_until && new Date(health.cooldown_until).getTime() > now);
-    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined);
+    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs);
     const status: RoutingExplainRow['status'] =
       (!m.model_enabled || !m.fc_enabled) ? 'disabled'
         : keyCount === 0 ? 'no_key'
@@ -635,6 +746,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
       intelligenceRank: m.intelligence_rank, taskScore, penalty: getPenalty(m.id),
       healthScore: health ? Math.max(0, Math.min(1, health.health_score)) : null,
       latencyMs: health?.recent_latency_ms ?? null,
+      sizeLabel: m.size_label, dataAgeMs,
       effectiveScore, keyCount, cooling, costTier: m.cost_tier, status,
     };
   });

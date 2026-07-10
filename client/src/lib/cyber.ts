@@ -153,14 +153,54 @@ export const supportedCaps = (m: CanonModel) =>
 export const overallScore = (m: CanonModel) =>
   m.taskScores.find(s => s.task_type === 'overall')?.score ?? null
 
-// Research-driven ranking score (0-1). Prefer the true arena 'overall' ELO;
-// otherwise fall back to the mean of whatever per-task benchmark scores the
-// research produced. null only when a model has NO research scores at all.
-// Drives the wiki's dynamic ordering so better-researched models rise.
+// Size/capability weighting (mirrors SIZE_QUALITY_FACTOR in server router.ts):
+// a big model with a given arena score is genuinely better than a small one
+// with the same score, so the wiki RATING tilts by size — matching how routing
+// weights the arena lift (Adam, 2026-07-10). Unknown bucket → neutral 0.75.
+const SIZE_QUALITY_FACTOR: Record<string, number> = { frontier: 1.0, large: 0.85, medium: 0.7, small: 0.5 }
+const sizeFactorOf = (label: string | null | undefined) =>
+  label ? (SIZE_QUALITY_FACTOR[label.trim().toLowerCase()] ?? 0.75) : 0.75
+// A canonical model's size = its strongest instance bucket (the best supplier
+// offering it), since quality is a property of the weights.
+export const canonSizeFactor = (m: CanonModel): number =>
+  m.instances.length ? Math.max(...m.instances.map(i => sizeFactorOf(i.size_label))) : 0.75
+
+// How much real-usage quality pulls the displayed rating off the benchmark
+// prior — mirrors REALTIME_QUALITY_BLEND in the server router so the wiki shows
+// the same evolving number routing uses.
+const REALTIME_QUALITY_BLEND = 0.4
+
+// Blend the benchmark prior + realtime_quality for one task_type (mirrors
+// blendTaskScores on the server). Returns null if neither source has a row.
+export const blendedTaskScore = (m: CanonModel, taskType: string): number | null => {
+  const rows = m.taskScores.filter(s => s.task_type === taskType)
+  if (!rows.length) return null
+  const realtime = rows.find(s => s.source === 'realtime_quality')?.score
+  const prior = rows.find(s => s.source !== 'realtime_quality')?.score
+  if (prior != null && realtime != null) return prior * (1 - REALTIME_QUALITY_BLEND) + realtime * REALTIME_QUALITY_BLEND
+  return prior ?? realtime ?? null
+}
+
+// True when real-usage quality has started reshaping this model's rating — the
+// wiki badges it so a reader sees the score is live-evolving, not just arena.
+export const hasRealtimeQuality = (m: CanonModel): boolean =>
+  m.taskScores.some(s => s.source === 'realtime_quality')
+
+// Research-driven ranking score (0-1). Prefer the true arena 'overall' ELO
+// (blended with real-usage quality); otherwise the mean of the per-task
+// blended scores. Then tilt by size so a big model outranks a small one at
+// equal arena score — the wiki's dynamic, evolving rating. null only when a
+// model has NO scores at all. Drives the wiki's ordering.
 export const researchScore = (m: CanonModel): number | null => {
-  const overall = m.taskScores.find(s => s.task_type === 'overall')?.score
-  if (overall != null) return overall
-  const cats = m.taskScores.filter(s => s.task_type !== 'overall').map(s => s.score)
-  if (!cats.length) return null
-  return cats.reduce((a, b) => a + b, 0) / cats.length
+  let base = blendedTaskScore(m, 'overall')
+  if (base == null) {
+    const types = [...new Set(m.taskScores.filter(s => s.task_type !== 'overall').map(s => s.task_type))]
+    const cats = types.map(t => blendedTaskScore(m, t)).filter((n): n is number => n != null)
+    if (!cats.length) return null
+    base = cats.reduce((a, b) => a + b, 0) / cats.length
+  }
+  // Tilt by size: equal arena, bigger model rates higher (0.5..1.0 → keeps
+  // 50-100% of the score). Bounded so a small model with real quality still
+  // ranks sensibly, never zeroed.
+  return base * (0.5 + 0.5 * canonSizeFactor(m))
 }

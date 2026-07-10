@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { routeRequest } from '../../services/router.js';
 import * as ratelimit from '../../services/ratelimit.js';
 import { initDb, closeDb, getPool } from '../../db/index.js';
-import { run, all } from '../../db/pgCompat.js';
+import { run, all, get } from '../../db/pgCompat.js';
 import { createTestDb } from '../testDb.js';
 import { encrypt } from '../../lib/crypto.js';
 
@@ -61,6 +61,9 @@ describe('Step-3 health/latency-aware selection', () => {
   beforeEach(async () => {
     await run(getPool(), 'DELETE FROM api_keys');
     await run(getPool(), 'DELETE FROM model_health');
+    // Coverage/staleness scoring reads the requests table — clean it between
+    // tests so request rows one test inserts don't leak into another's ordering.
+    await run(getPool(), 'DELETE FROM requests');
     await run(getPool(), 'UPDATE fallback_config SET enabled = true');
     vi.clearAllMocks();
     (ratelimit.canMakeRequest as any).mockReturnValue(true);
@@ -138,5 +141,42 @@ describe('Step-3 health/latency-aware selection', () => {
 
     const route = await routeRequest({});
     expect(route.modelId).toBe(a.model_id);
+  });
+
+  // Data-collection fairness (Adam, 2026-07-10): a model with NO response data
+  // gets the strongest exploration pull, so we accrue data across the catalog.
+  it('prefers a never-exercised model over an equally-ranked one that was just used (coverage pull)', async () => {
+    const [a, b] = groqModels;
+    await isolate([a.id, b.id]);
+    await addKey('groq');
+    // Equal everything: same rank, no health, no task scores.
+    await run(getPool(), 'UPDATE models SET intelligence_rank = 5 WHERE id IN (?, ?)', [a.id, b.id]);
+    // a was JUST used (fresh data → ~no coverage bonus); b has never been seen
+    // (→ full coverage bonus → tried first).
+    await run(getPool(), `INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, is_probe) VALUES ('groq', ?, 'success', 10, 10, 100, false)`, [a.model_id]);
+
+    const route = await routeRequest({});
+    expect(route.modelId).toBe(b.model_id);
+  });
+
+  // Intelligence/size weighting (Adam, 2026-07-10): a bigger model beats a
+  // smaller one at the SAME arena score — the arena lift is scaled by size.
+  it('prefers the larger model when arena score and rank are equal (size-weighted quality)', async () => {
+    const [a, b] = groqModels;
+    await isolate([a.id, b.id]);
+    await addKey('groq');
+    await run(getPool(), 'UPDATE models SET intelligence_rank = 5 WHERE id IN (?, ?)', [a.id, b.id]);
+    // a = Small, b = Frontier — same arena score, b's lift is larger → b wins.
+    await run(getPool(), `UPDATE models SET size_label = 'Small' WHERE id = ?`, [a.id]);
+    await run(getPool(), `UPDATE models SET size_label = 'Frontier' WHERE id = ?`, [b.id]);
+    // Equal 'overall' arena score on each model's canonical.
+    const ca = await get<{ canonical_model_id: number }>(getPool(), 'SELECT canonical_model_id FROM models WHERE id = ?', [a.id]);
+    const cb = await get<{ canonical_model_id: number }>(getPool(), 'SELECT canonical_model_id FROM models WHERE id = ?', [b.id]);
+    for (const cid of [ca!.canonical_model_id, cb!.canonical_model_id]) {
+      await run(getPool(), `INSERT INTO task_scores (canonical_model_id, task_type, score, source) VALUES (?, 'overall', 0.9, 'benchmark') ON CONFLICT (canonical_model_id, task_type, source) DO UPDATE SET score = 0.9`, [cid]);
+    }
+
+    const route = await routeRequest({});
+    expect(route.modelId).toBe(b.model_id);
   });
 });

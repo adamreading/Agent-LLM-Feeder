@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, makerFromName, prettyCtx,
-  bestIntel, maxCtx, supportedCaps, overallScore, researchScore,
+  bestIntel, maxCtx, supportedCaps, overallScore, researchScore, hasRealtimeQuality,
 } from '@/lib/cyber'
 
 const FILTERS = [
@@ -195,7 +195,7 @@ export default function ModelWikiPage() {
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', ...label, fontSize: 9.5, color: 'var(--dim)', marginBottom: 4 }}>
-                    <span>{barLabel}</span>
+                    <span>{barLabel}{hasRealtimeQuality(m) && <span title="Rating is evolving from real-usage quality" style={{ marginLeft: 6, color: 'var(--acc2)', fontSize: 8.5, fontWeight: 700 }}>◆ LIVE</span>}</span>
                     <span style={{ color: 'var(--ink)' }}>{research != null ? Math.round(research * 100) : 'PENDING'}</span>
                   </div>
                   <div style={{ height: 6, background: 'var(--bg2)', border: '1px solid var(--line)' }}>

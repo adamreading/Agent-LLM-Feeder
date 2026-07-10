@@ -518,6 +518,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             }
             const text = chunk.choices[0]?.delta?.content ?? '';
             totalOutputTokens += Math.ceil(text.length / 4);
+            // Stamp the RESOLVED model into the streamed body so a caller that
+            // reads chunk.model (not the X-Routed-Via header — the SSE transport
+            // doesn't surface headers to the body reader) gets the real served
+            // model as its attribution key (wsl, 2026-07-10). Format matches the
+            // header: platform/model_id.
+            chunk.model = `${route.platform}/${route.modelId}`;
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
 
@@ -567,6 +573,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // (Adam, 2026-07-10). Fire-and-forget; never blocks the response.
         void observeCapabilities(route.modelDbId, { hadTools: !!(tools && tools.length > 0), hadResponseFormat: !!response_format }, result);
 
+        // Stamp the RESOLVED model into the response body (matches X-Routed-Via)
+        // so a caller reading result.model gets the real served model as its
+        // attribution key for quality sampling (wsl, 2026-07-10).
+        result.model = `${route.platform}/${route.modelId}`;
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
         res.json(result);
