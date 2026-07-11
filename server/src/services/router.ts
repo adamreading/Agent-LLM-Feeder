@@ -693,6 +693,7 @@ export interface RoutingExplainRow {
   latencyMs: number | null;      // recent median
   sizeLabel: string;             // capability bucket driving the arena-lift weighting
   dataAgeMs: number | null;      // ms since last real response (null = never exercised → strongest coverage pull)
+  disabledReason: string | null; // why a disabled row is off ('no_key'|'unhealthy'|'unreachable'|'paid_tier'|'unavailable'|'manual')
   effectiveScore: number;        // composite (lower = tried earlier)
   keyCount: number;
   cooling: boolean;              // live circuit-breaker cooldown
@@ -751,7 +752,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
       intelligenceRank: m.intelligence_rank, taskScore, penalty: getPenalty(m.id),
       healthScore: health ? Math.max(0, Math.min(1, health.health_score)) : null,
       latencyMs: health?.recent_latency_ms ?? null,
-      sizeLabel: m.size_label, dataAgeMs,
+      sizeLabel: m.size_label, dataAgeMs, disabledReason: m.disabled_reason,
       effectiveScore, keyCount, cooling, costTier: m.cost_tier, status,
     };
   });

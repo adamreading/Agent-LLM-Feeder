@@ -10,7 +10,19 @@ interface ExplainRow {
   intelligenceRank: number; taskScore: number | null; penalty: number
   healthScore: number | null; latencyMs: number | null; effectiveScore: number
   keyCount: number; cooling: boolean; costTier: string
+  disabledReason: string | null
   status: 'eligible' | 'disabled' | 'no_key' | 'cooling'
+}
+
+// Human labels for why a row is greyed — shown on the pill so a disabled model
+// says WHY instead of a bare "DISABLED".
+const REASON_LABEL: Record<string, string> = {
+  no_key: 'NO KEY',
+  unhealthy: 'UNHEALTHY',
+  unreachable: 'UNREACHABLE',
+  paid_tier: 'PAID TIER',
+  unavailable: 'NOT ON FREE TIER',
+  manual: 'TURNED OFF',
 }
 interface OrderData { taskType: string; rows: ExplainRow[] }
 interface TokenUsageData { totalBudget: number; totalUsed: number; models: { displayName: string; platform: string; budget: number }[] }
@@ -146,7 +158,11 @@ export default function FallbackPage() {
         ) : (
           <div style={{ border: '1px solid var(--line)', overflow: 'hidden' }}>
             {rows.map((r, i) => {
-              const st = STATUS_STYLE[r.status]
+              const baseSt = STATUS_STYLE[r.status]
+              // For a disabled/no-key row, show the specific reason on the pill.
+              const st = (r.status === 'disabled' || r.status === 'no_key') && r.disabledReason
+                ? { label: REASON_LABEL[r.disabledReason] ?? r.disabledReason.toUpperCase(), color: baseSt.color }
+                : baseSt
               const dimmed = r.status === 'disabled' || r.status === 'no_key'
               const isOpen = open === r.modelDbId
               return (

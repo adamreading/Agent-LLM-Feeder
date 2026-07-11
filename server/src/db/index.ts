@@ -37,6 +37,7 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV10(pool);
   await migrateModelsV11(pool);
   await migrateModelsV12(pool);
+  await migrateModelsV13(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
   // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
@@ -781,6 +782,27 @@ async function migrateModelsV12(pool: pg.Pool) {
     for (const a of additions) await run(client, insertSql, a);
     await addMissingFallbackEntries(client);
   });
+}
+
+/**
+ * V13 (2026-07-11) — stamp a disabled_reason on rows that earlier migrations
+ * turned off with `enabled = false` but NO reason recorded, so the Fallback
+ * reality view can show WHY a model is greyed instead of a bare "DISABLED"
+ * (Adam's ask). These were deliberate catalog-curation disables after live
+ * testing (found not-free / probe-failed / provider-pulled), NOT bugs.
+ *   - gemini-2.5-pro: Google moved Pro-class off the free tier → 'paid_tier'.
+ *   - everything else still enabled=false with a null reason → 'unavailable'
+ *     (tested and not currently servable on the free tier).
+ * Idempotent: once stamped the rows are no longer null, so re-runs no-op. The
+ * new reasons are left ALONE by both auto-re-enable mechanisms (platformKeyWatch
+ * only revives 'no_key', modelHealth only 'unhealthy'), so a deliberately-off
+ * model never silently flips back on — the cheap liveness re-check
+ * (services/livenessRecheck.ts) is the only thing that may revive them, and
+ * only on a real 200.
+ */
+async function migrateModelsV13(pool: pg.Pool) {
+  await run(pool, `UPDATE models SET disabled_reason = 'paid_tier' WHERE platform = 'google' AND model_id = 'gemini-2.5-pro' AND enabled = false AND disabled_reason IS NULL`);
+  await run(pool, `UPDATE models SET disabled_reason = 'unavailable' WHERE enabled = false AND disabled_reason IS NULL`);
 }
 
 async function ensureUnifiedKey(pool: pg.Pool) {

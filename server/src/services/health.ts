@@ -4,10 +4,16 @@ import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { checkPlatformKeyGaps } from './platformKeyWatch.js';
 import { recomputeModelHealth, reviveUnhealthyModels } from './modelHealth.js';
+import { recheckUnreachableModels } from './livenessRecheck.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 
 const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const CONSECUTIVE_FAILURES_TO_DISABLE = 3;
+// Cheap liveness re-check runs on a much slower sub-cadence than the auth
+// health check — every LIVENESS_EVERY_N ticks (~1h) — since it makes real
+// (if tiny, max_tokens=1) provider calls. Keeps token spend negligible.
+const LIVENESS_EVERY_N = 12;
+let healthTick = 0;
 
 // Track consecutive failures per key
 const failureCount = new Map<number, number>();
@@ -70,6 +76,19 @@ export async function checkAllKeys(): Promise<void> {
     await reviveUnhealthyModels(getPool());
   } catch (err: any) {
     console.error('[Health] Model-health recompute failed:', err.message);
+  }
+
+  // Cheap liveness re-check for auto-benched (unreachable) models — only every
+  // Nth tick so its tiny real calls stay negligible. Token-safe per Adam's
+  // "cheap probe fine, no long-context sweeps" (2026-07-11).
+  healthTick++;
+  if (healthTick % LIVENESS_EVERY_N === 0) {
+    try {
+      const { checked, revived } = await recheckUnreachableModels(getPool());
+      if (checked > 0) console.log(`[Liveness] re-checked ${checked} unreachable model(s); revived ${revived.length}${revived.length ? ': ' + revived.join(', ') : ''}`);
+    } catch (err: any) {
+      console.error('[Liveness] recheck failed:', err.message);
+    }
   }
 
   console.log(`[Health] Check complete.`);
