@@ -32,7 +32,7 @@ interface TokenUsageData { totalBudget: number; totalUsed: number; models: { dis
 // the page SHOWS matches how a model is actually scored. Display only. Kept in
 // sync with the 2026-07-11 rebalance (task-quality loudest, brains compressed).
 const TASK_WEIGHT = 20, BRAINS_WEIGHT = 6, RANK_REF = 30, HEALTH_WEIGHT = 8
-const LAT_DIV = 5000, LAT_CAP = 4, COVERAGE_WEIGHT = 8, COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000
+const LAT_DIV = 5000, LAT_CAP = 4, COVERAGE_WEIGHT = 4, COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000
 const SIZE_FACTOR: Record<string, number> = { frontier: 1.0, large: 0.9, medium: 0.8, small: 0.7 }
 const sizeFactorOf = (l: string | null | undefined) => l ? (SIZE_FACTOR[l.trim().toLowerCase()] ?? 0.85) : 0.85
 

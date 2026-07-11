@@ -262,8 +262,13 @@ function sizeFactor(sizeLabel: string | null | undefined): number {
 // ceiling (interactive chat — protect Lunk's quality) vs UP with a loose/absent
 // one (batch — cheap to explore). Complements the ε-greedy random-K spread,
 // which Adam asked to keep; this is the principled, information-gain half.
-const COVERAGE_WEIGHT_TIGHT = 3;      // interactive: gentle nudge only
-const COVERAGE_WEIGHT_LOOSE = 8;      // batch: explore harder for coverage
+// Reduced 2026-07-11: now that guaranteed tail-exploration (every 20th request
+// forces the most-overdue model to the front) handles DATA COLLECTION, the
+// always-on coverage bonus only needs to be a gentle freshness nudge — not a
+// second exploration force that lets never-seen models crowd out the proven
+// best-at-task model on every request. Kept small vs the task lift (20).
+const COVERAGE_WEIGHT_TIGHT = 2;      // interactive: barely-there nudge
+const COVERAGE_WEIGHT_LOOSE = 4;      // batch: gentle freshness nudge
 const COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000; // untouched ≥24h → full staleness bonus
 
 // A model counts as "long context" only if its declared window clears this bar.
