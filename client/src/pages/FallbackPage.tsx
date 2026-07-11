@@ -11,6 +11,7 @@ interface ExplainRow {
   healthScore: number | null; latencyMs: number | null; effectiveScore: number
   keyCount: number; cooling: boolean; costTier: string
   disabledReason: string | null
+  sizeLabel: string; dataAgeMs: number | null
   status: 'eligible' | 'disabled' | 'no_key' | 'cooling'
 }
 
@@ -28,8 +29,12 @@ interface OrderData { taskType: string; rows: ExplainRow[] }
 interface TokenUsageData { totalBudget: number; totalUsed: number; models: { displayName: string; platform: string; budget: number }[] }
 
 // Same weights the router uses (server/src/services/router.ts) so the breakdown
-// the page SHOWS matches how a model is actually scored. Display only.
-const HEALTH_WEIGHT = 10, TASK_WEIGHT = 12, LAT_DIV = 5000, LAT_CAP = 4
+// the page SHOWS matches how a model is actually scored. Display only. Kept in
+// sync with the 2026-07-11 rebalance (task-quality loudest, brains compressed).
+const TASK_WEIGHT = 20, BRAINS_WEIGHT = 6, RANK_REF = 30, HEALTH_WEIGHT = 8
+const LAT_DIV = 5000, LAT_CAP = 4, COVERAGE_WEIGHT = 8, COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000
+const SIZE_FACTOR: Record<string, number> = { frontier: 1.0, large: 0.9, medium: 0.8, small: 0.7 }
+const sizeFactorOf = (l: string | null | undefined) => l ? (SIZE_FACTOR[l.trim().toLowerCase()] ?? 0.85) : 0.85
 
 const TASKS = [
   { id: '', label: 'OVERALL' }, { id: 'coding', label: 'CODING' }, { id: 'math', label: 'MATH' },
@@ -92,9 +97,13 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
 // Score-composition breakdown for one model — mirrors candidateScore so the
 // user sees exactly WHY a model sits where it does.
 function Breakdown({ r }: { r: ExplainRow }) {
-  const taskLift = r.taskScore != null ? -(Math.max(0, Math.min(1, r.taskScore)) * TASK_WEIGHT) : 0
+  const brains = Math.min(Math.max(r.intelligenceRank, 1), RANK_REF) / RANK_REF * BRAINS_WEIGHT
+  const sf = sizeFactorOf(r.sizeLabel)
+  const taskLift = r.taskScore != null ? Math.max(0, Math.min(1, r.taskScore)) * TASK_WEIGHT * sf : 0
   const healthPen = r.healthScore != null ? (1 - r.healthScore) * HEALTH_WEIGHT : 0
   const latPen = r.latencyMs != null ? Math.min(r.latencyMs / LAT_DIV, LAT_CAP) : 0
+  const staleFrac = r.dataAgeMs == null ? 1 : Math.min(1, r.dataAgeMs / COVERAGE_FULL_AGE_MS)
+  const coverage = COVERAGE_WEIGHT * staleFrac
   const part = (label: string, val: number, sign: '+' | '−') => (
     <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>
       {label} <span style={{ color: sign === '−' ? 'var(--good)' : 'var(--ink)' }}>{sign}{Math.abs(val).toFixed(1)}</span>
@@ -102,8 +111,9 @@ function Breakdown({ r }: { r: ExplainRow }) {
   )
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '8px 14px 12px 46px', background: 'var(--bg2)', borderBottom: '1px solid var(--line)' }}>
-      {part('intel-rank base', r.intelligenceRank, '+')}
-      {r.taskScore != null && part(`task quality (${Math.round(r.taskScore * 100)})`, taskLift, '−')}
+      {part(`brains (#${r.intelligenceRank})`, brains, '+')}
+      {r.taskScore != null && part(`task ${Math.round(r.taskScore * 100)} × size ${sf.toFixed(2)}`, taskLift, '−')}
+      {part(r.dataAgeMs == null ? 'coverage (never used)' : 'coverage', coverage, '−')}
       {r.healthScore != null && part(`health (${Math.round(r.healthScore * 100)}%)`, healthPen, '+')}
       {r.latencyMs != null && part(`latency (${r.latencyMs}ms)`, latPen, '+')}
       {r.penalty > 0 && part('429 penalty', r.penalty, '+')}
@@ -197,7 +207,7 @@ export default function FallbackPage() {
             })}
           </div>
         )}
-        <p style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>SCORE = intelligence-rank − task-quality + (1−health)×10 + latency + 429-penalty · lower = tried earlier · click a row for the breakdown</p>
+        <p style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>SCORE = brains(compressed) − task-quality×size − coverage + (1−health)×8 + latency + 429-penalty · task-quality is the loudest term · lower = tried earlier · click a row for the breakdown</p>
       </div>
     </main>
   )

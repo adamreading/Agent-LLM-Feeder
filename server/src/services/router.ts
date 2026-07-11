@@ -118,10 +118,15 @@ const roundRobinIndex = new Map<string, number>();
 // Key: model_db_id → { count, lastHit, penalty }
 const rateLimitPenalties = new Map<number, { count: number; lastHit: number; penalty: number }>();
 
-// Penalty decays over time so models recover
-const PENALTY_PER_429 = 3;        // each 429 adds this many priority positions
-const MAX_PENALTY = 10;            // cap so a model doesn't sink forever
-const DECAY_INTERVAL_MS = 2 * 60 * 1000; // penalty decays every 2 minutes
+// Penalty decays over time so models recover. SOFTENED 2026-07-11 (Adam): on a
+// free-tier pool a couple of 429s is normal and must NOT bury a model that's
+// genuinely the best at the task — the circuit-breaker cooldown (skip-entirely)
+// is the hard stop for a model that's actually failing; this penalty is only a
+// gentle, fast-decaying nudge. Max penalty (6) is now smaller than the max task
+// lift (20), so task quality always outweighs a rate-limit streak.
+const PENALTY_PER_429 = 2;        // each 429 adds this many score points
+const MAX_PENALTY = 6;             // cap — smaller than TASK_QUALITY_WEIGHT so task wins
+const DECAY_INTERVAL_MS = 90 * 1000; // penalty decays every 90s (faster recovery)
 const DECAY_AMOUNT = 1;            // remove this much penalty per decay interval
 
 /**
@@ -201,16 +206,25 @@ export function getAllPenalties(): Array<{ modelDbId: number; count: number; pen
 // existing fallback priority (~1-30, lower=better), so with no health data the
 // score reduces exactly to today's (priority + penalty) ordering — fully
 // backward compatible (a fresh install / cold cache routes identically).
-const HEALTH_WEIGHT = 10;            // a fully-unhealthy model sinks ~10 positions
+// ── Weight rebalance (Adam, 2026-07-11) ──────────────────────────────────
+// The problem it fixes: the old base was the RAW intelligence_rank (~1..28), a
+// far bigger range than the task-quality lift (max 12), so the "overall smarts"
+// prior was the loudest voice and a model that was genuinely the BEST at the
+// requested task got buried under generalists (and a couple of 429s / a health
+// dip could each erase the whole task lift). Now:
+//   • TASK QUALITY is the LOUDEST term (weight 20, scaled by size).
+//   • intelligence_rank is COMPRESSED into a small nudge (0..BRAINS_WEIGHT) via
+//     normalization, so it tie-breaks rather than dominates.
+//   • health + 429-penalty are softened (below) so a flaky-but-excellent model
+//     still leads unless the circuit-breaker has actually cooled it off.
+const TASK_QUALITY_WEIGHT = 20;      // LOUDEST voice — best-at-this-task leads
+const BRAINS_WEIGHT = 6;             // compressed intelligence prior (0..6)
+const RANK_REF = 30;                 // normalization reference: rank/RANK_REF → 0..1
+const HEALTH_WEIGHT = 8;             // softened — can't erase a strong task lift
 const LATENCY_TIGHT_DIVISOR = 500;   // chat (tight ceiling): +1 position per 500ms
 const LATENCY_TIGHT_CAP = 24;        // a 12s model sinks hard for chat
 const LATENCY_LOOSE_DIVISOR = 5000;  // batch (no ceiling): +1 per 5s — latency barely matters
 const LATENCY_LOOSE_CAP = 4;         // quality/curated prior dominates for batch
-// Dynamic quality: a model's researched arena score for the request's task
-// (0-1, higher=better) LIFTS it by up to this many positions. Comparable to
-// HEALTH_WEIGHT so genuine task quality competes with the intelligence prior —
-// this is what makes "math → high-math model, prose → high-creative model" real.
-const TASK_QUALITY_WEIGHT = 12;
 
 // Intelligence/size weighting of the arena lift (Adam, 2026-07-10): a 580B
 // model with arena 90 is genuinely better than an 8B with arena 90, so a raw
@@ -222,15 +236,19 @@ const TASK_QUALITY_WEIGHT = 12;
 // between the two a bigger/smarter model is favoured on both axes. Unknown/
 // unlabelled → a neutral 0.75 (never zero — a strong arena score on an
 // unlabelled model shouldn't be discarded, just not over-trusted).
+// Gentle 0.7..1.0 range (Adam, 2026-07-11): size should give a big model the
+// edge at EQUAL arena score, but must NOT overpower a genuinely large task-skill
+// gap (a medium model that's clearly better at the task should still win). A 2x
+// swing did the latter; this ~1.4x swing is a tie-breaker/modifier, not a boss.
 const SIZE_QUALITY_FACTOR: Record<string, number> = {
   frontier: 1.0,
-  large: 0.85,
-  medium: 0.7,
-  small: 0.5,
+  large: 0.9,
+  medium: 0.8,
+  small: 0.7,
 };
 function sizeFactor(sizeLabel: string | null | undefined): number {
-  if (!sizeLabel) return 0.75;
-  return SIZE_QUALITY_FACTOR[sizeLabel.trim().toLowerCase()] ?? 0.75;
+  if (!sizeLabel) return 0.85;
+  return SIZE_QUALITY_FACTOR[sizeLabel.trim().toLowerCase()] ?? 0.85;
 }
 
 // Data-collection fairness (Adam, 2026-07-10): since every real call now
@@ -263,6 +281,17 @@ function exploreEpsilon(): number {
   if (process.env.VITEST) return 0;
   return Number(process.env.ROUTE_EXPLORE_EPSILON ?? 0.15);
 }
+
+// Guaranteed tail exploration (Adam, 2026-07-11): the coverage bonus + ε-greedy
+// only ever surface the TOP few candidates, so models deep in the list never
+// get real traffic and we never collect live latency/quality on them. Every
+// TAIL_EXPLORE_EVERY non-sticky requests, force the single MOST-OVERDUE eligible
+// model (never-seen first, else oldest data) to the front so the whole catalog
+// gets sampled over time. It still passes every capability/latency/quota filter
+// in the walk, so this can never serve an ineligible model — and it's gated to
+// loose/no-latency-ceiling requests so it never slows an interactive chat turn.
+const TAIL_EXPLORE_EVERY = 20;
+let routeRequestCounter = 0;
 
 // Map a caller's task_class (free-form, from `auto/<task_class>`) to an lmarena
 // task_type we hold benchmark scores for. Unknown/absent → 'overall' (the
@@ -339,13 +368,18 @@ function candidateScore(
   sizeQualityFactor: number,
   dataAgeMs: number | null,
 ): number {
-  let score = basePriority + getPenalty(modelDbId);
+  // COMPRESSED intelligence prior: normalize the raw rank (~1..RANK_REF) into a
+  // small 0..BRAINS_WEIGHT nudge so "overall smarts" tie-breaks rather than
+  // dominates (Adam, 2026-07-11). Lower rank = smaller number = tried earlier.
+  const brains = Math.min(Math.max(basePriority, 1), RANK_REF) / RANK_REF * BRAINS_WEIGHT;
+  let score = brains + getPenalty(modelDbId);
 
-  // Dynamic quality lift: a researched arena score for THIS task pulls the
-  // model up (higher score = lower composite = tried earlier). Scaled by the
-  // model's size/capability factor so a big model beats a small one at equal
-  // arena score (Adam, 2026-07-10). Applies whether or not health data exists,
-  // so quality steers even a cold pool.
+  // Dynamic quality lift: a researched arena score for THIS task pulls the model
+  // up (higher score = lower composite = tried earlier), scaled by size so a big
+  // model beats a small one at EQUAL score. This is now the LOUDEST term
+  // (TASK_QUALITY_WEIGHT=20 >> brains/health/penalty), so the best-at-this-task
+  // model leads unless it's genuinely broken right now. Applies whether or not
+  // health data exists, so quality steers even a cold pool.
   if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT * sizeQualityFactor;
 
   // Data-collection fairness: pull under-observed models up so we accrue live
@@ -461,18 +495,35 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
       const [preferred] = sortedChain.splice(idx, 1);
       sortedChain.unshift(preferred);
     }
-  } else if (exploreEpsilon() > 0 && Math.random() < exploreEpsilon()) {
-    // ε-greedy exploration (only when NOT pinned to a sticky model): give a
-    // random one of the top-K enabled candidates the first shot. It still
-    // passes every capability/latency/quota filter in the walk below, so this
-    // never serves an ineligible model — it just spreads real traffic across
-    // in-range models so we accrue true latency/health instead of hammering
-    // one winner. 85% of the time the best-scored model still leads.
-    const top = sortedChain.filter(e => e.enabled).slice(0, EXPLORE_TOPK);
-    if (top.length > 1) {
-      const pick = top[Math.floor(Math.random() * top.length)];
-      const idx = sortedChain.indexOf(pick);
-      if (idx > 0) { sortedChain.splice(idx, 1); sortedChain.unshift(pick); }
+  } else if (!process.env.VITEST) {
+    // Guaranteed tail exploration takes priority on its tick (loose ceiling
+    // only), else fall back to ε-greedy top-K shuffle.
+    routeRequestCounter++;
+    if (routeRequestCounter % TAIL_EXPLORE_EVERY === 0 && latencyCeilingMs == null) {
+      // Force the most-overdue enabled candidate to the front. Never-seen
+      // (absent from dataAgeMap) counts as maximally overdue (Infinity).
+      const enabled = sortedChain.filter(e => e.enabled);
+      if (enabled.length > 1) {
+        let pick = enabled[0];
+        let pickAge = -1;
+        for (const e of enabled) {
+          const age = dataAgeMap.has(e.model_db_id) ? dataAgeMap.get(e.model_db_id)! : Infinity;
+          if (age > pickAge) { pickAge = age; pick = e; }
+        }
+        const idx = sortedChain.indexOf(pick);
+        if (idx > 0) { sortedChain.splice(idx, 1); sortedChain.unshift(pick); }
+      }
+    } else if (exploreEpsilon() > 0 && Math.random() < exploreEpsilon()) {
+      // ε-greedy exploration: give a random one of the top-K enabled candidates
+      // the first shot. Still passes every filter in the walk, so it never
+      // serves an ineligible model — it just spreads real traffic across
+      // in-range models. 85% of the time the best-scored model still leads.
+      const top = sortedChain.filter(e => e.enabled).slice(0, EXPLORE_TOPK);
+      if (top.length > 1) {
+        const pick = top[Math.floor(Math.random() * top.length)];
+        const idx = sortedChain.indexOf(pick);
+        if (idx > 0) { sortedChain.splice(idx, 1); sortedChain.unshift(pick); }
+      }
     }
   }
 

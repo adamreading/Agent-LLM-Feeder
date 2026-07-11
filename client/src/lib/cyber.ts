@@ -157,9 +157,9 @@ export const overallScore = (m: CanonModel) =>
 // a big model with a given arena score is genuinely better than a small one
 // with the same score, so the wiki RATING tilts by size — matching how routing
 // weights the arena lift (Adam, 2026-07-10). Unknown bucket → neutral 0.75.
-const SIZE_QUALITY_FACTOR: Record<string, number> = { frontier: 1.0, large: 0.85, medium: 0.7, small: 0.5 }
+const SIZE_QUALITY_FACTOR: Record<string, number> = { frontier: 1.0, large: 0.9, medium: 0.8, small: 0.7 }
 const sizeFactorOf = (label: string | null | undefined) =>
-  label ? (SIZE_QUALITY_FACTOR[label.trim().toLowerCase()] ?? 0.75) : 0.75
+  label ? (SIZE_QUALITY_FACTOR[label.trim().toLowerCase()] ?? 0.85) : 0.85
 // A canonical model's size = its strongest instance bucket (the best supplier
 // offering it), since quality is a property of the weights.
 export const canonSizeFactor = (m: CanonModel): number =>
