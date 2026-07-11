@@ -59,6 +59,20 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
         ))}
         {totalUsed > 0 && <div title={`used — ${formatTokens(totalUsed)}`} style={{ width: `${usedPct}%`, background: 'rgba(143,138,176,.3)' }} />}
       </div>
+
+      {/* Per-model budget grid — the "all servable models by provider" view
+          (restored 2026-07-11 per Adam). Colour = provider; number = that
+          model's monthly free-tier budget. Only servable (enabled + keyed)
+          models appear, so it mirrors what the router can actually reach. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(300px,1fr))', gap: '3px 28px', marginTop: 16 }}>
+        {models.map((m, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, ...mono, fontSize: 11.5, padding: '1px 0' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: platformColor(m.platform), flexShrink: 0 }} />
+            <span style={{ flex: 1, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${m.displayName} · ${m.platform}`}>{m.displayName}</span>
+            <span style={{ color: 'var(--dim)' }}>{formatTokens(m.budget)}</span>
+          </div>
+        ))}
+      </div>
     </section>
   )
 }
