@@ -38,6 +38,7 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV11(pool);
   await migrateModelsV12(pool);
   await migrateModelsV13(pool);
+  await migrateModelsV14(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
   // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
@@ -803,6 +804,28 @@ async function migrateModelsV12(pool: pg.Pool) {
 async function migrateModelsV13(pool: pg.Pool) {
   await run(pool, `UPDATE models SET disabled_reason = 'paid_tier' WHERE platform = 'google' AND model_id = 'gemini-2.5-pro' AND enabled = false AND disabled_reason IS NULL`);
   await run(pool, `UPDATE models SET disabled_reason = 'unavailable' WHERE enabled = false AND disabled_reason IS NULL`);
+}
+
+/**
+ * V14 (2026-07-11) — correct size_label mislabels (Adam). size_label scales the
+ * arena-quality lift in routing (frontier 1.0 … small 0.7), so an under-labelled
+ * big model gets less lift than it earns. Fixes the clear cases:
+ *   - Frontier-class models mislabelled 'Large' (Mistral Large 3 is a 675B model
+ *     whose id 'mistral-large-latest' has no param hint; Qwen3 235B; MiniMax M2.5,
+ *     to match M2.7 which is already Frontier).
+ *   - 70B models labelled inconsistently 'Medium' on some instances and 'Large' on
+ *     others → normalize every 70B to 'Large' so the same weights apply to every
+ *     supplier instance of the same model.
+ * Idempotent (WHERE narrows to the wrong value). NOTE: size_label stays a coarse,
+ * best-effort bucket; a future research pass could estimate it per-model from
+ * param counts — this just fixes the labels that were visibly wrong.
+ */
+async function migrateModelsV14(pool: pg.Pool) {
+  await run(pool, `UPDATE models SET size_label = 'Frontier' WHERE platform = 'mistral' AND model_id = 'mistral-large-latest' AND size_label <> 'Frontier'`);
+  await run(pool, `UPDATE models SET size_label = 'Frontier' WHERE platform = 'cerebras' AND model_id = 'qwen-3-235b-a22b-instruct-2507' AND size_label <> 'Frontier'`);
+  await run(pool, `UPDATE models SET size_label = 'Frontier' WHERE platform = 'openrouter' AND model_id = 'minimax/minimax-m2.5:free' AND size_label <> 'Frontier'`);
+  // Normalize every 70B instance to 'Large' (fixes the Medium/Large split).
+  await run(pool, `UPDATE models SET size_label = 'Large' WHERE (model_id ~* '70b' OR display_name ~* '70B') AND size_label = 'Medium'`);
 }
 
 async function ensureUnifiedKey(pool: pg.Pool) {

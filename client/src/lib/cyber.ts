@@ -150,6 +150,32 @@ export function fastestLatency(m: CanonModel): number | null {
 }
 export const supportedCaps = (m: CanonModel) =>
   m.capabilities.filter(c => c.supported && !c.capability.startsWith('best_use_') && c.capability !== 'reachable')
+
+// Research-DECLARED input modalities (vision/audio/video) live on the canonical
+// row (from the street-research pass), NOT in the measured `capabilities` rollup
+// — so without this they never surface on the wiki even when 19 models have
+// vision=true (Adam, 2026-07-11). Marked `declared:true` so the card can render
+// them distinctly from wire-MEASURED capabilities.
+export const declaredModalities = (m: CanonModel): string[] => {
+  const out: string[] = []
+  if (m.vision) out.push('vision')
+  if (m.audio) out.push('audio')
+  if (m.video) out.push('video')
+  return out
+}
+// Combined capability chips for the wiki: measured caps first, then any declared
+// modality not already measured. Deduped.
+export const wikiCaps = (m: CanonModel): { cap: string; declared: boolean }[] => {
+  const measured = supportedCaps(m).map(c => c.capability)
+  const seen = new Set(measured)
+  const out: { cap: string; declared: boolean }[] = measured.map(cap => ({ cap, declared: false }))
+  for (const md of declaredModalities(m)) if (!seen.has(md)) { seen.add(md); out.push({ cap: md, declared: true }) }
+  return out
+}
+// True if a model has an input modality either measured or research-declared —
+// used by the wiki filter so VISION/AUDIO/VIDEO filters find declared ones too.
+export const hasModality = (m: CanonModel, cap: 'vision' | 'audio' | 'video'): boolean =>
+  !!m[cap] || m.capabilities.some(c => c.capability === cap && c.supported)
 export const overallScore = (m: CanonModel) =>
   m.taskScores.find(s => s.task_type === 'overall')?.score ?? null
 

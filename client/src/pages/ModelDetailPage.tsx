@@ -51,6 +51,10 @@ export default function ModelDetailPage() {
   ]
 
   const capByName = new Map(m.capabilities.map(c => [c.capability, c.supported]))
+  // Fold in research-DECLARED input modalities (vision/audio/video live on the
+  // canonical row, not the measured rollup) so the matrix reflects them — a
+  // measured row still wins if present (Adam, 2026-07-11).
+  for (const md of ['vision', 'audio', 'video'] as const) if (m[md] && !capByName.get(md)) capByName.set(md, true)
   // Base set + any extra caller-declared capabilities present in the data
   // (appended generically, so the matrix never hardcodes a consumer-specific
   // capability while still surfacing whatever a caller has reported).

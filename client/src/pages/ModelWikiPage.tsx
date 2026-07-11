@@ -4,13 +4,15 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, makerFromName, prettyCtx,
-  bestIntel, maxCtx, supportedCaps, overallScore, researchScore, hasRealtimeQuality,
+  bestIntel, maxCtx, wikiCaps, hasModality, overallScore, researchScore, hasRealtimeQuality,
 } from '@/lib/cyber'
 
 const FILTERS = [
   { id: 'all', label: 'ALL' },
   { id: 'tools', label: 'TOOL CALLS' },
   { id: 'vision', label: 'VISION' },
+  { id: 'audio', label: 'AUDIO' },
+  { id: 'video', label: 'VIDEO' },
   { id: 'json_mode', label: 'JSON' },
   { id: 'long_context', label: 'LONG CTX' },
 ]
@@ -106,7 +108,8 @@ export default function ModelWikiPage() {
       if (rb != null) return 1
       return (bestIntel(a) ?? 99) - (bestIntel(b) ?? 99)
     })
-    if (filter !== 'all') list = list.filter(m => m.capabilities.some(c => c.capability === filter && c.supported))
+    if (filter === 'vision' || filter === 'audio' || filter === 'video') list = list.filter(m => hasModality(m, filter))
+    else if (filter !== 'all') list = list.filter(m => m.capabilities.some(c => c.capability === filter && c.supported))
     if (q) list = list.filter(m =>
       (m.name + ' ' + makerFromName(m.name) + ' ' + m.slug).toLowerCase().includes(q) ||
       m.instances.some(i => i.platform.toLowerCase().includes(q) || i.model_id.toLowerCase().includes(q)))
@@ -160,7 +163,7 @@ export default function ModelWikiPage() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(350px,1fr))', gap: 14 }}>
           {filtered.map(m => {
             const intel = bestIntel(m)
-            const caps = supportedCaps(m).slice(0, 5)
+            const caps = wikiCaps(m).slice(0, 6)
             const overall = overallScore(m)
             const research = researchScore(m)          // overall, else task mean
             const barLabel = overall != null ? 'ARENA SCORE' : (research != null ? 'RESEARCH SCORE' : 'ARENA SCORE')
@@ -186,11 +189,11 @@ export default function ModelWikiPage() {
 
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', minHeight: 18 }}>
                   {caps.map(c => (
-                    <span key={c.capability} style={{ ...label, fontSize: 9, fontWeight: 700, letterSpacing: 1, padding: '3px 6px', border: '1px solid var(--acc)', color: 'var(--acc)' }}>
-                      {capLabel(c.capability)}
+                    <span key={c.cap} title={c.declared ? 'declared by research (not wire-measured)' : 'wire-measured'} style={{ ...label, fontSize: 9, fontWeight: 700, letterSpacing: 1, padding: '3px 6px', border: `1px solid ${c.declared ? 'var(--acc2)' : 'var(--acc)'}`, color: c.declared ? 'var(--acc2)' : 'var(--acc)', opacity: c.declared ? 0.85 : 1 }}>
+                      {capLabel(c.cap)}{c.declared ? '≈' : ''}
                     </span>
                   ))}
-                  {caps.length === 0 && <span style={{ ...label, fontSize: 9, color: 'var(--dim)' }}>NO MEASURED CAPS YET</span>}
+                  {caps.length === 0 && <span style={{ ...label, fontSize: 9, color: 'var(--dim)' }}>NO CAPS YET</span>}
                 </div>
 
                 <div>
