@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { PLATFORM_IDS, platformName, platformColor } from '@/lib/cyber'
+import SearchProviders from '@/components/SearchProviders'
 import type { ApiKey } from '../../../shared/types'
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
@@ -127,6 +128,8 @@ export default function KeysPage() {
           })}
         </div>
       ))}
+
+      <SearchProviders />
     </main>
   )
 }
