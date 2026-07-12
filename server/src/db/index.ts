@@ -39,6 +39,7 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV12(pool);
   await migrateModelsV13(pool);
   await migrateModelsV14(pool);
+  await migrateModelsV15(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
   // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
@@ -826,6 +827,45 @@ async function migrateModelsV14(pool: pg.Pool) {
   await run(pool, `UPDATE models SET size_label = 'Frontier' WHERE platform = 'openrouter' AND model_id = 'minimax/minimax-m2.5:free' AND size_label <> 'Frontier'`);
   // Normalize every 70B instance to 'Large' (fixes the Medium/Large split).
   await run(pool, `UPDATE models SET size_label = 'Large' WHERE (model_id ~* '70b' OR display_name ~* '70B') AND size_label = 'Medium'`);
+}
+
+/**
+ * V15 (July 2026):
+ * Fix qwen3-coder missing tools and json_mode capabilities.
+ * Live audit (2026-07-12) identified false negatives: both capabilities work
+ * (verified via curl + tools[] and response_format=json_object), but DB showed
+ * only long_context=true. Likely under-probed in initial capability scan.
+ */
+async function migrateModelsV15(pool: pg.Pool) {
+  // Get the model_db_id for qwen3-coder from the models table
+  // (model_capabilities links to models, not canonical_models)
+  const qwenModel = await get<{ id: number }>(
+    pool,
+    `SELECT m.id FROM models m
+     JOIN canonical_models cm ON m.canonical_model_id = cm.id
+     WHERE cm.slug = 'qwen3-coder' LIMIT 1`
+  );
+
+  if (!qwenModel) return; // Model not yet matched to canonical
+
+  const modelDbId = qwenModel.id;
+
+  // Insert or update tools and json_mode capabilities
+  await run(pool, `
+    INSERT INTO model_capabilities (model_db_id, capability, supported, source, measured_at)
+    VALUES (?, 'tools', true, 'measured', NOW())
+    ON CONFLICT(model_db_id, capability, source) DO UPDATE SET
+      supported = EXCLUDED.supported,
+      measured_at = NOW()
+  `, [modelDbId]);
+
+  await run(pool, `
+    INSERT INTO model_capabilities (model_db_id, capability, supported, source, measured_at)
+    VALUES (?, 'json_mode', true, 'measured', NOW())
+    ON CONFLICT(model_db_id, capability, source) DO UPDATE SET
+      supported = EXCLUDED.supported,
+      measured_at = NOW()
+  `, [modelDbId]);
 }
 
 async function ensureUnifiedKey(pool: pg.Pool) {
