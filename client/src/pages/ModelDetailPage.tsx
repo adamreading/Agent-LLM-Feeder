@@ -132,15 +132,21 @@ export default function ModelDetailPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <Panel>
             <SectionTitle>SERVED BY <span style={{ color: 'var(--dim)', ...mono, fontSize: 9, fontWeight: 400 }}>FREE-TIER PROBES</span></SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr .8fr .6fr .6fr .9fr', ...mono, fontSize: 9.5, color: 'var(--dim)', letterSpacing: 1, padding: '0 0 6px', borderBottom: '1px solid var(--line)' }}>
-              <span>PROVIDER</span><span>LATENCY</span><span>RPM</span><span>RPD</span><span>TOK/MO</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .6fr .6fr .9fr', ...mono, fontSize: 9.5, color: 'var(--dim)', letterSpacing: 1, padding: '0 0 6px', borderBottom: '1px solid var(--line)' }}>
+              <span>PROVIDER</span><span>CONTEXT</span><span>LATENCY</span><span>RPM</span><span>RPD</span><span>TOK/MO</span>
             </div>
             {m.instances.map(sv => (
-              <div key={sv.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .8fr .6fr .6fr .9fr', alignItems: 'center', padding: '9px 0', borderBottom: '1px solid var(--line)', opacity: sv.enabled ? 1 : 0.5 }}>
+              <div key={sv.id} style={{ display: 'grid', gridTemplateColumns: '1.4fr .7fr .8fr .6fr .6fr .9fr', alignItems: 'center', padding: '9px 0', borderBottom: '1px solid var(--line)', opacity: sv.enabled ? 1 : 0.5 }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, fontWeight: 600 }}>
                   <span style={{ width: 7, height: 7, borderRadius: '50%', background: sv.enabled ? 'var(--good)' : 'var(--dim)', boxShadow: `0 0 6px ${sv.enabled ? 'var(--good)' : 'transparent'}` }} />
                   {sv.platform}
                 </span>
+                {/* Per-supplier SERVED context window — the headline CONTEXT stat is the
+                    highest across providers (maxCtx); this row shows what THIS provider
+                    actually serves, which can be far below the model's native spec (e.g.
+                    cerebras caps its frontier models at 8K on the free tier while Qwen3-235B
+                    is natively 256K). Highlighted when it equals the best-on-offer. */}
+                <span style={{ ...mono, fontSize: 11, fontWeight: (sv.context_window ?? 0) === maxCtx(m) ? 700 : 400, color: (sv.context_window ?? 0) === maxCtx(m) ? 'var(--acc2)' : 'var(--ink)' }}>{prettyCtx(sv.context_window)}</span>
                 <span style={{ ...mono, fontSize: 11, color: latencyColor(sv.recent_latency_ms) }}>{prettyLatency(sv.recent_latency_ms)}</span>
                 <span style={{ ...mono, fontSize: 11, color: 'var(--ink)' }}>{sv.rpm_limit ?? '—'}</span>
                 <span style={{ ...mono, fontSize: 11, color: 'var(--ink)' }}>{sv.rpd_limit ?? '—'}</span>
