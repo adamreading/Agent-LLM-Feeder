@@ -40,6 +40,16 @@ function hashToken(token: string): string {
 // (127.0.0.1) requests are the operator's own machine — treated as fleet.
 type TrustTier = 'fleet' | 'external';
 
+// Caller-declared agent label for request attribution — telemetry only, never a
+// trust signal (the key/tier decides trust). Strip anything but word chars and a
+// few safe separators, cap length, so a self-declared label can't inject junk
+// into the request log.
+function sanitizeConsumerLabel(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim().replace(/[^\w.\-:/]/g, '').slice(0, 64);
+  return s.length > 0 ? s : null;
+}
+
 async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; authorized: boolean; consumer: string }> {
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -313,6 +323,11 @@ const chatCompletionSchema = z.object({
   needs: z.array(z.string()).optional(),
   session_id: z.string().optional(),
   user: z.string().optional(), // OpenAI-standard field, also accepted as a sticky-session carrier
+  // Per-agent attribution label. Fleet agents (Hermes/Lunk/OpenClaw) share ONE
+  // fleet key, so every request logs consumer='fleet' and can't be attributed.
+  // A caller self-labels here (or via the X-Consumer header) — telemetry only,
+  // NOT a trust signal (the key/tier still decides trust). Sanitised + capped.
+  consumer: z.string().max(64).optional(),
   // Opt-in reasoning suppression (2026-07-08) — see CompletionOptions in
   // providers/base.ts. Generic; any caller sets it, feeder never imposes it.
   exclude_reasoning: z.boolean().optional(),
@@ -404,7 +419,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   // L4 outer gate: resolve trust tier before anything else. Non-local
   // requests without a recognized token are rejected exactly as before.
-  const { tier: trustTier, authorized, consumer } = await resolveTrustTier(req);
+  const { tier: trustTier, authorized, consumer: baseConsumer } = await resolveTrustTier(req);
+  // Attribution label: caller self-identifies via X-Consumer header or a
+  // `consumer` body field (fleet agents share one key → all 'fleet' otherwise);
+  // falls back to the key/locality label. Telemetry only. Header wins over body.
+  let consumer = baseConsumer;
   if (!authorized) {
     res.status(401).json({
       error: { message: 'Invalid API key', type: 'authentication_error' },
@@ -431,6 +450,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     frequency_penalty, presence_penalty, seed, stop, n, logit_bias, logprobs, top_logprobs,
     max_completion_tokens, top_k, min_p, repetition_penalty,
   } = parsed.data;
+  // Apply the caller's self-declared attribution label (header wins over body).
+  const declaredConsumer = sanitizeConsumerLabel(req.header('x-consumer')) ?? sanitizeConsumerLabel(parsed.data.consumer);
+  if (declaredConsumer) consumer = declaredConsumer;
   // Sampling passthrough forwarded to every routing attempt (P2c-iii). Built once
   // so both the streaming and non-streaming call sites stay in sync. Undefined
   // fields are dropped by JSON.stringify / the provider's conditional assign.

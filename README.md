@@ -154,6 +154,7 @@ All optional; omit for sensible defaults.
 | `exclude_providers: string[]` | Never use these platforms for this call. |
 | `max_attempts: number` | Cap failover hops (≤20). |
 | `session_id` / `user` | Sticky routing — keep one conversation on one model across turns. |
+| `consumer: string` (or `X-Consumer` header) | Attribution label for the request log (e.g. `"hermes"`, `"lunk"`). Fleet agents share one key, so without this they all log as `fleet`; self-labelling makes traffic attributable. Header wins over the body field. Telemetry only — not a trust signal. |
 
 ### MCP (Model Context Protocol)
 
