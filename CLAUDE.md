@@ -39,5 +39,8 @@ treat it as production.
 - **Routing:** `services/router.ts` orders by composite score (task_scores dominant);
   `needs[]` is a hard capability filter; `promptClassifier.ts` turns a bare-`auto`
   prompt into a task_class. Vision uses a relaxed declared→try→confirm gate.
+- **Endpoints:** OpenAI-compatible proxy at `/v1` (chat/completions, models); MCP
+  server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless, read-only) exposing
+  `list_usable_models` / `explain_routing` — both wrap `router.explainRouting()`.
 - **Coordination board** (with peers wsl-claude / ob-claude): run
   `node .claude/coordination/coord.js {show|msg|...}` with `COORD_AGENT=feeder-claude`.

@@ -14,6 +14,7 @@ import { agentRouter } from './routes/agent.js';
 import { capabilitiesRouter } from './routes/capabilities.js';
 import { canonRouter } from './routes/canon.js';
 import { modelPerfRouter } from './routes/modelPerf.js';
+import { mcpRouter } from './routes/mcp.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,9 @@ export function createApp() {
 
   // OpenAI-compatible proxy
   app.use('/v1', proxyRouter);
+
+  // MCP (Model Context Protocol) — fleet agents query live routing state as tools.
+  app.use('/mcp', mcpRouter);
 
   // Health check
   app.get('/api/ping', (_req, res) => {

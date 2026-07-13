@@ -154,6 +154,15 @@ All optional; omit for sensible defaults.
 | `max_attempts: number` | Cap failover hops (≤20). |
 | `session_id` / `user` | Sticky routing — keep one conversation on one model across turns. |
 
+### MCP (Model Context Protocol)
+
+Fleet agents can query the feeder's **live routing state as MCP tools** instead of guessing which model to ask for. Streamable-HTTP MCP endpoint at `POST /mcp` (stateless; read-only — no provider call, nothing mutated). Tools:
+
+- `list_usable_models(task_class?, limit?)` — the models the feeder would actually route to *right now*, best-first, for a task class (coding/math/reasoning/creative/long_context/multi_turn). Only currently-eligible (enabled, keyed, not cooling).
+- `explain_routing(task_class?)` — the full routing table in order, with each model's task score, health, latency, and status (`eligible` / `disabled` / `no_key` / `cooling`) plus the reason it's unavailable.
+
+Both wrap the same `explainRouting()` the wiki/analytics use, so a tool result is exactly what the router would do.
+
 ### Typed errors
 
 - `422 NO_ELIGIBLE_MODEL` — nothing in the catalogue satisfies the request (capability / cost / context / latency), or no key is configured for one that does. The caller should fall back to its own local/pinned option.
