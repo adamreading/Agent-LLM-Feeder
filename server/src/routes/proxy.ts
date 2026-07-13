@@ -7,6 +7,7 @@ import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { classifyPrompt, latestUserText } from '../services/promptClassifier.js';
 import { rescueInlineToolCalls, containsDialectMarker } from '../lib/tool-call-rescue.js';
+import { getContextHandoffMode, recordIncomingMessages, recordSuccessfulModel, maybeInjectContextHandoff, hasPriorModel, HANDOFF_MAX_TOKENS } from '../services/context-handoff.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities } from '../services/capabilityObserve.js';
@@ -439,6 +440,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     for (const n of cls.structuralNeeds) if (!needs.includes(n)) needs.push(n);
   }
 
+  // Context handoff (ported, DISABLED unless FREELLMAPI_CONTEXT_HANDOFF=on_model_switch).
+  // When routing switches models mid-conversation (failover/sticky-miss, or a
+  // per-turn task_type change picking a different model), the new model has no
+  // idea it is continuing someone else's task. If enabled, we inject one compact
+  // system message telling it so. Fully inert when off. Pad the routing token
+  // estimate for the injected message so context-window/TPM checks stay honest.
+  const handoffMode = getContextHandoffMode();
+  const handoffSessionKey = getSessionKey(messages, explicitSessionId);
+  if (handoffMode !== 'off') recordIncomingMessages(handoffSessionKey, messages);
+  const routingEstimate = estimatedTotal + (handoffMode !== 'off' && hasPriorModel(handoffSessionKey) ? HANDOFF_MAX_TOKENS : 0);
+
   // Explicit `model` field (that isn't the 'auto' sentinel) pins routing. If
   // the catalog has no enabled row matching the requested id, return 400 —
   // silently auto-routing to a different model would be surprising to
@@ -521,7 +533,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     let route: RouteResult;
     try {
       route = await routeRequest({
-        estimatedTokens: estimatedTotal,
+        estimatedTokens: routingEstimate,
         skipKeys: skipKeys.size > 0 ? skipKeys : undefined,
         preferredModelDbId: preferredModel,
         excludeProviders: excludeProviderSet,
@@ -546,6 +558,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
     recordRequest(route.platform, route.modelId, route.keyId);
 
+    // Per-attempt: if handoff is enabled and THIS attempt's model differs from
+    // the session's last successful model, inject the handoff system message.
+    const outMessages = handoffMode !== 'off'
+      ? maybeInjectContextHandoff({ mode: handoffMode, sessionKey: handoffSessionKey, messages, selectedModelKey: `${route.platform}/${route.modelId}` }).messages
+      : messages;
+
     try {
       if (stream) {
         // Lazy header set: pre-stream errors stay retryable (no headers sent yet);
@@ -555,7 +573,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         let streamStarted = false;
         try {
           const gen = route.provider.streamChatCompletion(
-            route.apiKey, messages, route.modelId,
+            route.apiKey, outMessages, route.modelId,
             { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
           );
 
@@ -590,6 +608,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
+          if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
           logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs);
           return;
         } catch (streamErr: any) {
@@ -610,7 +629,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         }
       } else {
         const result = await route.provider.chatCompletion(
-          route.apiKey, messages, route.modelId,
+          route.apiKey, outMessages, route.modelId,
           { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
         );
 
@@ -618,6 +637,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         recordTokens(route.platform, route.modelId, route.keyId, totalTokens);
         recordSuccess(route.modelDbId);
         setStickyModel(messages, route.modelDbId, explicitSessionId);
+          if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
         void harvestQuotaHeaders(route.platform, route.modelId, route.keyId, result._rate_limit_headers);
         // Passive capability observation: record what this model demonstrably
         // DID on real traffic (returned tool_calls / honored response_format)
