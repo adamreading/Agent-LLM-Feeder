@@ -5,6 +5,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
+import { classifyTier0, latestUserText } from '../services/promptClassifier.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities } from '../services/capabilityObserve.js';
@@ -414,6 +415,28 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     if (!needs.includes(need)) needs.push(need);
   }
 
+  // Tier-0 prompt classification (the fix for "the black hole"). When the caller
+  // left the TASK unspecified — bare `auto`, or no `model` field at all (not a
+  // pinned model, no explicit `auto/<class>`) — derive a task_class from THIS
+  // turn's prompt so the router's task-quality scoring actually engages instead
+  // of always seeing 'overall'. An EXPLICIT `auto/<class>` is honoured verbatim
+  // (D1 — never overridden). `needs[]` is untouched here: it stays the hard
+  // capability FLOOR (Lunk's caveat — a trivial-looking turn may still fire a
+  // tool); the classifier only ADDS structural needs (vision/long_context) it
+  // can prove from the content. Pure ~0ms heuristics; tier-1 (a small local
+  // model) will later refine only the low-confidence residue.
+  const isPinned = !!requestedModel && !isAuto;
+  let effectiveTaskClass = taskClass;
+  if (!taskClass && !isPinned) {
+    const t0 = classifyTier0(latestUserText(messages), {
+      estimatedTokens: estimatedInputTokens,
+      hasImage: false, // multimodal detection lands with the schema change (Phase 2c)
+      hasHistory: messages.some(m => m.role === 'assistant'),
+    });
+    effectiveTaskClass = t0.taskClass;
+    for (const n of t0.structuralNeeds) if (!needs.includes(n)) needs.push(n);
+  }
+
   // Explicit `model` field (that isn't the 'auto' sentinel) pins routing. If
   // the catalog has no enabled row matching the requested id, return 400 —
   // silently auto-routing to a different model would be surprising to
@@ -503,7 +526,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         needs: needs.length > 0 ? needs : undefined,
         costTierCeiling,
         latencyCeilingMs: latency_ceiling_ms,
-        taskClass,
+        taskClass: effectiveTaskClass,
       });
     } catch (err: any) {
       if (err instanceof RoutingError) {
@@ -565,7 +588,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordTokens(route.platform, route.modelId, route.keyId, estimatedInputTokens + totalOutputTokens);
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, taskClass, consumer, needs);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -577,7 +600,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, taskClass, consumer, needs);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -612,13 +635,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Math.round(performance.now() - start), null, explicitSessionId, taskClass, consumer, needs,
+          Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs,
         );
         return;
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - start);
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, taskClass, consumer, needs);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs);
 
       lastError = err;
       const retryable = isRetryableError(err);
