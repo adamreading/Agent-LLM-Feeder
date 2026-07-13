@@ -120,15 +120,21 @@ export function classifyTier0(text: string, ctx: Tier0Ctx = {}): Tier0Result {
 // result, so it can never block or break a request. Model default llama3.2:3b
 // passed the Phase-1 gate (14/14 acc, ~1.3s cold / ~257ms warm).
 //
-// Shared-Ollama safety (5090 also serves Hermes voice qwen3.5:4b + OB gemma4):
-// keep this model TINY and require OLLAMA_MAX_LOADED_MODELS>=3 on the host before
-// enabling, else a classify could evict the warm voice model. That host env is
-// windows-claude's lane; until it's set + this URL configured, tier-1 stays off.
+// Shared-Ollama safety: on the 5090 the feeder locally loads ONLY this tiny model
+// (llama3.2:3b, ~2GB). OB has NO standing gemma worker (entity worker retired;
+// Plaud curation is Lunk-primary, gemma not consulted) and Hermes voice
+// (qwen3.5:4b) is meant to run on-demand — so the ONLY model that needs to stay
+// warm for the feeder is this one. VRAM discipline is keep_alive (how long a model
+// stays resident), NOT the load ceiling: keep voice/gemma short-lived and only
+// this classifier warm. OLLAMA_MAX_LOADED_MODELS>=2 on the host is ample headroom
+// so an on-demand voice/gemma load can't evict the warm classifier (and vice
+// versa); it does NOT need to be 3. That host env is windows-claude's lane; until
+// this URL is configured, tier-1 stays off.
 const TIER1_URL = process.env.CLASSIFIER_OLLAMA_URL || '';
 const TIER1_MODEL = process.env.CLASSIFIER_MODEL || 'llama3.2:3b';
 // 2500ms default: warm classify is ~140ms; a COLD model load is ~1.9-2s, so this
 // lets a cold first-call usually complete rather than always falling back. Keep
-// the model warm (keep_alive + OLLAMA_MAX_LOADED_MODELS>=3) to make cold rare.
+// the model warm (keep_alive + OLLAMA_MAX_LOADED_MODELS>=2) to make cold rare.
 const TIER1_TIMEOUT_MS = Number(process.env.CLASSIFIER_TIMEOUT_MS) || 2500;
 const TIER1_KEEP_ALIVE = process.env.CLASSIFIER_KEEP_ALIVE || '10m';
 
