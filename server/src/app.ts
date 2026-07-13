@@ -29,7 +29,11 @@ export function createApp() {
   // (which is also not a supported deployment — see README).
   app.use(helmet({ contentSecurityPolicy: false, hsts: false }));
   app.use(cors());
-  app.use(express.json({ limit: '1mb' }));
+  // 25mb: vision requests carry base64-encoded images inline (a data: URI in an
+  // image_url part). A single ~18mb image is ~24mb base64; 1mb rejected real
+  // images with 413. Callers are auth-gated fleet/local, so a generous ceiling is
+  // acceptable here (this is not a public endpoint — see README).
+  app.use(express.json({ limit: '25mb' }));
 
   // API routes
   app.use('/api/keys', keysRouter);

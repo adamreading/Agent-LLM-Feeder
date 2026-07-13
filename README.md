@@ -139,6 +139,8 @@ A user message's `content` may be an array of parts mixing text and images, in t
 
 An image part adds `vision` as a hard capability need automatically, so a bare-`auto` image request routes to a vision-capable model. `image_url.url` may be a `data:` URI (base64) or an `http(s)` URL — Gemini needs inline base64 (URL images route to OpenAI-compat vision models, which accept URLs natively). Vision eligibility uses a **relaxed gate**: a research-declared vision model is tried, then confirmed (`observed=true`) on success or demoted (`observed=false`) on a genuine image rejection — never on a transient 429/timeout.
 
+The request body limit is **25 MB** (raised from 1 MB) so inline base64 images fit — a ~18 MB image is ~24 MB base64. Callers are auth-gated, so this is safe for this non-public endpoint.
+
 ### Optional routing fields
 
 All optional; omit for sensible defaults.
