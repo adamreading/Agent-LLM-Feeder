@@ -121,6 +121,7 @@ curl http://localhost:3001/v1/chat/completions \
 - **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
   - A **bare `"auto"`** request is classified from the prompt (coding / math / reasoning / creative / trivial) so routing engages the right per-task quality scores. An explicit `"auto/<class>"` is honoured verbatim and skips classification.
 - **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
+- **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified.
 
 ### Sampling / generation params
 

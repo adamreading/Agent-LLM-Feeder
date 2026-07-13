@@ -696,6 +696,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
               res.setHeader('Cache-Control', 'no-cache');
               res.setHeader('Connection', 'keep-alive');
               res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+              res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
               if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
               streamStarted = true;
             }
@@ -705,8 +706,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             // reads chunk.model (not the X-Routed-Via header — the SSE transport
             // doesn't surface headers to the body reader) gets the real served
             // model as its attribution key (wsl, 2026-07-10). Format matches the
-            // header: platform/model_id.
+            // header: platform/model_id. Same rationale for _task_class: Lunk's
+            // footer reads it off the chunk, since headers aren't visible there.
             chunk.model = `${route.platform}/${route.modelId}`;
+            (chunk as typeof chunk & { _task_class?: string | null })._task_class = effectiveTaskClass ?? null;
             res.write(`data: ${JSON.stringify(chunk)}\n\n`);
           }
 
@@ -790,7 +793,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // so a caller reading result.model gets the real served model as its
         // attribution key for quality sampling (wsl, 2026-07-10).
         result.model = `${route.platform}/${route.modelId}`;
+        // Surface the classified task_class to the caller (Adam/wsl: Lunk shows it
+        // in the Discord footer). It only ever reached the DB rows before, never
+        // the wire. Header for HTTP readers + body field for JSON readers.
+        result._task_class = effectiveTaskClass ?? null;
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+        res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
         res.json(result);
 

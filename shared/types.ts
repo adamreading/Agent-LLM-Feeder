@@ -163,6 +163,10 @@ export interface ChatCompletionResponse {
     platform: Platform;
     model: string;
   };
+  // The task_class the feeder classified this request as (coding/math/… or null
+  // for 'overall'), so a caller can show/log what the router optimised for. Also
+  // surfaced as the X-Task-Class response header and stamped on streamed chunks.
+  _task_class?: string | null;
   // P3: provider-declared quota truth harvested from response headers
   // (x-ratelimit-* — a de facto OpenAI-compat convention several providers
   // honor). Column-owned by the harvester (services/quotaHarvest.ts) per the
