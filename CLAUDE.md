@@ -1,0 +1,43 @@
+# CLAUDE.md — Agent-LLM-Feeder
+
+Guidance for any Claude working in this repo. The feeder is a live, OpenAI-compatible
+routing proxy the whole fleet (Hermes/Lunk, OB, OpenClaw, web chat, crons) depends on —
+treat it as production.
+
+## Standing Working Rules (fleet-wide, mandated by Adam 2026-07-13 — no exceptions)
+
+### 1. Verify, don't guess
+- NO claim about code / config / runtime stated as fact without reading the actual
+  file+line or running the check FIRST. "The code contains X" is NOT "X is live" —
+  verify the gate / flag / env / running process that governs it before asserting.
+- Docs, CLAUDE.md, and memory are **stale-suspect**, NOT ground truth. Verify against
+  LIVE state (the running process, the actual DB row, the real config), not a doc line
+  or a memory.
+- Anything not directly verified gets LABELLED `unverified` / `assumption`. Never
+  launder a guess into a fact.
+- If you can't verify, SAY SO and go check — do not fill the gap with a plausible guess.
+- Own misses explicitly and immediately when caught.
+
+### 2. No stale docs
+- At the end of EVERY medium-size job, update ALL affected docs (this file, README,
+  env/config comments, arch/endpoint notes) **as you go**, THEN commit and push
+  (this repo HAS a remote — `origin/main`).
+- No commit without a doc update when one is appropriate. Stale docs trusted over live
+  config are how the fleet gets sent chasing ghosts.
+
+## Repo facts (verify before relying on any of these — they can go stale)
+
+- **DB:** PostgreSQL `feeder` on localhost:5432 (`postgres`). Router/proxy live in
+  `server/src`. Client (wiki/vault/analytics UI) in `client/src`.
+- **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
+  Restart drops in-flight fleet requests — brief, but it's production.
+- **Capability truth lives in two places** — check BOTH: `model_capabilities`
+  (measured/observed/declared per-model, the router's hard gate) AND
+  `canonical_models` (`vision`/`audio`/`video` declared modality flags from research —
+  this is where the wiki's modality badges come from). Querying only one misled a prior
+  session into a false "zero vision models" claim.
+- **Routing:** `services/router.ts` orders by composite score (task_scores dominant);
+  `needs[]` is a hard capability filter; `promptClassifier.ts` turns a bare-`auto`
+  prompt into a task_class. Vision uses a relaxed declared→try→confirm gate.
+- **Coordination board** (with peers wsl-claude / ob-claude): run
+  `node .claude/coordination/coord.js {show|msg|...}` with `COORD_AGENT=feeder-claude`.

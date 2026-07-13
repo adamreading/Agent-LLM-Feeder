@@ -117,9 +117,27 @@ curl http://localhost:3001/v1/chat/completions \
   -d '{ "messages": [{"role":"user","content":"Say hi in 3 words."}] }'
 ```
 
-- **Auth:** the **unified key** (from the Key Vault) as the Bearer token. Provider keys stay encrypted behind it.
+- **Auth:** the **unified key** (from the Key Vault) as the Bearer token. Provider keys stay encrypted behind it. (A tokenless request from localhost is trusted as fleet.)
 - **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
-- **Model list:** `GET /v1/models`.
+  - A **bare `"auto"`** request is classified from the prompt (coding / math / reasoning / creative / trivial) so routing engages the right per-task quality scores. An explicit `"auto/<class>"` is honoured verbatim and skips classification.
+- **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
+
+### Sampling / generation params
+
+Standard OpenAI params are passed through when set (unset ones are never sent, so the default request is unchanged): `temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `frequency_penalty`, `presence_penalty`, `seed`, `stop`, `n`, `logit_bias`, `logprobs`, `top_logprobs`. Vendor params (`top_k`, `min_p`, `repetition_penalty`) are forwarded only to providers documented to accept them (e.g. OpenRouter); other providers omit them rather than error. A provider known to reject a specific param has it stripped (`dropParams`).
+
+### Vision / multimodal
+
+A user message's `content` may be an array of parts mixing text and images, in the standard OpenAI shape:
+
+```json
+{ "model": "auto", "messages": [{ "role": "user", "content": [
+  { "type": "text", "text": "What is in this image?" },
+  { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+]}]}
+```
+
+An image part adds `vision` as a hard capability need automatically, so a bare-`auto` image request routes to a vision-capable model. `image_url.url` may be a `data:` URI (base64) or an `http(s)` URL — Gemini needs inline base64 (URL images route to OpenAI-compat vision models, which accept URLs natively). Vision eligibility uses a **relaxed gate**: a research-declared vision model is tried, then confirmed (`observed=true`) on success or demoted (`observed=false`) on a genuine image rejection — never on a transient 429/timeout.
 
 ### Optional routing fields
 
@@ -127,7 +145,7 @@ All optional; omit for sensible defaults.
 
 | Field | Effect |
 |---|---|
-| `needs: string[]` | Only route to models *measured* to support every listed capability (e.g. `["tools","long_context"]`). |
+| `needs: string[]` | Only route to models that support every listed capability (e.g. `["tools","long_context"]`). Most capabilities require *measured/observed* evidence (never a spec-sheet claim); `vision` is the exception — a research-*declared* vision model is tried, then confirmed/demoted from real use. |
 | `latency_ceiling_ms: number` | Prefer fast models; exclude ones whose historical p95 exceeds this. Also weights the ranker toward speed. |
 | `exclude_reasoning: boolean` | Strip raw chain-of-thought from the reply (never fold it into content). |
 | `exclude_providers: string[]` | Never use these platforms for this call. |
