@@ -155,6 +155,13 @@ async function addMissingFallbackEntries(client: pg.PoolClient) {
  */
 async function migrateModels(pool: pg.Pool) {
   // 1) Replace outdated models in-place (preserves fallback_config & any references)
+  // NOT EXISTS guard on the target (platform,new_model_id): these historical
+  // "replace outdated model in place" renames now collide with the live-
+  // discovery free-sweep, which adds the modern id directly — e.g. GitHub now
+  // offers BOTH gpt-4o and gpt-5 as distinct live models, so renaming gpt-4o
+  // into an already-present gpt-5 row violates the unique constraint and blocks
+  // every startup (the L12 rename-vs-seed tug-of-war). Skipping when the target
+  // already exists makes the rename a safe no-op and preserves both models.
   const renameSql = `
     UPDATE models
        SET model_id = ?, display_name = ?, intelligence_rank = ?,
@@ -162,11 +169,12 @@ async function migrateModels(pool: pg.Pool) {
            context_window = COALESCE(?, context_window),
            size_label = COALESCE(?, size_label)
      WHERE platform = ? AND model_id = ?
+       AND NOT EXISTS (SELECT 1 FROM models m2 WHERE m2.platform = ? AND m2.model_id = ?)
   `;
   // DeepSeek R1 (free) -> DeepSeek V3.1 (free)
-  await run(pool, renameSql, ['deepseek/deepseek-v3.1:free', 'DeepSeek V3.1 (free)', 2, '~6M', 200, 131072, 'Frontier', 'openrouter', 'deepseek/deepseek-r1:free']);
+  await run(pool, renameSql, ['deepseek/deepseek-v3.1:free', 'DeepSeek V3.1 (free)', 2, '~6M', 200, 131072, 'Frontier', 'openrouter', 'deepseek/deepseek-r1:free', 'openrouter', 'deepseek/deepseek-v3.1:free']);
   // GitHub GPT-4o -> GPT-5
-  await run(pool, renameSql, ['openai/gpt-5', 'GPT-5 (GitHub)', 1, '~18M', null, 128000, 'Frontier', 'github', 'gpt-4o']);
+  await run(pool, renameSql, ['openai/gpt-5', 'GPT-5 (GitHub)', 1, '~18M', null, 128000, 'Frontier', 'github', 'gpt-4o', 'github', 'openai/gpt-5']);
 
   // 2) Correct stale limits / budgets on existing rows
   await run(pool, `UPDATE models SET rpd_limit = 20, monthly_token_budget = '~3M' WHERE platform = 'google' AND model_id = 'gemini-2.5-flash'`);
@@ -254,6 +262,7 @@ async function migrateModelsV2(pool: pg.Pool) {
        SET model_id = 'gpt-4o', display_name = 'GPT-4o', intelligence_rank = 5,
            size_label = 'Large', context_window = 8000, monthly_token_budget = '~18M'
      WHERE platform = 'github' AND model_id = 'openai/gpt-5'
+       AND NOT EXISTS (SELECT 1 FROM models m2 WHERE m2.platform = 'github' AND m2.model_id = 'gpt-4o')
   `);
 
   // Groq: scout requires the meta-llama/ publisher prefix

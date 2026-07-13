@@ -25,7 +25,26 @@ export function normalizeModelId(modelId: string): string {
   const parts = s.split('/');
   s = parts[parts.length - 1]; // drop any remaining org/vendor path prefix, keep the leaf
   s = s.replace(/:free$/, '');
-  s = s.replace(/-(latest|preview)$/, '');
+  // Strip trailing snapshot tokens repeatedly so dated pins and -latest of the
+  // SAME model collapse to ONE canonical (Adam, 2026-07-13: date/snapshot
+  // variants should be one wiki page, ordered latest-first as optional
+  // fallbacks — e.g. mistral-medium-2505 / -2508 / -2604 / -latest → one
+  // "Mistral Medium"). A snapshot token is -latest, -preview, or a DATE:
+  // YYYYMMDD, YYYYMM, or YYMM (YY in 24-27). Numeric VERSION tokens like
+  // medium-3 / medium-3.5 are NOT dates, so different model generations stay
+  // distinct — this deliberately does not merge them (a wrong merge would
+  // misattribute measured capabilities between two different models).
+  const isDate = (t: string) =>
+    /^\d{8}$/.test(t) ||
+    (/^\d{6}$/.test(t) && +t.slice(4) >= 1 && +t.slice(4) <= 12) ||
+    (/^\d{4}$/.test(t) && +t.slice(0, 2) >= 24 && +t.slice(0, 2) <= 27 && +t.slice(2) >= 1 && +t.slice(2) <= 12);
+  const segs = s.split(/[-.]/);
+  while (segs.length > 1) {
+    const last = segs[segs.length - 1];
+    if (last === 'latest' || last === 'preview' || isDate(last)) segs.pop();
+    else break;
+  }
+  s = segs.join('');
   s = s.replace(/[^a-z0-9]/g, ''); // collapse separators (-, ., _, :, spaces) for tolerant comparison
   return s;
 }

@@ -43,12 +43,19 @@ async function main() {
   // re-run after a rate-limit stop doesn't spend quota re-researching the ones
   // already written. Pass --all to force a full refresh of every model.
   const all_ = process.argv.includes('--all');
-  const where = all_ ? '' : `WHERE summary IS NULL OR summary = ''`;
+  // --visible restricts to canonicals with >=1 ENABLED instance — i.e. the
+  // pages the wiki actually shows — so a full refresh doesn't spend quota
+  // researching dead/paid models hidden from the wiki (canon.ts skips them).
+  const visible = process.argv.includes('--visible');
+  const conds: string[] = [];
+  if (!all_) conds.push(`(summary IS NULL OR summary = '')`);
+  if (visible) conds.push(`EXISTS (SELECT 1 FROM models m WHERE m.canonical_model_id = canonical_models.id AND m.enabled = true)`);
+  const where = conds.length ? 'WHERE ' + conds.join(' AND ') : '';
 
   const canonicals = await all<{ id: number; name: string }>(pool, `
     SELECT id, name FROM canonical_models ${where} ORDER BY name ASC ${limit ? 'LIMIT ' + limit : ''}
   `);
-  console.log(`Researching ${canonicals.length} canonical models${all_ ? '' : ' (missing summaries only)'}…\n`);
+  console.log(`Researching ${canonicals.length} canonical models${all_ ? '' : ' (missing summaries only)'}${visible ? ' [wiki-visible only]' : ''}…\n`);
 
   let ok = 0, empty = 0, failed = 0;
   for (const c of canonicals) {

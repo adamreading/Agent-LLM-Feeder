@@ -51,6 +51,20 @@ canonRouter.get('/', async (_req, res) => {
     // deactivated supplier drops off a still-served model's list. This is why
     // removing the Ollama key removes its models from the wiki (Adam, 2026-07-09).
     if (instances.length === 0) continue;
+    // Latest-first ordering within a merged page (Adam, 2026-07-13): the newest
+    // snapshot leads, older dated snapshots follow as optional fallbacks. A
+    // '-latest' alias is treated as the most recent; otherwise the embedded
+    // date (YYYYMMDD / YYYYMM / YYMM) ranks it. Ties fall back to platform.
+    const recency = (modelId: string): number => {
+      if (/latest/i.test(modelId)) return 9e14;
+      const leaf = modelId.split('/').pop() ?? modelId;
+      const m8 = leaf.match(/(\d{8})/); if (m8) return Number(m8[1]);
+      const m6 = leaf.match(/(\d{6})/); if (m6 && +m6[1].slice(4) <= 12) return Number(m6[1]) * 100;
+      const m4 = leaf.match(/(?:^|[-.])(\d{4})(?:$|[-.])/);
+      if (m4 && +m4[1].slice(0, 2) >= 24 && +m4[1].slice(0, 2) <= 27 && +m4[1].slice(2) <= 12) return (2000 + +m4[1].slice(0, 2)) * 10000 + +m4[1].slice(2) * 100;
+      return 0;
+    };
+    instances.sort((a, b) => recency(b.model_id) - recency(a.model_id) || a.platform.localeCompare(b.platform));
     const capRollupRaw = await all<{ capability: string; supported: boolean }>(pool, `
       SELECT capability, bool_or(supported) as supported
       FROM model_capabilities

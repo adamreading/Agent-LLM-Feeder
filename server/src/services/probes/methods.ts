@@ -5,8 +5,19 @@ import { logProbeRequest } from './runner.js';
 // capability (rate limit, transport timeout, upstream 5xx) — recording a
 // false negative here would poison measured data with an infra artifact
 // indistinguishable from "genuinely doesn't support this."
+//
+// A provider 404 ("Not Found" / "No endpoints" / "This model is not
+// available" / "does not exist") is the same class of poison: it means the
+// key can't reach this model id AT ALL (deprecated/renamed/no access), which
+// is a REACHABILITY fact, not a capability fact — the model must never be
+// recorded supported=false off a 404. (Root cause of the 19 poisoned rows
+// found 2026-07-12: e.g. cerebras qwen-3-235b showed tools/json_mode=false
+// with evidence "Cerebras API error 404: Not Found", making a #1-ranked model
+// render all-NONE on the wiki.) Catalog reconciliation against each provider's
+// live GET /models list — not a false capability row — is what surfaces a dead
+// id; the probe just declines to lie about it.
 function isTransientError(message: string): boolean {
-  return /429|rate.?limit|too many requests|timeout|aborted|ECONNRESET|ETIMEDOUT|5\d\d\b/i.test(message);
+  return /\b404\b|not found|no endpoints|not available|does not exist|unknown model|no such model|model_not_found|429|rate.?limit|too many requests|timeout|aborted|ECONNRESET|ETIMEDOUT|5\d\d\b|fetch failed|network|socket|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|und_err|terminated|premature close/i.test(message);
 }
 
 // --- tools -------------------------------------------------------------
