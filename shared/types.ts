@@ -107,9 +107,22 @@ export type ChatToolChoice =
     };
   };
 
+// Multimodal content parts (OpenAI vision wire format). A user message's content
+// may be a plain string OR an array of parts mixing text and image references.
+// image_url.url is a data: URI (base64) or an http(s) URL.
+export interface ChatContentTextPart {
+  type: 'text';
+  text: string;
+}
+export interface ChatContentImagePart {
+  type: 'image_url';
+  image_url: { url: string; detail?: 'auto' | 'low' | 'high' };
+}
+export type ChatContentPart = ChatContentTextPart | ChatContentImagePart;
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | ChatContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ChatToolCall[];

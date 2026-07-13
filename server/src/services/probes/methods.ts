@@ -192,7 +192,8 @@ export async function probeLongContext(ctx: ProbeContext, targetTokens: number):
     });
     const latencyMs = Date.now() - start;
     void logProbeRequest(ctx.platform, ctx.modelId, 'success', result.usage?.prompt_tokens ?? 0, result.usage?.completion_tokens ?? 0, latencyMs, null);
-    const content = result.choices?.[0]?.message?.content ?? '';
+    const rawContent = result.choices?.[0]?.message?.content;
+    const content = typeof rawContent === 'string' ? rawContent : '';
     const passed = content.includes(marker);
     return {
       passed,

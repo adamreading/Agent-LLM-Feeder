@@ -28,6 +28,7 @@ import type { ChatCompletionResponse } from '@freellmapi/shared/types.js';
 export interface ObservationInput {
   hadTools: boolean;
   hadResponseFormat: boolean;
+  hadImage?: boolean;
 }
 
 // Upsert one observed-true capability row. Keyed on (model_db_id, capability,
@@ -41,6 +42,28 @@ async function recordObserved(modelDbId: number, capability: string, evidence: s
     DO UPDATE SET supported = true, score = 1, measured_at = now(),
                   evidence = EXCLUDED.evidence, suspect = false
   `, [modelDbId, capability, evidence.slice(0, 500)]);
+}
+
+// Vision demote (Adam, 2026-07-13). The relaxed vision gate (router.ts) lets a
+// research-DECLARED vision model be tried; if that try comes back with a GENUINE
+// capability rejection (the provider refused the image content — a hard 400-class
+// error, NOT a transient 429/timeout), record vision=false so the router stops
+// routing images there. This is the ONE sanctioned negative write in this module
+// (the passive observer above stays positive-only): it's written only on
+// unambiguous provider rejection of an image, evidence as real as a probe. Keyed
+// (model_db_id, capability, source='observed') so it upserts against a prior true.
+export async function recordVisionUnsupported(modelDbId: number, evidence: string): Promise<void> {
+  try {
+    await run(getPool(), `
+      INSERT INTO model_capabilities (model_db_id, capability, supported, score, source, measured_at, evidence)
+      VALUES (?, 'vision', false, 0, 'observed', now(), ?)
+      ON CONFLICT (model_db_id, capability, source)
+      DO UPDATE SET supported = false, score = 0, measured_at = now(),
+                    evidence = EXCLUDED.evidence, suspect = false
+    `, [modelDbId, evidence.slice(0, 500)]);
+  } catch (e) {
+    console.error('[CapabilityObserve] Failed to record vision demote:', e);
+  }
 }
 
 // Fire-and-forget: called after a SUCCESSFUL non-streaming completion. Never
@@ -60,6 +83,20 @@ export async function observeCapabilities(
     if (input.hadTools && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
       const names = message.tool_calls.map(tc => tc.function?.name).filter(Boolean).slice(0, 3).join(',');
       await recordObserved(modelDbId, 'tools', `live: returned ${message.tool_calls.length} tool_call(s)${names ? ` (${names})` : ''}`);
+    }
+
+    // vision: the request carried an image part AND the model returned a
+    // successful, non-empty answer. Providers that don't support vision reject an
+    // image content part outright (400 "image not supported") rather than
+    // answering, so a clean success here is real evidence the model processed the
+    // image — the same "did it, therefore it can" bar as tools above. This is what
+    // bootstraps needs=[vision] routing (the router only trusts measured/observed,
+    // never a spec-sheet claim), token-free, from actual use.
+    if (input.hadImage) {
+      const text = typeof message.content === 'string' ? message.content.trim() : '';
+      if (text.length > 0 || (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)) {
+        await recordObserved(modelDbId, 'vision', 'live: image content accepted and answered');
+      }
     }
 
     // json_mode: the request asked for JSON AND the content parses cleanly as a

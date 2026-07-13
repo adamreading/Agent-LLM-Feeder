@@ -591,6 +591,32 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     const opaqueNeeds = (needs ?? []).filter((n) => n !== 'json_mode' && n !== 'reasoning_control' && n !== 'long_context');
     let missingOpaqueNeed = false;
     for (const need of opaqueNeeds) {
+      // VISION uses a RELAXED gate (Adam, 2026-07-13). Unlike tools/etc — where a
+      // wrong spec-sheet claim silently corrupts a result — vision is verifiable
+      // on the FIRST real use (a non-vision provider rejects an image part with a
+      // hard error rather than answering). So a research-DECLARED vision model is
+      // eligible to be TRIED; the outcome then writes real evidence:
+      //   success → observed=true (capabilityObserve), a genuine image-rejection
+      //   → observed=false (proxy demote), transient (429/timeout) → nothing.
+      // Precedence: most-recent measured/observed evidence WINS; with none, fall
+      // back to the declared canonical flag. This lights up the ~66 declared
+      // vision models today while still self-correcting from live truth.
+      if (need === 'vision') {
+        const evidence = await get<{ supported: boolean }>(pool,
+          `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = 'vision' AND source IN ('measured','observed') ORDER BY measured_at DESC LIMIT 1`,
+          [model.id]
+        );
+        if (evidence) {
+          if (!evidence.supported) { missingOpaqueNeed = true; break; } // confirmed NOT vision
+          continue; // confirmed vision by real use
+        }
+        const declared = await get<{ vision: boolean }>(pool,
+          `SELECT c.vision FROM models m JOIN canonical_models c ON c.id = m.canonical_model_id WHERE m.id = ? LIMIT 1`,
+          [model.id]
+        );
+        if (!declared?.vision) { missingOpaqueNeed = true; break; } // research says not vision
+        continue; // declared vision → eligible to try
+      }
       const row = await get<{ supported: boolean }>(pool,
         `SELECT supported FROM model_capabilities WHERE model_db_id = ? AND capability = ? AND supported = true AND source IN ('measured','observed') LIMIT 1`,
         [model.id, need]

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTier0, latestUserText, classifyPrompt, tier1Enabled } from '../../services/promptClassifier.js';
+import { classifyTier0, latestUserText, classifyPrompt, tier1Enabled, hasImageContent } from '../../services/promptClassifier.js';
 
 const tc = (text: string, ctx = {}) => classifyTier0(text, ctx).taskClass;
 
@@ -71,6 +71,26 @@ describe('classifyPrompt (orchestrator)', () => {
     const r = await classifyPrompt("What's the capital of France?");
     expect(r.tier).toBe(0);
     expect(r.taskClass).toBeNull();
+  });
+});
+
+describe('hasImageContent', () => {
+  it('detects an image_url part in a user turn', () => {
+    expect(hasImageContent([
+      { role: 'user', content: [
+        { type: 'text', text: 'what is this' },
+        { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+      ] },
+    ])).toBe(true);
+  });
+  it('is false for plain string content and text-only arrays', () => {
+    expect(hasImageContent([{ role: 'user', content: 'just text' }])).toBe(false);
+    expect(hasImageContent([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }])).toBe(false);
+  });
+  it('ignores images on non-user roles', () => {
+    expect(hasImageContent([
+      { role: 'assistant', content: [{ type: 'image_url', image_url: { url: 'data:x' } }] as any },
+    ])).toBe(false);
   });
 });
 

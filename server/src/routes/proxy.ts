@@ -7,12 +7,12 @@ import type { ChatMessage, Platform } from '@freellmapi/shared/types.js';
 import { getProvider } from '../providers/index.js';
 import { OpenAICompatProvider } from '../providers/openai-compat.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
-import { classifyPrompt, latestUserText } from '../services/promptClassifier.js';
+import { classifyPrompt, latestUserText, hasImageContent } from '../services/promptClassifier.js';
 import { rescueInlineToolCalls, containsDialectMarker } from '../lib/tool-call-rescue.js';
 import { getContextHandoffMode, recordIncomingMessages, recordSuccessfulModel, maybeInjectContextHandoff, hasPriorModel, HANDOFF_MAX_TOKENS } from '../services/context-handoff.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
-import { observeCapabilities } from '../services/capabilityObserve.js';
+import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { benchUnreachableModel } from '../services/modelHealth.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
@@ -191,9 +191,25 @@ const systemMessageSchema = z.object({
   name: z.string().optional(),
 });
 
+// Multimodal content parts (OpenAI vision wire format). A user turn may carry a
+// plain string OR an array mixing text and image_url parts. Only user messages
+// accept the array form — system/assistant/tool stay string-only.
+const textContentPartSchema = z.object({
+  type: z.literal('text'),
+  text: z.string(),
+});
+const imageContentPartSchema = z.object({
+  type: z.literal('image_url'),
+  image_url: z.object({
+    url: z.string().min(1),
+    detail: z.enum(['auto', 'low', 'high']).optional(),
+  }),
+});
+const contentPartSchema = z.union([textContentPartSchema, imageContentPartSchema]);
+
 const userMessageSchema = z.object({
   role: z.literal('user'),
-  content: z.string(),
+  content: z.union([z.string(), z.array(contentPartSchema).min(1)]),
   name: z.string().optional(),
 });
 
@@ -341,6 +357,22 @@ function isRetryableError(err: any): boolean {
     || isToolCapabilityMismatchError(err);
 }
 
+// A GENUINE vision-capability rejection: the provider refused the image content
+// itself (hard 400-class error explicitly about image/vision/modality), NOT a
+// transient 429/timeout/5xx (busy != incapable). Only this demotes a declared-
+// vision model to vision=false under the relaxed vision gate (Adam, 2026-07-13).
+// Deliberately conservative: must mention an image/vision term AND read as a
+// rejection, and must not be transient — anything ambiguous leaves the model
+// eligible (it just fails over) rather than wrongly marking it non-vision.
+function isVisionRejectionError(err: any): boolean {
+  if (isRetryableError(err)) return false;
+  const msg = (err?.message ?? '').toLowerCase();
+  if (!msg) return false;
+  const mentionsImage = /image|vision|multimodal|modalit|image_url|inline_?data/.test(msg);
+  const rejection = /not support|unsupported|does not|doesn'?t|cannot|can'?t|invalid|not a valid|not allowed|text[- ]only|only text|no such|400/.test(msg);
+  return mentionsImage && rejection;
+}
+
 // L9 runtime feedback: a live provider error explicitly saying tool-calling
 // isn't supported (real observed shape, groq/compound: "`tool calling` is
 // not supported with this model") means a MEASURED-true capability just
@@ -444,8 +476,16 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // (see line ~340). Streaming will drift from real consumption — accepted
   // tradeoff because per-request usage isn't always returned mid-stream.
   const estimatedInputTokens = messages.reduce((sum, m) => {
-    if (typeof m.content !== 'string') return sum;
-    return sum + Math.ceil(m.content.length / 4);
+    if (typeof m.content === 'string') return sum + Math.ceil(m.content.length / 4);
+    if (!Array.isArray(m.content)) return sum;
+    // Multimodal content: count text parts + a rough per-image allowance so the
+    // context-window / TPM gates aren't wildly under for vision turns (a tiled
+    // image is ~hundreds-1k+ tokens; 800 is a deliberately conservative stand-in).
+    for (const p of m.content as Array<{ type?: string; text?: string }>) {
+      if (p?.type === 'text' && typeof p.text === 'string') sum += Math.ceil(p.text.length / 4);
+      else if (p?.type === 'image_url') sum += 800;
+    }
+    return sum;
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
@@ -495,11 +535,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // can prove from the content. Pure ~0ms heuristics; tier-1 (a small local
   // model) will later refine only the low-confidence residue.
   const isPinned = !!requestedModel && !isAuto;
+  // Vision is a HARD capability floor derived straight from content — a user turn
+  // carrying an image_url part must land on a vision-capable model regardless of
+  // task_class or whether the classifier runs. Added to needs[] for any non-pinned
+  // request (a pinned model bypasses routing, so the caller owns that choice).
+  const hasImage = hasImageContent(messages);
+  if (hasImage && !isPinned && !needs.includes('vision')) needs.push('vision');
   let effectiveTaskClass = taskClass;
   if (!taskClass && !isPinned) {
     const cls = await classifyPrompt(latestUserText(messages), {
       estimatedTokens: estimatedInputTokens,
-      hasImage: false, // multimodal detection lands with the schema change (Phase 2c)
+      hasImage,
       hasHistory: messages.some(m => m.role === 'assistant'),
       latencyCeilingMs: latency_ceiling_ms, // tier-1 only fires if the budget absorbs it
     });
@@ -710,7 +756,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // DID on real traffic (returned tool_calls / honored response_format)
         // as source='observed' — the token-free live version of the probes
         // (Adam, 2026-07-10). Fire-and-forget; never blocks the response.
-        void observeCapabilities(route.modelDbId, { hadTools: !!(tools && tools.length > 0), hadResponseFormat: !!response_format }, result);
+        void observeCapabilities(route.modelDbId, { hadTools: !!(tools && tools.length > 0), hadResponseFormat: !!response_format, hadImage: hasImage }, result);
 
         // Tool-call rescue (ported from upstream lib/tool-call-rescue.ts): if the
         // caller offered tools but the model emitted the call as TEXT in a training
@@ -785,6 +831,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       if (needs?.includes('tools') && isToolCapabilityMismatchError(err)) {
         void markCapabilitySuspect(route.modelDbId, 'tools');
         console.log(`[Proxy] LIVE CAPABILITY REGRESSION: ${route.displayName} was measured tools=true but rejected a tool-calling request — marked suspect for re-probe`);
+      }
+      // Vision demote (relaxed vision gate, Adam 2026-07-13): a declared-vision
+      // model that gives a GENUINE image rejection (not a transient 429/timeout)
+      // is marked vision=false so the router stops routing images there. The
+      // request still fails over to the next candidate this attempt.
+      if (hasImage && isVisionRejectionError(err)) {
+        void recordVisionUnsupported(route.modelDbId, err.message ?? 'image content rejected');
+        console.log(`[Proxy] VISION DEMOTE: ${route.displayName} rejected image content — marked vision=false (declared→observed-false)`);
       }
       // Auto-bench a model a live request proved UNREACHABLE (403/404/model-
       // not-found = the key can't serve it — persistent, not transient). Stops

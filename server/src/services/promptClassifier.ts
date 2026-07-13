@@ -60,6 +60,19 @@ export function latestUserText(messages: Array<{ role: string; content: unknown 
   return '';
 }
 
+/** True if any user turn carries an image content part (OpenAI multimodal wire
+ * format). Drives the `vision` structural need — a HARD capability floor, so it's
+ * derived directly from content and merged into needs[] regardless of task_class. */
+export function hasImageContent(messages: Array<{ role: string; content: unknown }>): boolean {
+  for (const m of messages) {
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    for (const part of m.content as Array<{ type?: string }>) {
+      if (part?.type === 'image_url') return true;
+    }
+  }
+  return false;
+}
+
 export interface Tier0Ctx {
   estimatedTokens?: number;
   hasImage?: boolean;       // multimodal image part present

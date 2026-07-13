@@ -154,6 +154,65 @@ describe('GoogleProvider', () => {
     expect(await provider.validateKey('invalid-key')).toBe(false);
   });
 
+  it('converts a data: URI image_url part into a Gemini inlineData part (vision)', async () => {
+    let capturedBody: any;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          candidates: [{ content: { parts: [{ text: 'a lunar greenhouse' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      } as any;
+    });
+
+    await provider.chatCompletion(
+      'test-key',
+      [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this image?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANS' } },
+        ],
+      }],
+      'gemini-3-flash-preview',
+    );
+
+    const parts = capturedBody.contents[0].parts;
+    expect(parts[0]).toEqual({ text: 'what is in this image?' });
+    expect(parts[1].inlineData).toEqual({ mimeType: 'image/png', data: 'iVBORw0KGgoAAAANS' });
+  });
+
+  it('drops an http(s) URL image on the Gemini path (can only inline base64; keeps the text)', async () => {
+    let capturedBody: any;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 },
+        }),
+      } as any;
+    });
+
+    await provider.chatCompletion(
+      'test-key',
+      [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'describe' },
+          { type: 'image_url', image_url: { url: 'https://example.com/pic.jpg' } },
+        ],
+      }],
+      'gemini-3-flash-preview',
+    );
+
+    const parts = capturedBody.contents[0].parts;
+    expect(parts).toEqual([{ text: 'describe' }]); // URL image dropped, text kept
+  });
+
   it('should translate system messages to systemInstruction', async () => {
     let capturedBody: any;
     vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {

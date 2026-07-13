@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ChatContentPart,
   ChatCompletionResponse,
   ChatCompletionChunk,
   ChatToolCall,
@@ -51,6 +52,7 @@ function recallSig(id: string): string | undefined {
 
 interface GeminiPart {
   text?: string;
+  inlineData?: { mimeType: string; data: string };
   thoughtSignature?: string;
   functionCall?: {
     id?: string;
@@ -201,6 +203,39 @@ function toGeminiToolConfig(toolChoice?: ChatToolChoice): { functionCallingConfi
   };
 }
 
+// Parse a data: URI into a Gemini inlineData part. Returns null for non-data
+// URIs (http(s) URLs): Gemini's generateContent needs inline base64, whereas
+// OpenAI-compat vision models accept URLs natively via passthrough — so a
+// URL-image request routes best to those, not Gemini.
+function dataUriToInlineData(url: string): { mimeType: string; data: string } | null {
+  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(url);
+  if (!m) return null;
+  const mimeType = m[1] || 'application/octet-stream';
+  const isBase64 = !!m[2];
+  const data = isBase64
+    ? m[3]
+    : Buffer.from(decodeURIComponent(m[3]), 'utf8').toString('base64');
+  return { mimeType, data };
+}
+
+// A user turn's content → Gemini parts. String → one text part. Array (vision) →
+// text parts kept, image_url parts converted to inlineData when they're data:
+// URIs (http(s) URL images can't inline into Gemini and are dropped here).
+function userContentToGeminiParts(content: string | ChatContentPart[] | null): GeminiPart[] {
+  if (typeof content === 'string') return [{ text: content }];
+  if (!Array.isArray(content)) return [{ text: '' }];
+  const parts: GeminiPart[] = [];
+  for (const p of content) {
+    if (p.type === 'text') {
+      parts.push({ text: p.text });
+    } else if (p.type === 'image_url') {
+      const inline = dataUriToInlineData(p.image_url.url);
+      if (inline) parts.push({ inlineData: inline });
+    }
+  }
+  return parts.length > 0 ? parts : [{ text: '' }];
+}
+
 // Translate OpenAI messages to Gemini format
 function toGeminiContents(messages: ChatMessage[]) {
   const systemMessages = messages
@@ -265,7 +300,7 @@ function toGeminiContents(messages: ChatMessage[]) {
 
       return {
         role: 'user',
-        parts: [{ text: typeof m.content === 'string' ? m.content : '' }],
+        parts: userContentToGeminiParts(m.content),
       };
     })
     .filter((entry): entry is { role: 'user' | 'model'; parts: GeminiPart[] } => entry !== null);
