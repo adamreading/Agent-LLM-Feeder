@@ -412,6 +412,78 @@ describe('OpenAICompatProvider - dialect emission', () => {
   });
 });
 
+// P2c-iii: sampling passthrough — standard OpenAI params always forwarded when
+// set; vendor params gated on extendedSampling; dropParams as the escape hatch.
+describe('OpenAICompatProvider - sampling passthrough', () => {
+  async function captureBody(provider: OpenAICompatProvider, options: any): Promise<any> {
+    let capturedBody: any = null;
+    vi.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
+      capturedBody = JSON.parse((init as any).body);
+      return {
+        ok: true,
+        json: () => Promise.resolve({
+          id: 'id', object: 'chat.completion', created: 1, model: 'm',
+          choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        }),
+      } as any;
+    });
+    await provider.chatCompletion('key', [{ role: 'user', content: 'hi' }], 'model', options);
+    vi.restoreAllMocks();
+    return capturedBody;
+  }
+
+  it('forwards the standard OpenAI sampling params when the caller sets them', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, {
+      frequency_penalty: 0.5, presence_penalty: -0.2, seed: 42, stop: ['\n\n'],
+      n: 2, logit_bias: { '123': -5 }, logprobs: true, top_logprobs: 3, max_completion_tokens: 256,
+    });
+    expect(body.frequency_penalty).toBe(0.5);
+    expect(body.presence_penalty).toBe(-0.2);
+    expect(body.seed).toBe(42);
+    expect(body.stop).toEqual(['\n\n']);
+    expect(body.n).toBe(2);
+    expect(body.logit_bias).toEqual({ '123': -5 });
+    expect(body.logprobs).toBe(true);
+    expect(body.top_logprobs).toBe(3);
+    expect(body.max_completion_tokens).toBe(256);
+  });
+
+  it('omits sampling params the caller did NOT set (common path unchanged)', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, { temperature: 0.7 });
+    expect(body.temperature).toBe(0.7);
+    for (const k of ['frequency_penalty', 'presence_penalty', 'seed', 'stop', 'n', 'logit_bias', 'logprobs', 'top_logprobs', 'max_completion_tokens']) {
+      expect(k in body).toBe(false);
+    }
+  });
+
+  it('does NOT emit vendor params (top_k/min_p/repetition_penalty) without extendedSampling', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1' });
+    const body = await captureBody(provider, { top_k: 40, min_p: 0.05, repetition_penalty: 1.1 });
+    expect('top_k' in body).toBe(false);
+    expect('min_p' in body).toBe(false);
+    expect('repetition_penalty' in body).toBe(false);
+  });
+
+  it('emits vendor params when the provider declares extendedSampling (OpenRouter/Ollama)', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'openrouter', name: 'OpenRouter', baseUrl: 'https://x.test/v1', dialect: { extendedSampling: true } });
+    const body = await captureBody(provider, { top_k: 40, min_p: 0.05, repetition_penalty: 1.1 });
+    expect(body.top_k).toBe(40);
+    expect(body.min_p).toBe(0.05);
+    expect(body.repetition_penalty).toBe(1.1);
+  });
+
+  it('dropParams strips a named param even when the caller set it (escape hatch)', async () => {
+    const provider = new OpenAICompatProvider({ platform: 'groq', name: 'Groq', baseUrl: 'https://x.test/v1', dialect: { dropParams: ['logit_bias', 'logprobs'] } });
+    const body = await captureBody(provider, { logit_bias: { '1': 2 }, logprobs: true, seed: 7 });
+    expect('logit_bias' in body).toBe(false);
+    expect('logprobs' in body).toBe(false);
+    expect(body.seed).toBe(7); // untouched param still forwarded
+  });
+});
+
 // P3: quota header capture
 describe('OpenAICompatProvider - rate limit header capture', () => {
   it('captures known x-ratelimit-* headers onto the response for the harvester', async () => {

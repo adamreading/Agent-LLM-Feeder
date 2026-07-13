@@ -3,7 +3,9 @@ import { performance } from 'node:perf_hooks';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { ChatMessage } from '@freellmapi/shared/types.js';
+import type { ChatMessage, Platform } from '@freellmapi/shared/types.js';
+import { getProvider } from '../providers/index.js';
+import { OpenAICompatProvider } from '../providers/openai-compat.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { classifyPrompt, latestUserText } from '../services/promptClassifier.js';
 import { rescueInlineToolCalls, containsDialectMarker } from '../lib/tool-call-rescue.js';
@@ -120,6 +122,41 @@ function setStickyModel(messages: ChatMessage[], modelDbId: number, explicitSess
 }
 
 // OpenAI-compatible /models endpoint (used by Hermes for metadata)
+// Sampling/generation params forwarded to every OpenAI-compat provider. Kept in
+// sync with buildBody's standard passthrough set (openai-compat.ts). Advertised
+// per-model in /v1/models via supportedParamsFor.
+const BASE_SUPPORTED_PARAMS = [
+  'temperature', 'top_p', 'max_tokens', 'max_completion_tokens',
+  'frequency_penalty', 'presence_penalty', 'seed', 'stop', 'n',
+  'logit_bias', 'logprobs', 'top_logprobs',
+  'tools', 'tool_choice', 'parallel_tool_calls',
+] as const;
+const EXTENDED_SAMPLING_PARAMS = ['top_k', 'min_p', 'repetition_penalty'] as const;
+
+/** The params a given model's provider will actually honor — advisory metadata
+ * for callers; the wire truth is each adapter's body builder. Only the
+ * OpenAI-compat path forwards the full standard passthrough (buildBody); the
+ * custom adapters (Google/Cohere/Cloudflare) forward just the core three, so we
+ * advertise conservatively rather than over-claim. Dialect gates add
+ * response_format / reasoning_effort / vendor sampling; dropParams removes any
+ * the provider is known to reject. */
+function supportedParamsFor(platform: string): string[] {
+  const provider = getProvider(platform as Platform);
+  const d = provider?.dialect ?? {};
+  const params = new Set<string>();
+  if (provider instanceof OpenAICompatProvider) {
+    for (const p of BASE_SUPPORTED_PARAMS) params.add(p);
+    if (d.extendedSampling) for (const p of EXTENDED_SAMPLING_PARAMS) params.add(p);
+  } else {
+    // Custom adapters forward only these on the wire (see google/cohere/cloudflare).
+    for (const p of ['temperature', 'top_p', 'max_tokens']) params.add(p);
+  }
+  if (d.jsonMode) params.add('response_format');
+  if (d.reasoning) params.add('reasoning_effort');
+  for (const p of d.dropParams ?? []) params.delete(p);
+  return Array.from(params);
+}
+
 proxyRouter.get('/models', async (_req: Request, res: Response) => {
   const models = await all<any>(getPool(), 'SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = true ORDER BY intelligence_rank');
   res.json({
@@ -131,6 +168,7 @@ proxyRouter.get('/models', async (_req: Request, res: Response) => {
       owned_by: m.platform,
       name: m.display_name,
       context_window: m.context_window,
+      supported_parameters: supportedParamsFor(m.platform),
     })),
   });
 });
@@ -219,6 +257,26 @@ const chatCompletionSchema = z.object({
   temperature: z.number().min(0).max(2).optional(),
   max_tokens: z.number().int().positive().optional(),
   top_p: z.number().min(0).max(1).optional(),
+  // Sampling passthrough (P2c-iii). Standard OpenAI generation params — forwarded
+  // to every provider (openai-compat drops any a specific provider is known to
+  // reject via dialect.dropParams). Only emitted downstream when the caller sets
+  // them, so the common path is byte-identical to before.
+  frequency_penalty: z.number().min(-2).max(2).optional(),
+  presence_penalty: z.number().min(-2).max(2).optional(),
+  seed: z.number().int().optional(),
+  stop: z.union([z.string(), z.array(z.string())]).optional(),
+  n: z.number().int().positive().optional(),
+  logit_bias: z.record(z.string(), z.number()).optional(),
+  logprobs: z.boolean().optional(),
+  top_logprobs: z.number().int().min(0).max(20).optional(),
+  max_completion_tokens: z.number().int().positive().optional(),
+  // Vendor/non-OpenAI sampling params — only reach providers whose dialect
+  // declares extendedSampling (OpenRouter, Ollama); silently not forwarded to
+  // providers that would 400 on them, so a caller setting these never breaks a
+  // route that doesn't understand them.
+  top_k: z.number().int().positive().optional(),
+  min_p: z.number().min(0).max(1).optional(),
+  repetition_penalty: z.number().positive().optional(),
   stream: z.boolean().optional(),
   tools: z.array(toolDefinitionSchema).optional(),
   tool_choice: toolChoiceSchema.optional(),
@@ -338,7 +396,16 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     model: requestedModel, temperature, max_tokens, top_p, stream, tools, tool_choice, parallel_tool_calls,
     response_format, reasoning_effort, exclude_providers, max_attempts, latency_ceiling_ms, session_id, user,
     needs: declaredNeeds, exclude_reasoning,
+    frequency_penalty, presence_penalty, seed, stop, n, logit_bias, logprobs, top_logprobs,
+    max_completion_tokens, top_k, min_p, repetition_penalty,
   } = parsed.data;
+  // Sampling passthrough forwarded to every routing attempt (P2c-iii). Built once
+  // so both the streaming and non-streaming call sites stay in sync. Undefined
+  // fields are dropped by JSON.stringify / the provider's conditional assign.
+  const sampling = {
+    temperature, max_tokens, top_p, frequency_penalty, presence_penalty, seed, stop, n,
+    logit_bias, logprobs, top_logprobs, max_completion_tokens, top_k, min_p, repetition_penalty,
+  };
   const messages: ChatMessage[] = parsed.data.messages.map((m): ChatMessage => {
     if (m.role === 'assistant') {
       return {
@@ -574,7 +641,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         try {
           const gen = route.provider.streamChatCompletion(
             route.apiKey, outMessages, route.modelId,
-            { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
+            { ...sampling, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
           );
 
           for await (const chunk of gen) {
@@ -630,7 +697,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       } else {
         const result = await route.provider.chatCompletion(
           route.apiKey, outMessages, route.modelId,
-          { temperature, max_tokens, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
+          { ...sampling, tools, tool_choice, parallel_tool_calls, response_format, reasoning_effort, context_length: route.contextLength, exclude_reasoning },
         );
 
         const totalTokens = result.usage?.total_tokens ?? 0;

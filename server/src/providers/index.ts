@@ -86,6 +86,11 @@ register(new OpenAICompatProvider({
     'HTTP-Referer': 'http://localhost:3001',
     'X-Title': 'FreeLLMAPI',
   },
+  // OpenRouter's OpenAI-compat API documents top_k / min_p / repetition_penalty
+  // as accepted sampling params (forwarded per-model to backends that support
+  // them, ignored otherwise), so it's safe to forward the vendor set here. Other
+  // providers stay off until their support is confirmed, not assumed.
+  dialect: { extendedSampling: true },
 }));
 
 // GitHub Models — OpenAI-compatible. Catalog uses `<publisher>/<model>` ids

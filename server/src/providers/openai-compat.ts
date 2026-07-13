@@ -6,6 +6,16 @@ import type {
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, type CompletionOptions, type DialectConfig, type ReasoningDialect, type ContextLengthDialect } from './base.js';
 
+/** Copy only the defined values from `params` onto `body`. Keeps unset sampling
+ * params out of the request entirely (an explicit `undefined` would otherwise be
+ * dropped by JSON.stringify anyway, but omitting keeps the body clean and makes
+ * the dropParams filter and body inspection meaningful). */
+function assignIfDefined(body: Record<string, unknown>, params: Record<string, unknown>): void {
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) body[k] = v;
+  }
+}
+
 function applyReasoningDialect(body: Record<string, unknown>, effort: string, dialect?: ReasoningDialect): void {
   if (!dialect) return; // no known dialect — caller-level capability filtering must have already excluded this model
   if (dialect === 'openai_reasoning_effort') body.reasoning_effort = effort;
@@ -69,6 +79,29 @@ export class OpenAICompatProvider extends BaseProvider {
       parallel_tool_calls: options?.parallel_tool_calls,
     };
     if (stream) body.stream = true;
+    // Standard OpenAI sampling passthrough — each emitted only when the caller
+    // set it, so an unset field is never sent (byte-identical body to before for
+    // callers that don't use these). A provider that rejects a specific one is
+    // handled by dialect.dropParams below.
+    assignIfDefined(body, {
+      frequency_penalty: options?.frequency_penalty,
+      presence_penalty: options?.presence_penalty,
+      seed: options?.seed,
+      stop: options?.stop,
+      n: options?.n,
+      logit_bias: options?.logit_bias,
+      logprobs: options?.logprobs,
+      top_logprobs: options?.top_logprobs,
+      max_completion_tokens: options?.max_completion_tokens,
+    });
+    // Vendor sampling params only for providers documented to accept them.
+    if (this.dialect.extendedSampling) {
+      assignIfDefined(body, {
+        top_k: options?.top_k,
+        min_p: options?.min_p,
+        repetition_penalty: options?.repetition_penalty,
+      });
+    }
     // Dialect-gated: only emitted when this instance declares support. Router-
     // level capability filtering is the actual gate; this is defense in depth.
     if (options?.response_format && this.dialect.jsonMode) {
@@ -80,6 +113,9 @@ export class OpenAICompatProvider extends BaseProvider {
     if (options?.context_length) {
       applyContextLengthDialect(body, options.context_length, this.dialect.contextLength);
     }
+    // Escape hatch (applied LAST): strip any params this provider is known to
+    // reject, so broad passthrough can't turn into a 400 on a strict backend.
+    for (const p of this.dialect.dropParams ?? []) delete body[p];
     return body;
   }
 

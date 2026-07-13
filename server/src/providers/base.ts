@@ -28,6 +28,24 @@ export interface CompletionOptions {
   temperature?: number;
   max_tokens?: number;
   top_p?: number;
+  // Standard OpenAI sampling passthrough (P2c-iii). Each is forwarded only when
+  // the caller set it; a provider adapter may strip any it's known to reject
+  // (DialectConfig.dropParams). Semantics are the OpenAI Chat Completions spec.
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  seed?: number;
+  stop?: string | string[];
+  n?: number;
+  logit_bias?: Record<string, number>;
+  logprobs?: boolean;
+  top_logprobs?: number;
+  max_completion_tokens?: number;
+  // Vendor/non-OpenAI sampling params — forwarded ONLY to providers whose
+  // DialectConfig declares extendedSampling (OpenRouter, Ollama). Any other
+  // provider silently omits them (rather than 400-ing on an unknown field).
+  top_k?: number;
+  min_p?: number;
+  repetition_penalty?: number;
   tools?: ChatToolDefinition[];
   tool_choice?: ChatToolChoice;
   parallel_tool_calls?: boolean;
@@ -77,6 +95,16 @@ export interface DialectConfig {
    * tested infrastructure (openai-compat.test.ts) for a future provider that
    * does support this, not a general-purpose escape hatch. */
   contextLength?: ContextLengthDialect;
+  /** Forward the vendor/non-OpenAI sampling params (top_k, min_p,
+   * repetition_penalty) for this provider. Set only where the platform is
+   * documented to accept them (OpenRouter, Ollama). Default off → those params
+   * are omitted so a strict provider can't 400 on an unknown field. */
+  extendedSampling?: boolean;
+  /** Request-body keys to strip for this provider because it's known to reject
+   * them (e.g. a provider that 400s on `logit_bias` or `logprobs`). Applied last
+   * in buildBody. Default: nothing stripped. This is the escape hatch that keeps
+   * broad sampling passthrough safe without per-provider probing. */
+  dropParams?: string[];
 }
 
 export abstract class BaseProvider {
