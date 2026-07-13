@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
 import { classifyPrompt, latestUserText } from '../services/promptClassifier.js';
+import { rescueInlineToolCalls, containsDialectMarker } from '../lib/tool-call-rescue.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities } from '../services/capabilityObserve.js';
@@ -623,6 +624,34 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         // as source='observed' — the token-free live version of the probes
         // (Adam, 2026-07-10). Fire-and-forget; never blocks the response.
         void observeCapabilities(route.modelDbId, { hadTools: !!(tools && tools.length > 0), hadResponseFormat: !!response_format }, result);
+
+        // Tool-call rescue (ported from upstream lib/tool-call-rescue.ts): if the
+        // caller offered tools but the model emitted the call as TEXT in a training
+        // dialect (Kimi/DeepSeek/Llama/Qwen styles) instead of a structured
+        // tool_calls array, re-parse it into real tool_calls so the caller's agent
+        // loop doesn't mistake it for a final answer and die mid-task. Tightly
+        // guarded: only when tools were requested, the message has NO structured
+        // tool_calls, and the content carries a dialect marker. A detected-but-
+        // unparseable turn is DEAD → fail over to the next model (retryable) rather
+        // than deliver gibberish.
+        if (tools && tools.length > 0) {
+          const msg = result.choices?.[0]?.message as (ChatMessage & { tool_calls?: unknown[] }) | undefined;
+          const content = typeof msg?.content === 'string' ? msg.content : '';
+          if (msg && (!msg.tool_calls || msg.tool_calls.length === 0) && content && containsDialectMarker(content)) {
+            const toolNames = new Set((tools.map(t => t.function?.name).filter(Boolean)) as string[]);
+            const rescue = rescueInlineToolCalls(content, toolNames);
+            if (rescue.detected && rescue.calls && rescue.calls.length > 0) {
+              msg.tool_calls = rescue.calls.map((c, i) => ({ id: `call_rescued_${i}`, type: 'function' as const, function: { name: c.name, arguments: c.arguments } }));
+              msg.content = rescue.cleanText || null;
+              if (result.choices?.[0]) result.choices[0].finish_reason = 'tool_calls';
+            } else if (rescue.detected) {
+              // Detected a tool-call dialect but couldn't parse it → this answer is
+              // unusable; treat the model as unavailable so the retry loop fails
+              // over ("unavailable" is matched by isRetryableError).
+              throw Object.assign(new Error(`inline tool-call dialect unparseable from ${route.modelId} — model output unavailable, failing over`), { status: 502 });
+            }
+          }
+        }
 
         // Stamp the RESOLVED model into the response body (matches X-Routed-Via)
         // so a caller reading result.model gets the real served model as its
