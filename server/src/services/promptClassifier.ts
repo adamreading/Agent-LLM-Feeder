@@ -111,3 +111,83 @@ export function classifyTier0(text: string, ctx: Tier0Ctx = {}): Tier0Result {
   // Nothing distinctive → generic. LOW confidence flags this for optional tier-1.
   return { taskClass: null, confidence: 'low', structuralNeeds, reason: 'no distinctive signal → overall (tier-1 candidate)' };
 }
+
+// ── Tier-1: a tiny LOCAL Ollama classifier for the low-confidence residue ────
+// Gated OFF unless CLASSIFIER_OLLAMA_URL is set (default: disabled → tier-0 only,
+// zero external dependency, zero voice-box contention). When enabled it calls a
+// FIXED small model DIRECTLY over HTTP (never through routeRequest), reasoning
+// OFF, with a TIGHT timeout — any timeout/error/miss falls back to tier-0's
+// result, so it can never block or break a request. Model default llama3.2:3b
+// passed the Phase-1 gate (14/14 acc, ~1.3s cold / ~257ms warm).
+//
+// Shared-Ollama safety (5090 also serves Hermes voice qwen3.5:4b + OB gemma4):
+// keep this model TINY and require OLLAMA_MAX_LOADED_MODELS>=3 on the host before
+// enabling, else a classify could evict the warm voice model. That host env is
+// windows-claude's lane; until it's set + this URL configured, tier-1 stays off.
+const TIER1_URL = process.env.CLASSIFIER_OLLAMA_URL || '';
+const TIER1_MODEL = process.env.CLASSIFIER_MODEL || 'llama3.2:3b';
+// 2500ms default: warm classify is ~140ms; a COLD model load is ~1.9-2s, so this
+// lets a cold first-call usually complete rather than always falling back. Keep
+// the model warm (keep_alive + OLLAMA_MAX_LOADED_MODELS>=3) to make cold rare.
+const TIER1_TIMEOUT_MS = Number(process.env.CLASSIFIER_TIMEOUT_MS) || 2500;
+const TIER1_KEEP_ALIVE = process.env.CLASSIFIER_KEEP_ALIVE || '10m';
+
+export function tier1Enabled(): boolean { return !!TIER1_URL; }
+
+const TIER1_LABELS = ['coding', 'math', 'reasoning', 'creative', 'trivial', 'general'];
+const TIER1_SYS = `You label a user prompt with ONE routing category. Output ONLY the single category word, nothing else.
+Categories: coding, math, reasoning, creative, trivial, general.
+Examples:
+"Write a Python function to reverse a list" -> coding
+"What is the integral of x^2 dx" -> math
+"Prove sqrt(2) is irrational, step by step" -> reasoning
+"Write a short poem about autumn" -> creative
+"hi" -> trivial
+"Summarize the French Revolution" -> general`;
+
+// Returns a task_class string, or null on timeout/error/unmapped (caller keeps
+// its tier-0 result). Never throws.
+export async function classifyTier1(text: string): Promise<string | null> {
+  if (!TIER1_URL || !text.trim()) return null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIER1_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${TIER1_URL.replace(/\/$/, '')}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: TIER1_MODEL,
+        messages: [{ role: 'system', content: TIER1_SYS }, { role: 'user', content: `"${text.slice(0, 2000)}" ->` }],
+        stream: false, think: false, keep_alive: TIER1_KEEP_ALIVE,
+        options: { temperature: 0, num_predict: 4 },
+      }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const body = await res.json() as { message?: { content?: string } };
+    const raw = (body.message?.content || '').toLowerCase();
+    const label = TIER1_LABELS.find((l) => raw.includes(l));
+    // 'trivial'/'general' -> null (router's 'overall'); the rest are real task_classes.
+    if (!label || label === 'trivial' || label === 'general') return null;
+    return label;
+  } catch {
+    return null; // timeout / network / parse — degrade to tier-0
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Full classification: tier-0 always; tier-1 ONLY for the low-confidence residue,
+// and only when enabled AND the caller's latency budget can absorb it. Structural
+// needs always come from tier-0 (deterministic). Never throws.
+export async function classifyPrompt(
+  text: string,
+  ctx: Tier0Ctx & { latencyCeilingMs?: number | null } = {},
+): Promise<Tier0Result & { tier: 0 | 1 }> {
+  const t0 = classifyTier0(text, ctx);
+  const budgetOk = ctx.latencyCeilingMs == null || ctx.latencyCeilingMs >= TIER1_TIMEOUT_MS + 1000;
+  if (t0.confidence !== 'low' || !tier1Enabled() || !budgetOk) return { ...t0, tier: 0 };
+  const t1 = await classifyTier1(text);
+  if (t1) return { taskClass: t1, confidence: 'medium', structuralNeeds: t0.structuralNeeds, reason: `tier-1 (${TIER1_MODEL})`, tier: 1 };
+  return { ...t0, tier: 0 };
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyTier0, latestUserText } from '../../services/promptClassifier.js';
+import { classifyTier0, latestUserText, classifyPrompt, tier1Enabled } from '../../services/promptClassifier.js';
 
 const tc = (text: string, ctx = {}) => classifyTier0(text, ctx).taskClass;
 
@@ -51,6 +51,25 @@ describe('classifyTier0', () => {
   it('image with minimal text → vision need, generic ordering', () => {
     const r = classifyTier0('', { hasImage: true });
     expect(r.structuralNeeds).toContain('vision');
+    expect(r.taskClass).toBeNull();
+  });
+});
+
+describe('classifyPrompt (orchestrator)', () => {
+  it('is tier-0-only when tier-1 disabled (no CLASSIFIER_OLLAMA_URL in test env)', async () => {
+    expect(tier1Enabled()).toBe(false);
+    const r = await classifyPrompt('What is the derivative of x^2?');
+    expect(r.tier).toBe(0);
+    expect(r.taskClass).toBe('math');
+  });
+  it('never invokes tier-1 for a high-confidence prompt', async () => {
+    const r = await classifyPrompt('Write a haiku about the sea');
+    expect(r.tier).toBe(0);
+    expect(r.taskClass).toBe('creative');
+  });
+  it('returns tier-0 null for low-confidence when tier-1 disabled', async () => {
+    const r = await classifyPrompt("What's the capital of France?");
+    expect(r.tier).toBe(0);
     expect(r.taskClass).toBeNull();
   });
 });

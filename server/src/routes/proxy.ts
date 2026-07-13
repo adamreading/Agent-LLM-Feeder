@@ -5,7 +5,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type RouteResult, type CapabilityNeed } from '../services/router.js';
-import { classifyTier0, latestUserText } from '../services/promptClassifier.js';
+import { classifyPrompt, latestUserText } from '../services/promptClassifier.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities } from '../services/capabilityObserve.js';
@@ -428,13 +428,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const isPinned = !!requestedModel && !isAuto;
   let effectiveTaskClass = taskClass;
   if (!taskClass && !isPinned) {
-    const t0 = classifyTier0(latestUserText(messages), {
+    const cls = await classifyPrompt(latestUserText(messages), {
       estimatedTokens: estimatedInputTokens,
       hasImage: false, // multimodal detection lands with the schema change (Phase 2c)
       hasHistory: messages.some(m => m.role === 'assistant'),
+      latencyCeilingMs: latency_ceiling_ms, // tier-1 only fires if the budget absorbs it
     });
-    effectiveTaskClass = t0.taskClass;
-    for (const n of t0.structuralNeeds) if (!needs.includes(n)) needs.push(n);
+    effectiveTaskClass = cls.taskClass;
+    for (const n of cls.structuralNeeds) if (!needs.includes(n)) needs.push(n);
   }
 
   // Explicit `model` field (that isn't the 'auto' sentinel) pins routing. If
