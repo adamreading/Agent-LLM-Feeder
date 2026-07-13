@@ -134,22 +134,33 @@ export function classifyTier0(text: string, ctx: Tier0Ctx = {}): Tier0Result {
 // passed the Phase-1 gate (14/14 acc, ~1.3s cold / ~257ms warm).
 //
 // Shared-Ollama safety: on the 5090 the feeder locally loads ONLY this tiny model
-// (llama3.2:3b, ~2GB). OB has NO standing gemma worker (entity worker retired;
-// Plaud curation is Lunk-primary, gemma not consulted) and Hermes voice
-// (qwen3.5:4b) is meant to run on-demand — so the ONLY model that needs to stay
-// warm for the feeder is this one. VRAM discipline is keep_alive (how long a model
-// stays resident), NOT the load ceiling: keep voice/gemma short-lived and only
-// this classifier warm. OLLAMA_MAX_LOADED_MODELS>=2 on the host is ample headroom
-// so an on-demand voice/gemma load can't evict the warm classifier (and vice
-// versa); it does NOT need to be 3. That host env is windows-claude's lane; until
-// this URL is configured, tier-1 stays off.
+// (llama3.2:3b). OB has NO standing gemma worker (entity worker retired; Plaud
+// curation is Lunk-primary, gemma not consulted) and Hermes voice (qwen3.5:4b)
+// runs on-demand.
+//
+// tier-1 runs ON-DEMAND too (Adam's direct call, 2026-07-13): load for the
+// classify, then drop RIGHT AFTER — no persistent ~11GB footprint sitting on the
+// 5090 between classifies. keep_alive=0 unloads immediately; num_ctx is capped
+// LOW (the classifier only ever sees a short system prompt + a truncated user
+// turn) which shrinks the KV-cache — an uncapped 3B was holding ~11GB, almost all
+// KV. Endpoint is the NATIVE /api/chat, NOT Ollama's OpenAI-compat /v1 (which
+// SILENTLY IGNORES both keep_alive and num_ctx — wsl's hard-won finding), so both
+// take effect. That host Ollama is windows-claude's lane; until CLASSIFIER_OLLAMA_URL
+// is configured, tier-1 stays off.
 const TIER1_URL = process.env.CLASSIFIER_OLLAMA_URL || '';
 const TIER1_MODEL = process.env.CLASSIFIER_MODEL || 'llama3.2:3b';
-// 2500ms default: warm classify is ~140ms; a COLD model load is ~1.9-2s, so this
-// lets a cold first-call usually complete rather than always falling back. Keep
-// the model warm (keep_alive + OLLAMA_MAX_LOADED_MODELS>=2) to make cold rare.
+// 2500ms default: a COLD model load is ~1.9-2.1s and with keep_alive=0 EVERY
+// classify is cold (the accepted trade-off for zero idle VRAM). This ceiling lets
+// a cold classify usually still complete; if it doesn't, we fall back to tier-0.
 const TIER1_TIMEOUT_MS = Number(process.env.CLASSIFIER_TIMEOUT_MS) || 2500;
-const TIER1_KEEP_ALIVE = process.env.CLASSIFIER_KEEP_ALIVE || '10m';
+// '0' = unload immediately after the classify (on-demand, Adam's call). Override
+// with CLASSIFIER_KEEP_ALIVE (e.g. '10s') to trade a little idle VRAM for fewer
+// cold loads on bursty traffic.
+const TIER1_KEEP_ALIVE = process.env.CLASSIFIER_KEEP_ALIVE || '0';
+// Small context cap — the classifier's whole input is a short few-shot system
+// prompt + one truncated user turn, so it never needs a big window. Slashes the
+// KV-cache footprint during the brief load. Honored because we use /api/chat.
+const TIER1_NUM_CTX = Number(process.env.CLASSIFIER_NUM_CTX) || 2048;
 
 export function tier1Enabled(): boolean { return !!TIER1_URL; }
 
@@ -178,7 +189,7 @@ export async function classifyTier1(text: string): Promise<string | null> {
         model: TIER1_MODEL,
         messages: [{ role: 'system', content: TIER1_SYS }, { role: 'user', content: `"${text.slice(0, 2000)}" ->` }],
         stream: false, think: false, keep_alive: TIER1_KEEP_ALIVE,
-        options: { temperature: 0, num_predict: 4 },
+        options: { temperature: 0, num_predict: 4, num_ctx: TIER1_NUM_CTX },
       }),
       signal: ctrl.signal,
     });
