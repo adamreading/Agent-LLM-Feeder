@@ -39,6 +39,11 @@ treat it as production.
 - **Routing:** `services/router.ts` orders by composite score (task_scores dominant);
   `needs[]` is a hard capability filter; `promptClassifier.ts` turns a bare-`auto`
   prompt into a task_class. Vision uses a relaxed declared→try→confirm gate.
+- **Web-search augment** (`services/augment.ts`, Phase 4): opt-in `augment`
+  field/`X-Augment` header (off/auto/force). Default OFF (env-overridable via
+  `FEEDER_AUGMENT_DEFAULT`). Precedence is load-bearing: the `consumer='open-brain'`
+  hard block (OB provenance carve-out) wins over BOTH the field and the env default —
+  evaluated first, unconditional. Degrade-safe.
 - **Endpoints:** OpenAI-compatible proxy at `/v1` (chat/completions, models); MCP
   server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless, read-only) exposing
   `list_usable_models` / `explain_routing` — both wrap `router.explainRouting()`.

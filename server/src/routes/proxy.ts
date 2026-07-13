@@ -10,6 +10,7 @@ import { routeRequest, recordRateLimitHit, recordSuccess, RoutingError, type Rou
 import { classifyPrompt, latestUserText, hasImageContent } from '../services/promptClassifier.js';
 import { rescueInlineToolCalls, containsDialectMarker } from '../lib/tool-call-rescue.js';
 import { getContextHandoffMode, recordIncomingMessages, recordSuccessfulModel, maybeInjectContextHandoff, hasPriorModel, HANDOFF_MAX_TOKENS } from '../services/context-handoff.js';
+import { parseAugmentPolicy, augmentDefault, shouldAugment, runWebAugment, isAugmentBlockedConsumer } from '../services/augment.js';
 import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../services/ratelimit.js';
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
@@ -328,6 +329,11 @@ const chatCompletionSchema = z.object({
   // A caller self-labels here (or via the X-Consumer header) — telemetry only,
   // NOT a trust signal (the key/tier still decides trust). Sanitised + capped.
   consumer: z.string().max(64).optional(),
+  // Phase 4 web-search augment policy (or X-Augment header). 'off' (DEFAULT) =
+  // never augmented — the provenance carve-out, so grounded callers that don't
+  // opt in are never web-contaminated. 'auto' = feeder searches when the prompt
+  // needs current info; 'force' = always search. Anything else → 'off'.
+  augment: z.enum(['off', 'auto', 'force']).optional(),
   // Opt-in reasoning suppression (2026-07-08) — see CompletionOptions in
   // providers/base.ts. Generic; any caller sets it, feeder never imposes it.
   exclude_reasoning: z.boolean().optional(),
@@ -490,6 +496,33 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       ...(m.name ? { name: m.name } : {}),
     };
   });
+
+  // Phase 4 web-search augment (OPT-IN; default 'off' = the provenance carve-out).
+  // Runs only when the caller opted in (augment 'auto'/'force', body or X-Augment
+  // header), the consumer is NOT hard-blocked (OB 'open-brain' can never be
+  // augmented regardless of the field — P4b), and the prompt warrants it. Injects
+  // live search results as a LABELLED system grounding message before routing.
+  // Placed before the token estimate so the injected context is counted. Fully
+  // degrade-safe: any no-config/timeout/error leaves the request unaugmented.
+  let augmented = false;
+  // Precedence (OB P4b, windows' load-bearing point): the consumer hard-block wins
+  // over EVERYTHING and is evaluated FIRST — so flipping FEEDER_AUGMENT_DEFAULT to
+  // 'auto' someday can never re-open augmentation for a blocked grounded consumer.
+  //   1. consumer blocked  -> always 'off' (no path overrides)
+  //   2. else explicit per-request field (X-Augment header or body)
+  //   3. else the env-driven global default (FEEDER_AUGMENT_DEFAULT, default 'off')
+  const rawAugment = req.header('x-augment') ?? parsed.data.augment;
+  const augmentPolicy = isAugmentBlockedConsumer(consumer)
+    ? 'off'
+    : (rawAugment != null ? parseAugmentPolicy(rawAugment) : augmentDefault());
+  if (augmentPolicy !== 'off' && shouldAugment(augmentPolicy, latestUserText(messages))) {
+    const ctx = await runWebAugment(latestUserText(messages));
+    if (ctx) {
+      messages.unshift({ role: 'system', content: ctx });
+      augmented = true;
+      console.log(`[Augment] injected web-search context (policy=${augmentPolicy}, consumer=${consumer})`);
+    }
+  }
 
   // Token estimation is intentionally a heuristic (~4 chars per token). Used
   // for routing decisions (skip a model whose budget is too small) and for
@@ -719,6 +752,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
               res.setHeader('Connection', 'keep-alive');
               res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
               res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
+              if (augmented) res.setHeader('X-Augmented', 'web-search');
               if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
               streamStarted = true;
             }
@@ -821,6 +855,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         result._task_class = effectiveTaskClass ?? null;
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
+        if (augmented) res.setHeader('X-Augmented', 'web-search');
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
         res.json(result);
 

@@ -121,7 +121,7 @@ curl http://localhost:3001/v1/chat/completions \
 - **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
   - A **bare `"auto"`** request is classified from the prompt (coding / math / reasoning / creative / trivial) so routing engages the right per-task quality scores. An explicit `"auto/<class>"` is honoured verbatim and skips classification.
 - **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
-- **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified.
+- **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified. When web-search grounding was injected, `X-Augmented: web-search` is set.
 
 ### Sampling / generation params
 
@@ -155,6 +155,13 @@ All optional; omit for sensible defaults.
 | `max_attempts: number` | Cap failover hops (≤20). |
 | `session_id` / `user` | Sticky routing — keep one conversation on one model across turns. |
 | `consumer: string` (or `X-Consumer` header) | Attribution label for the request log (e.g. `"hermes"`, `"lunk"`). Fleet agents share one key, so without this they all log as `fleet`; self-labelling makes traffic attributable. Header wins over the body field. Telemetry only — not a trust signal. |
+| `augment: "off" \| "auto" \| "force"` (or `X-Augment` header) | Web-search grounding. `off` (**default**) never augments. `auto` runs a search + injects results when the prompt needs current info; `force` always searches. See below. |
+
+### Web-search augment (opt-in)
+
+When a caller opts in with `augment: "auto"` (or `"force"`), the feeder runs the Onboarding-configured search backend (Tavily/DDG/Ollama) and injects the results as a labelled grounding message before routing — so a bare-`auto` question about current events gets a fresh, sourced answer without the caller wiring its own search tool. `"auto"` only searches when the prompt shows a recency/lookup signal; `"force"` always searches. The response carries `X-Augmented: web-search` when results were injected.
+
+**Provenance carve-out.** The default is `"off"` — a request is **never** augmented unless it opts in, so grounded/closed-world callers are never silently web-contaminated. As defence-in-depth, requests labelled `consumer: "open-brain"` are **hard-blocked** from augmentation regardless of the field (extend the blocklist with `AUGMENT_BLOCKED_CONSUMERS`). Augmentation is fully degrade-safe: any missing config / timeout / error just proceeds unaugmented, never blocking the request.
 
 ### MCP (Model Context Protocol)
 
