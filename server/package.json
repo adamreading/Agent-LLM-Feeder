@@ -9,7 +9,9 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "research": "tsx src/scripts/run-model-research.ts"
+    "research": "tsx src/scripts/run-model-research.ts",
+    "seed:wiki:export": "tsx src/scripts/export-wiki-seed.ts",
+    "seed:wiki:import": "tsx src/scripts/import-wiki-seed.ts"
   },
   "dependencies": {
     "@freellmapi/shared": "*",
