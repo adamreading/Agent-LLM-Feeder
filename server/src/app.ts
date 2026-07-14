@@ -14,6 +14,7 @@ import { agentRouter } from './routes/agent.js';
 import { capabilitiesRouter } from './routes/capabilities.js';
 import { canonRouter } from './routes/canon.js';
 import { modelPerfRouter } from './routes/modelPerf.js';
+import { swarmRouter } from './routes/swarm.js';
 import { mcpRouter } from './routes/mcp.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -47,6 +48,7 @@ export function createApp() {
   app.use('/api/capabilities', capabilitiesRouter);
   app.use('/api/canon', canonRouter);
   app.use('/api/model-perf', modelPerfRouter);
+  app.use('/api/swarm', swarmRouter);
 
   // OpenAI-compatible proxy
   app.use('/v1', proxyRouter);

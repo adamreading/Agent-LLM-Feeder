@@ -172,6 +172,10 @@ Fleet agents can query the feeder's **live routing state as MCP tools** instead 
 
 Both wrap the same `explainRouting()` the wiki/analytics use, so a tool result is exactly what the router would do.
 
+### Swarm capacity
+
+`GET /api/swarm/capacity?class=<wire_class>` → `{ sessions, class, task_type }` (read-only). `sessions` is the number of **distinct provider lanes** that can serve a chat request right now — a lane being a platform with ≥1 enabled chat model that has a healthy key and is not quota-parked/cooling. A parallel task-runner (e.g. RINGER) that pins at most one worker per platform sets `--max-parallel = min(desired, sessions)` and re-queries per round; as providers quota-park the number shrinks, which is the swarm's backpressure signal. `class` is ordering-only in the router (never a hard filter), so the count is class-independent today — the param is accepted for a stable call shape and echoed back with its mapped arena `task_type`.
+
 ### Typed errors
 
 - `422 NO_ELIGIBLE_MODEL` — nothing in the catalogue satisfies the request (capability / cost / context / latency), or no key is configured for one that does. The caller should fall back to its own local/pinned option.
