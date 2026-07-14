@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { getPool } from '../db/index.js';
-import { get } from '../db/pgCompat.js';
+import { all } from '../db/pgCompat.js';
 import { taskTypeFor } from '../services/router.js';
+import { heldPlatforms } from '../services/swarmLanes.js';
 
 // Swarm-allocation support for parallel task-runners (RINGER). Read-only.
 export const swarmRouter = Router();
@@ -22,15 +23,17 @@ export const swarmRouter = Router();
 // so eligibility — hence this count — is class-independent. The `class` param
 // is accepted for a stable call shape + future quality-aware refinement, and is
 // echoed back with its mapped arena task_type. v1 returns TOTAL healthy lanes;
-// once swarm anti-affinity tracks active sibling sessions this will subtract
-// lanes currently held by a sibling (FREE lanes) so overlapping runs can't
-// over-subscribe. At launch (no active sessions) TOTAL == FREE.
+// subtracts lanes currently held by an active sibling swarm session, so
+// `sessions` is FREE lanes and overlapping runs can't over-subscribe. At launch
+// (no active sessions) FREE == TOTAL.
 swarmRouter.get('/capacity', async (req: Request, res: Response) => {
   const wireClass = typeof req.query.class === 'string' ? req.query.class : null;
   const taskType = taskTypeFor(wireClass);
 
-  const row = await get<{ n: string }>(getPool(), `
-    SELECT count(DISTINCT m.platform) AS n
+  // Distinct platforms with >=1 enabled chat model that has a healthy key and
+  // is not quota-parked/cooling right now.
+  const rows = await all<{ platform: string }>(getPool(), `
+    SELECT DISTINCT m.platform
     FROM models m
     WHERE m.enabled = true AND m.kind = 'chat'
       AND EXISTS (
@@ -45,5 +48,9 @@ swarmRouter.get('/capacity', async (req: Request, res: Response) => {
       )
   `, []);
 
-  res.json({ sessions: row ? Number(row.n) : 0, class: wireClass, task_type: taskType });
+  // FREE lanes = healthy lanes minus those held by an active sibling session.
+  const held = heldPlatforms();
+  const free = rows.filter(r => !held.has(r.platform)).length;
+
+  res.json({ sessions: free, class: wireClass, task_type: taskType });
 });

@@ -16,6 +16,7 @@ import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { benchUnreachableModel, setQuotaExhausted } from '../services/modelHealth.js';
+import { isSwarmConsumer, hasLane, heldPlatformsExcluding, recordLane, withAssignLock } from '../services/swarmLanes.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -717,6 +718,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   const maxRetries = max_attempts ?? DEFAULT_MAX_RETRIES;
   const excludeProviderSet = exclude_providers && exclude_providers.length > 0 ? new Set(exclude_providers) : undefined;
+
+  // Swarm anti-affinity: for a swarm-consumer request that carries a session id,
+  // spread this worker onto a platform NOT held by a sibling worker, and hold it
+  // for the job. A first-call (session not yet holding a lane) reserves under a
+  // lock so simultaneous siblings can't race onto the same provider; later calls
+  // / failover just refresh the lane. Non-swarm traffic is untouched.
+  const swarmSessionKey = isSwarmConsumer(consumer) && explicitSessionId ? `session:${explicitSessionId}` : null;
+  const isFirstSwarmCall = swarmSessionKey != null && !hasLane(swarmSessionKey);
   // L4 inner gate: external callers are hard-clamped to free tier regardless
   // of anything else in the request. Fleet callers have no ceiling today
   // (no paid models exist in the catalog yet — this is the enforcement
@@ -737,16 +746,30 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     const attemptStart = performance.now();
     let route: RouteResult;
     try {
-      route = await routeRequest({
+      // Compute the sibling-held platform set at CALL time (inside the lock for
+      // a first-call) so it reflects the latest assignments.
+      const routeOnce = () => routeRequest({
         estimatedTokens: routingEstimate,
         skipKeys: skipKeys.size > 0 ? skipKeys : undefined,
         preferredModelDbId: preferredModel,
         excludeProviders: excludeProviderSet,
+        swarmExcludeProviders: swarmSessionKey ? heldPlatformsExcluding(swarmSessionKey, consumer) : undefined,
         needs: needs.length > 0 ? needs : undefined,
         costTierCeiling,
         latencyCeilingMs: latency_ceiling_ms,
         taskClass: effectiveTaskClass,
       });
+      if (swarmSessionKey && attempt === 0 && isFirstSwarmCall) {
+        // First call of a swarm session: reserve platform atomically.
+        route = await withAssignLock(async () => {
+          const r = await routeOnce();
+          recordLane(swarmSessionKey, consumer, r.platform);
+          return r;
+        });
+      } else {
+        route = await routeOnce();
+        if (swarmSessionKey) recordLane(swarmSessionKey, consumer, route.platform);
+      }
     } catch (err: any) {
       if (err instanceof RoutingError) {
         res.status(err.status).json({

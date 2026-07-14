@@ -78,6 +78,12 @@ export interface RouteOptions {
   preferredModelDbId?: number;
   /** L8: never route to these platforms (e.g. the one that just failed) */
   excludeProviders?: Set<string>;
+  /** platforms TRANSIENTLY occupied by a sibling swarm session (hard provider
+   *  anti-affinity). Skipped like a cooldown — applied AFTER structural
+   *  eligibility, so an all-occupied pool surfaces as ALL_RATE_LIMITED (429,
+   *  retry next round), NOT NO_ELIGIBLE_MODEL (422). Distinct from
+   *  excludeProviders, which is a hard structural exclusion (422). */
+  swarmExcludeProviders?: Set<string>;
   /** capabilities this request needs; candidates whose provider can't honor them are excluded */
   needs?: CapabilityNeed[];
   /** two-gate INNER enforcement: caps the cost tier this call may reach, independent of caller trust */
@@ -464,6 +470,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     skipKeys,
     preferredModelDbId,
     excludeProviders,
+    swarmExcludeProviders,
     needs,
     costTierCeiling,
     latencyCeilingMs,
@@ -742,6 +749,15 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // every ~90s all day. Like the cooldown, this is transient (surfaces as
     // ALL_RATE_LIMITED, not NO_ELIGIBLE_MODEL) so the pool recovers on reset.
     if (health?.quota_exhausted_until && new Date(health.quota_exhausted_until).getTime() > Date.now()) continue;
+
+    // Swarm anti-affinity: this platform is currently held by a sibling swarm
+    // session (a concurrent worker of the same run). Skip it so parallel
+    // workers spread across distinct providers instead of converging on the
+    // top-ranked one and rate-limiting it. Transient (a lane frees when the
+    // sibling finishes/goes idle), so — like cooldown/quota above — it's after
+    // anyStructurallyEligible: an all-occupied pool is ALL_RATE_LIMITED (the
+    // caller holds the worker + re-queries capacity), never NO_ELIGIBLE_MODEL.
+    if (swarmExcludeProviders?.has(model.platform)) continue;
 
     // Get limits once for this model
     const limits = {
