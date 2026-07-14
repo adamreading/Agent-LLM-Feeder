@@ -1,14 +1,17 @@
 import fs from 'fs/promises';
+import { createReadStream, createWriteStream } from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
+import PDFDocument from 'pdfkit';
 import type { ChatMessage } from '@freellmapi/shared/types.js';
 import { routeRequest, recordSuccess } from '../services/router.js';
+import { recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
-import { get } from '../db/pgCompat.js';
+import { get, run } from '../db/pgCompat.js';
 
 export const agentRouter = Router();
 
@@ -230,6 +233,147 @@ agentRouter.post('/read', async (req: Request, res: Response) => {
   if (!parsed.success) { res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } }); return; }
   const files = await Promise.all(parsed.data.paths.map(readOne));
   res.json({ files });
+});
+
+// ─── Output files ────────────────────────────────────────────────────────────
+// The agent can save a response to a file in a FIXED repo-local dir (<repo>/tmp,
+// gitignored), which the UI then lists and downloads. Kept inside the repo (not
+// the OS /tmp) so outputs are predictable, self-contained, and easy to clear.
+const OUTPUT_DIR = path.join(DEFAULT_ROOT, 'tmp');
+const OUTPUT_MIME: Record<string, string> = { md: 'text/markdown', txt: 'text/plain', pdf: 'application/pdf' };
+
+function safeOutputName(name: string, format: string): string {
+  const stem = (name || 'agent-output')
+    .replace(/\.[^.]*$/, '')                 // drop any extension the user typed
+    .replace(/[^\w.\- ]/g, '_').replace(/\s+/g, '-')
+    .slice(0, 80) || 'agent-output';
+  return `${stem}.${format}`;
+}
+
+// Plain-text PDF (pdfkit auto-wraps + paginates). Markdown source is written
+// verbatim — the .md format preserves structure; the PDF is a readable dump.
+function writePdf(abs: string, content: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 54, size: 'A4' });
+    const stream = createWriteStream(abs);
+    doc.pipe(stream);
+    doc.font('Courier').fontSize(10).text(content, { align: 'left' });
+    doc.end();
+    stream.on('finish', () => resolve());
+    stream.on('error', reject);
+    doc.on('error', reject);
+  });
+}
+
+const outputSchema = z.object({
+  filename: z.string().max(120).optional(),
+  format: z.enum(['md', 'txt', 'pdf']),
+  content: z.string().min(1).max(500_000),
+});
+
+agentRouter.post('/output', async (req: Request, res: Response) => {
+  const parsed = outputSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } }); return; }
+  const { filename, format, content } = parsed.data;
+  try {
+    await fs.mkdir(OUTPUT_DIR, { recursive: true });
+    const name = safeOutputName(filename ?? '', format);
+    const abs = path.join(OUTPUT_DIR, name);
+    if (format === 'pdf') await writePdf(abs, content);
+    else await fs.writeFile(abs, content, 'utf8');
+    const st = await fs.stat(abs);
+    res.json({ name, size: st.size, path: abs });
+  } catch (e: any) {
+    res.status(500).json({ error: { message: e.message ?? 'write failed' } });
+  }
+});
+
+agentRouter.get('/outputs', async (_req: Request, res: Response) => {
+  try {
+    await fs.mkdir(OUTPUT_DIR, { recursive: true });
+    const names = await fs.readdir(OUTPUT_DIR);
+    const files: { name: string; size: number; mtime: number }[] = [];
+    for (const n of names) {
+      const st = await fs.stat(path.join(OUTPUT_DIR, n)).catch(() => null);
+      if (st?.isFile()) files.push({ name: n, size: st.size, mtime: st.mtimeMs });
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    res.json({ files, dir: OUTPUT_DIR });
+  } catch (e: any) {
+    res.status(500).json({ error: { message: e.message } });
+  }
+});
+
+// Serve a file's bytes as an attachment. The UI fetches this WITH the auth
+// header, turns it into a blob, and triggers the browser download — so the
+// download inherits the same gate as everything else under /api/agent.
+agentRouter.get('/output/:name', async (req: Request, res: Response) => {
+  const name = path.basename(String(req.params.name)); // strip any path — confine to OUTPUT_DIR
+  const abs = path.join(OUTPUT_DIR, name);
+  if (path.dirname(abs) !== OUTPUT_DIR) { res.status(400).json({ error: { message: 'invalid name' } }); return; }
+  try {
+    const st = await fs.stat(abs);
+    if (!st.isFile()) throw Object.assign(new Error('not a file'), { code: 'ENOENT' });
+    res.setHeader('Content-Type', OUTPUT_MIME[path.extname(name).slice(1)] ?? 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    createReadStream(abs).pipe(res);
+  } catch {
+    res.status(404).json({ error: { message: 'not found' } });
+  }
+});
+
+agentRouter.delete('/output/:name', async (req: Request, res: Response) => {
+  const name = path.basename(String(req.params.name));
+  const abs = path.join(OUTPUT_DIR, name);
+  if (path.dirname(abs) !== OUTPUT_DIR) { res.status(400).json({ error: { message: 'invalid name' } }); return; }
+  await fs.unlink(abs).catch(() => {});
+  res.json({ ok: true });
+});
+
+// ─── Response feedback (thumbs up/down) ──────────────────────────────────────
+// Content-free rating of a served response. Repeated DOWN votes on an image
+// response demote the model's vision capability (observed=false) once they hit a
+// threshold — a human signal feeding the same path a genuine provider image
+// rejection uses (capabilityObserve.recordVisionUnsupported). Recovery is
+// automatic: a later genuine successful image completion re-observes vision=true.
+const feedbackSchema = z.object({
+  rating: z.enum(['up', 'down']),
+  platform: z.string().max(80).optional(),
+  modelId: z.string().max(200).optional(),
+  taskClass: z.string().max(40).nullable().optional(),
+  hadImage: z.boolean().optional(),
+  consumer: z.string().max(64).optional(),
+});
+
+agentRouter.post('/feedback', async (req: Request, res: Response) => {
+  const parsed = feedbackSchema.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', ') } }); return; }
+  const { rating, platform, modelId, taskClass = null, hadImage = false, consumer = 'agent-ui' } = parsed.data;
+  try {
+    let modelDbId: number | null = null;
+    if (platform && modelId) {
+      const row = await get<{ id: number }>(getPool(), 'SELECT id FROM models WHERE platform = ? AND model_id = ?', [platform, modelId]);
+      modelDbId = row?.id ?? null;
+    }
+    await run(getPool(),
+      'INSERT INTO response_feedback (model_db_id, platform, model_id, task_class, had_image, rating, consumer) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [modelDbId, platform ?? null, modelId ?? null, taskClass, hadImage, rating, consumer]);
+
+    let visionDemoted = false;
+    if (rating === 'down' && hadImage && modelDbId) {
+      const threshold = parseInt(process.env.FEEDBACK_VISION_DEMOTE_THRESHOLD || '3', 10);
+      const cnt = await get<{ n: string }>(getPool(),
+        "SELECT count(*) AS n FROM response_feedback WHERE model_db_id = ? AND had_image = true AND rating = 'down'", [modelDbId]);
+      const downs = parseInt(cnt?.n ?? '0', 10);
+      if (downs >= threshold) {
+        await recordVisionUnsupported(modelDbId, `${downs} user vision thumbs-down (UI feedback)`);
+        visionDemoted = true;
+      }
+    }
+    res.json({ ok: true, modelDbId, visionDemoted });
+  } catch (e: any) {
+    res.status(500).json({ error: { message: e.message ?? 'feedback failed' } });
+  }
 });
 
 // Legacy server-side chat (kept for API back-compat). The Agent UI now routes

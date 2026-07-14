@@ -241,6 +241,24 @@ export const requests = pgTable('requests', {
   classifyReason: text('classify_reason'),
 });
 
+// Human thumbs-up/down on a served response (Agent/Chatbot UI, 2026-07-14).
+// Content-free like `requests` — no prompt/response text, just which model was
+// rated and the context (task_class, whether an image was attached). Repeated
+// down-votes on an image response drive the vision-capability demote (see
+// routes/feedback.ts) — a human signal feeding the same observed=false path a
+// genuine provider rejection uses.
+export const responseFeedback = pgTable('response_feedback', {
+  id: serial('id').primaryKey(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  modelDbId: integer('model_db_id'),          // resolved from platform+model_id; null if unmatched
+  platform: text('platform'),
+  modelId: text('model_id'),
+  taskClass: text('task_class'),
+  hadImage: boolean('had_image').notNull().default(false),
+  rating: text('rating').notNull(),           // 'up' | 'down'
+  consumer: text('consumer'),                 // e.g. 'agent-ui', 'chatbot-ui'
+});
+
 export const fallbackConfig = pgTable(
   'fallback_config',
   {

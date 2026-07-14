@@ -19,7 +19,10 @@ interface FallbackEntry { modelDbId: number; platform: string; modelId: string; 
 interface SearchConfig { backend: string; keyed: string[]; keys: Record<string, { set: boolean; masked: string | null }> }
 interface SelectedFile { path: string; name: string; kind: 'image' | 'text' }
 interface ReplyMeta { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
-interface Reply { content: string; meta?: ReplyMeta; skipped?: string[] }
+interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean }
+interface OutputFile { name: string; size: number; mtime: number }
+
+const fmtBytes = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
 
 const panel: React.CSSProperties = { border: '1px solid var(--line)', background: 'var(--panel)', padding: 16 }
 const WEBSEARCH_PREF_KEY = 'llm-agent:websearch'
@@ -37,6 +40,11 @@ export default function AgentPage() {
   const [reply, setReply] = useState<Reply | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<'up' | 'down' | null>(null)
+  const [feedbackNote, setFeedbackNote] = useState<string | null>(null)
+  const [saveName, setSaveName] = useState('')
+  const [saveFormat, setSaveFormat] = useState<'md' | 'txt' | 'pdf'>('md')
+  const [saveMsg, setSaveMsg] = useState<string | null>(null)
 
   const { data: keyData } = useQuery<{ apiKey: string }>({ queryKey: ['unified-key'], queryFn: () => apiFetch('/api/settings/api-key') })
   const { data: status } = useQuery<AgentStatus>({ queryKey: ['agent', 'status'], queryFn: () => apiFetch('/api/agent/status') })
@@ -61,6 +69,10 @@ export default function AgentPage() {
     queryFn: () => apiFetch(`/api/agent/files?root=${encodeURIComponent(cwd)}&q=${encodeURIComponent(search)}`, { headers: authHeaders }),
     enabled: !!cwd && search.trim().length > 0,
   })
+  const { data: outputs, refetch: refetchOutputs } = useQuery<{ files: OutputFile[] }>({
+    queryKey: ['agent', 'outputs', !!apiKey],
+    queryFn: () => apiFetch('/api/agent/outputs', { headers: authHeaders }),
+  })
 
   const selectedSet = useMemo(() => new Set(selected.map(s => s.path)), [selected])
   const imageCount = selected.filter(s => s.kind === 'image').length
@@ -79,10 +91,51 @@ export default function AgentPage() {
     ? (searchData?.files ?? []).map(p => ({ name: basename(p), path: p, type: 'file', kind: deriveKind(p), blocked: false, hidden: basename(p).startsWith('.') }))
     : (browse?.entries ?? [])
 
+  const sendFeedback = async (rating: 'up' | 'down') => {
+    if (!reply?.meta) return
+    setFeedback(rating); setFeedbackNote(null)
+    try {
+      const r = await fetch(`${base}/api/agent/feedback`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ rating, platform: reply.meta.platform, modelId: reply.meta.model, taskClass: reply.meta.taskClass ?? null, hadImage: !!reply.hadImage, consumer: 'agent-ui' }),
+      })
+      if (r.ok) { const d = await r.json(); if (d.visionDemoted) setFeedbackNote(`⚠ vision capability demoted for ${reply.meta.model} — router will stop sending it images`) }
+    } catch { /* feedback is best-effort */ }
+  }
+
+  const saveOutput = async () => {
+    if (!reply?.content) return
+    setSaveMsg(null)
+    try {
+      const r = await fetch(`${base}/api/agent/output`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ filename: saveName.trim() || undefined, format: saveFormat, content: reply.content }),
+      })
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message ?? `save failed (HTTP ${r.status})`)
+      const d = await r.json()
+      setSaveMsg(`✓ saved ${d.name} (${fmtBytes(d.size)})`)
+      refetchOutputs()
+    } catch (e: any) { setSaveMsg(e.message) }
+  }
+
+  const downloadOutput = async (name: string) => {
+    const r = await fetch(`${base}/api/agent/output/${encodeURIComponent(name)}`, { headers: authHeaders })
+    if (!r.ok) return
+    const blob = await r.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a'); a.href = url; a.download = name
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
+  }
+
+  const deleteOutput = async (name: string) => {
+    await fetch(`${base}/api/agent/output/${encodeURIComponent(name)}`, { method: 'DELETE', headers: authHeaders })
+    refetchOutputs()
+  }
+
   const runAgent = async () => {
     const text = message.trim()
     if (!text || loading) return
-    setLoading(true); setError(null); setReply(null)
+    setLoading(true); setError(null); setReply(null); setFeedback(null); setFeedbackNote(null); setSaveMsg(null)
     try {
       // 1. Pull file contents (text) / base64 (image) from the host.
       let files: ReadFile[] = []
@@ -129,6 +182,7 @@ export default function AgentPage() {
           augmented: res.headers.get('X-Augmented') === 'web-search' || undefined,
         },
         skipped: skipped.length ? skipped : undefined,
+        hadImage: imageFiles.length > 0,
       })
     } catch (err: any) {
       setError(err.message ?? 'Agent request failed')
@@ -264,7 +318,52 @@ export default function AgentPage() {
             </div>
             {reply?.skipped && <p style={{ margin: '0 0 10px', ...mono, fontSize: 10, color: 'var(--warn)' }}>▸ skipped: {reply.skipped.join(' · ')}</p>}
             {reply ? <ChatMarkdown content={reply.content} /> : <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ awaiting task</p>}
+
+            {reply?.meta && (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+                {/* Thumbs up / down */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  <button onClick={() => sendFeedback('up')} title="Good response" className="cy-hover-acc"
+                    style={{ all: 'unset', cursor: 'pointer', fontSize: 15, padding: '3px 8px', border: `1px solid ${feedback === 'up' ? 'var(--good)' : 'var(--line)'}`, color: feedback === 'up' ? 'var(--good)' : 'var(--dim)' }}>▲</button>
+                  <button onClick={() => sendFeedback('down')} title="Bad response (repeated image down-votes demote the model's vision)" className="cy-hover-acc"
+                    style={{ all: 'unset', cursor: 'pointer', fontSize: 15, padding: '3px 8px', border: `1px solid ${feedback === 'down' ? 'var(--bad)' : 'var(--line)'}`, color: feedback === 'down' ? 'var(--bad)' : 'var(--dim)' }}>▼</button>
+                  {feedback && <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>logged</span>}
+                </div>
+                {/* Save to file */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>
+                  <input value={saveName} onChange={e => setSaveName(e.target.value)} placeholder="filename" className="cy-input cy-mono"
+                    style={{ background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 11, padding: '6px 8px', width: 130 }} />
+                  <select value={saveFormat} onChange={e => setSaveFormat(e.target.value as 'md' | 'txt' | 'pdf')} className="cy-input cy-mono"
+                    style={{ background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 11, padding: '6px 8px' }}>
+                    <option value="md">.md</option><option value="txt">.txt</option><option value="pdf">.pdf</option>
+                  </select>
+                  <button onClick={saveOutput} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--acc)', color: 'var(--acc)', padding: '6px 10px' }}>SAVE</button>
+                </div>
+                {feedbackNote && <p style={{ margin: 0, flexBasis: '100%', ...mono, fontSize: 10, color: 'var(--warn)' }}>{feedbackNote}</p>}
+                {saveMsg && <p style={{ margin: 0, flexBasis: '100%', ...mono, fontSize: 10, color: saveMsg.startsWith('✓') ? 'var(--good)' : 'var(--bad)' }}>{saveMsg}</p>}
+              </div>
+            )}
           </div>
+
+          {(outputs?.files.length ?? 0) > 0 && (
+            <div style={panel}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                <h2 style={{ margin: 0, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>OUTPUT FILES</h2>
+                <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{outputs!.files.length} · repo /tmp</span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                {outputs!.files.map(f => (
+                  <div key={f.name} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', ...mono, fontSize: 11.5, border: '1px solid transparent' }}>
+                    <span style={{ color: 'var(--acc2)' }}>▸</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                    <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--dim)' }}>{fmtBytes(f.size)}</span>
+                    <button onClick={() => downloadOutput(f.name)} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', fontSize: 10, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--acc)', color: 'var(--acc)', padding: '4px 8px' }}>↓ DOWNLOAD</button>
+                    <button onClick={() => deleteOutput(f.name)} title="Delete" style={{ all: 'unset', cursor: 'pointer', fontSize: 12, color: 'var(--bad)', padding: '0 4px' }}>✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </main>

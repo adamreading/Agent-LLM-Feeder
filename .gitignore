@@ -18,3 +18,6 @@ update-hermes.sh
 # Runtime server log (created by the detached launch; never track it)
 server/server.log
 *.log
+
+# Agent UI output files (generated .md/.txt/.pdf, downloadable via the Agent tab)
+tmp/

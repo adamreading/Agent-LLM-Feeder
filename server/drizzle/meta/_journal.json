@@ -78,6 +78,13 @@
       "when": 1784009523892,
       "tag": "0010_narrow_norrin_radd",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784020393913,
+      "tag": "0011_sudden_warlock",
+      "breakpoints": true
     }
   ]
 }
