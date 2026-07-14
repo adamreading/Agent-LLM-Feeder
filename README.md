@@ -180,6 +180,8 @@ A parallel task-runner (e.g. RINGER) fans out N workers through `/v1`. Two piece
 
 **`GET /api/swarm/capacity?class=<wire_class>`** → `{ sessions, class, task_type }` (read-only). `sessions` = **free** distinct provider lanes right now — platforms with ≥1 enabled chat model that has a healthy key, is not quota-parked/cooling, **and** is not already held by an active swarm session. A runner sets `--max-parallel = min(desired, sessions)` and re-queries per round; the number shrinks as providers quota-park or siblings take lanes, which is the swarm's backpressure signal. `class` is ordering-only in the router (never a hard filter), so the count is class-independent — the param is accepted for a stable call shape and echoed back with its mapped arena `task_type`.
 
+**`GET /api/requests?consumer=&session_id=&since=&limit=`** → per-request telemetry (read-only): the served model (`served_model` = `platform/model_id`), status, `task_class`, latency, tokens, and error for each row, most-recent window in chronological order. Lets a runner surface the *actual* model feeder served each worker (incl. failovers) when its own client can't see the response model. All filters optional; `since` is ISO-8601, `limit` caps at 1000 (default 200).
+
 ### Typed errors
 
 - `422 NO_ELIGIBLE_MODEL` — nothing in the catalogue satisfies the request (capability / cost / context / latency), or no key is configured for one that does. The caller should fall back to its own local/pinned option.
