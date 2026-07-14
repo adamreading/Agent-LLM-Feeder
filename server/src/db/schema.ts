@@ -34,9 +34,12 @@ export const models = pgTable(
     // WHY this row is disabled when enabled=false, so multiple independent
     // auto-disable mechanisms never fight (the migration-DELETE/INSERT-war
     // failure class, L12). null = not disabled by a tracked mechanism.
-    //   'no_key'    — platformKeyWatch: platform had zero usable keys 10+ min
-    //   'unhealthy' — modelHealth: sustained 429s / provider failure
-    //   'manual'    — a human turned this specific model off in the UI
+    //   'no_key'      — platformKeyWatch: platform had zero usable keys 10+ min
+    //   'unhealthy'   — modelHealth: sustained run of 429s / timeouts
+    //   'low_success' — modelHealth: low aggregate success rate over the window
+    //                   (intermittent / non-429 failures) — daily-revived
+    //   'unreachable' — proxy: a live 403/404/model-not-found (key can't serve it)
+    //   'manual'      — a human turned this specific model off in the UI
     // Each mechanism only ever re-enables rows carrying ITS OWN reason, so a
     // returning key never overrides a health-disable and neither ever
     // overrides a human's manual decision (Adam's directive, 2026-07-08).

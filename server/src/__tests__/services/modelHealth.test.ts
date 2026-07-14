@@ -106,6 +106,32 @@ describe('modelHealth — derived from the requests log', () => {
     expect(model!.disabled_reason).toBe('manual');
   });
 
+  it('benches a model (disabled_reason=low_success) on a low aggregate success rate even without a 429 run', async () => {
+    // 1 success + 7 NON-429 errors (400s) over 8 attempts = 12.5% < 15% floor.
+    // consecutive_429 stays 0 (400 isn't rate-limit/timeout) so the inactive
+    // path never fires — this is the aggregate-rate path.
+    await logCall(flakyPlatform, flakyModelId, 'success', 300, null, 8);
+    for (let i = 7; i >= 1; i--) {
+      await logCall(flakyPlatform, flakyModelId, 'error', 400, 'OpenRouter API error 400: bad request', i);
+    }
+    await recomputeModelHealth(getPool());
+    const model = await get<{ enabled: boolean; disabled_reason: string | null }>(getPool(), `SELECT enabled, disabled_reason FROM models WHERE id = ?`, [flakyModel]);
+    expect(model!.enabled).toBe(false);
+    expect(model!.disabled_reason).toBe('low_success');
+    const health = (await getHealthMap(getPool())).get(flakyModel);
+    expect(health!.status).not.toBe('inactive'); // benched by rate, not by a 429-run
+  });
+
+  it('does NOT low-success-bench below the minimum attempt count (too little evidence)', async () => {
+    // 4 total attempts, all failing (0%) — below LOW_SUCCESS_MIN_ATTEMPTS=8.
+    for (let i = 4; i >= 1; i--) {
+      await logCall(flakyPlatform, flakyModelId, 'error', 400, 'Error 400: bad request', i);
+    }
+    await recomputeModelHealth(getPool());
+    const model = await get<{ enabled: boolean }>(getPool(), `SELECT enabled FROM models WHERE id = ?`, [flakyModel]);
+    expect(model!.enabled).toBe(true); // not enough evidence to bench
+  });
+
   it('a few isolated 429s (not a tail run) penalize but do not bench', async () => {
     await logCall(flakyPlatform, flakyModelId, 'error', 15000, 'Error 429', 8);
     await logCall(flakyPlatform, flakyModelId, 'success', 400, null, 6);

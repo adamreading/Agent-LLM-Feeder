@@ -27,6 +27,13 @@ const REVIVE_POLL_MIN_AGE_MS = 24 * 60 * 60 * 1000; // daily revival poll cadenc
 // the 90s transient cooldown, so an exhausted model stops churning retries all
 // day (the load shape a parallel Ringer swarm exposes). Env-tunable.
 const QUOTA_BENCH_MS = Number(process.env.FEEDER_QUOTA_BENCH_MS ?? 6 * 60 * 60 * 1000); // 6h default
+// Aggregate low-success bench: the consecutive-429 path only disables on a RUN
+// of rate-limit/timeout failures — a model that fails intermittently, or with
+// non-429 errors (400/empty/other), never trips it and stays enabled + first-
+// pick forever. If real success rate is below this over enough recent attempts,
+// bench it (daily-revived, same as 'unhealthy'). Env-tunable.
+const LOW_SUCCESS_THRESHOLD = Number(process.env.FEEDER_LOW_SUCCESS_THRESHOLD ?? 0.15);
+const LOW_SUCCESS_MIN_ATTEMPTS = Number(process.env.FEEDER_LOW_SUCCESS_MIN_ATTEMPTS ?? 8);
 
 function isRateLimitOrTimeout(error: string | null): boolean {
   if (!error) return false;
@@ -131,6 +138,16 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
       if (disabled.changes > 0) {
         console.log(`[ModelHealth] model ${modelDbId}: ${consecutive429} consecutive 429/timeout — benched (disabled_reason=unhealthy)`);
       }
+    } else if (successRate != null && calls.length >= LOW_SUCCESS_MIN_ATTEMPTS && successRate < LOW_SUCCESS_THRESHOLD) {
+      // Aggregate low success rate (not a 429-run) — catches intermittent / non-
+      // 429 failures the consecutive path misses. Benched, daily-revived.
+      const disabled = await run(pool, `
+        UPDATE models SET enabled = false, disabled_reason = 'low_success'
+        WHERE id = ? AND enabled = true
+      `, [modelDbId]);
+      if (disabled.changes > 0) {
+        console.log(`[ModelHealth] model ${modelDbId}: ${Math.round(successRate * 100)}% success over ${calls.length} attempts — benched (disabled_reason=low_success)`);
+      }
     }
   }
 }
@@ -181,7 +198,7 @@ export async function reviveUnhealthyModels(pool: pg.Pool): Promise<void> {
     SELECT m.id, m.platform, m.model_id, h.updated_at
     FROM models m
     LEFT JOIN model_health h ON h.model_db_id = m.id
-    WHERE m.enabled = false AND m.disabled_reason = 'unhealthy'
+    WHERE m.enabled = false AND m.disabled_reason IN ('unhealthy', 'low_success')
   `);
 
   for (const model of benched) {
@@ -199,7 +216,7 @@ export async function reviveUnhealthyModels(pool: pg.Pool): Promise<void> {
       const apiKey = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
       const result = await provider.chatCompletion(apiKey, [{ role: 'user', content: 'hi' }], model.model_id, { max_tokens: 5 });
       if (result.choices?.length) {
-        await run(pool, `UPDATE models SET enabled = true, disabled_reason = NULL WHERE id = ? AND disabled_reason = 'unhealthy'`, [model.id]);
+        await run(pool, `UPDATE models SET enabled = true, disabled_reason = NULL WHERE id = ? AND disabled_reason IN ('unhealthy', 'low_success')`, [model.id]);
         await run(pool, `UPDATE model_health SET status = 'healthy', health_score = 1, consecutive_429 = 0, cooldown_until = NULL, updated_at = now() WHERE model_db_id = ?`, [model.id]);
         console.log(`[ModelHealth] model ${model.id} (${model.platform}/${model.model_id}) revived — reachable again`);
       }
