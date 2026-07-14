@@ -153,7 +153,7 @@ All optional; omit for sensible defaults.
 | `exclude_reasoning: boolean` | Strip raw chain-of-thought from the reply (never fold it into content). |
 | `exclude_providers: string[]` | Never use these platforms for this call. |
 | `max_attempts: number` | Cap failover hops (≤20). |
-| `session_id` / `user` | Sticky routing — keep one conversation on one model across turns. |
+| `session_id` / `user` (or `X-Session-Id` header) | Sticky routing — keep one conversation/job on one model+provider across calls. Body `session_id`/`user` win; the `X-Session-Id` header is read as a last resort so an OpenCode client (which stamps it natively, per invocation) gets sticky pinning + per-session request attribution with zero plumbing. |
 | `consumer: string` (or `X-Consumer` header) | Attribution label for the request log (e.g. `"hermes"`, `"lunk"`). Fleet agents share one key, so without this they all log as `fleet`; self-labelling makes traffic attributable. Header wins over the body field. Telemetry only — not a trust signal. |
 | `augment: "off" \| "auto" \| "force"` (or `X-Augment` header) | Web-search grounding. `off` (**default**) never augments. `auto` runs a search + injects results when the prompt needs current info; `force` always searches. See below. |
 

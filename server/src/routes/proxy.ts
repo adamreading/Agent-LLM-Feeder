@@ -51,6 +51,19 @@ function sanitizeConsumerLabel(raw: unknown): string | null {
   return s.length > 0 ? s : null;
 }
 
+// A session identifier supplied via the `X-Session-Id` header. OpenCode
+// (1.17.20+) natively stamps this on every provider request — stable across
+// one `opencode run` invocation, distinct across invocations — with no client
+// plumbing. Feeder reads it as a LAST-resort session key (body session_id/user
+// still win) so an OpenCode/OpenAI-compat caller gets sticky-session pinning
+// and per-session request attribution for free. Sanitised + capped (session
+// ids like `ses_2f3a…` are word/`.-:` chars); longer cap than a consumer label.
+function sanitizeSessionId(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw.trim().replace(/[^\w.\-:]/g, '').slice(0, 128);
+  return s.length > 0 ? s : undefined;
+}
+
 async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; authorized: boolean; consumer: string }> {
   const isLocal = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
@@ -558,7 +571,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   }, 0);
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
-  const explicitSessionId = session_id ?? user;
+  const explicitSessionId = session_id ?? user ?? sanitizeSessionId(req.header('x-session-id'));
   const { taskClass, isAuto } = parseModelField(requestedModel);
 
   // Tier-0 heuristics: derive capability needs directly from the request's
