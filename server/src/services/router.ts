@@ -734,6 +734,11 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // (transient, retryable), never NO_ELIGIBLE_MODEL.
     const health = healthMap.get(model.id);
     if (health?.cooldown_until && new Date(health.cooldown_until).getTime() > Date.now()) continue;
+    // Quota parking: a model whose free-tier daily/tier quota is exhausted is
+    // skipped until the parked window lapses (hours), instead of being re-tried
+    // every ~90s all day. Like the cooldown, this is transient (surfaces as
+    // ALL_RATE_LIMITED, not NO_ELIGIBLE_MODEL) so the pool recovers on reset.
+    if (health?.quota_exhausted_until && new Date(health.quota_exhausted_until).getTime() > Date.now()) continue;
 
     // Get limits once for this model
     const limits = {
@@ -895,7 +900,12 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
     const taskScore = taskScoreMap.has(m.id) ? taskScoreMap.get(m.id)! : null;
     const dataAgeMs = dataAgeMap.has(m.id) ? dataAgeMap.get(m.id)! : null;
     const keyCount = Number(m.key_count);
-    const cooling = !!(health?.cooldown_until && new Date(health.cooldown_until).getTime() > now);
+    // 'cooling' covers both the transient circuit-breaker cooldown and quota
+    // parking — both mean the router skips this model right now but it recovers.
+    const cooling = !!(
+      (health?.cooldown_until && new Date(health.cooldown_until).getTime() > now) ||
+      (health?.quota_exhausted_until && new Date(health.quota_exhausted_until).getTime() > now)
+    );
     const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0);
     const status: RoutingExplainRow['status'] =
       (!m.model_enabled || !m.fc_enabled) ? 'disabled'

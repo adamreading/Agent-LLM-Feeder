@@ -15,7 +15,7 @@ import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../servi
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
-import { benchUnreachableModel } from '../services/modelHealth.js';
+import { benchUnreachableModel, setQuotaExhausted } from '../services/modelHealth.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -365,6 +365,24 @@ async function hasOtherUsableKey(platform: string, modelId: string, failingKeyId
     return true;
   }
   return false;
+}
+
+// A DAILY / tier QUOTA exhaustion — distinct from a transient per-minute rate
+// limit. The model is dead until the quota window resets (hours), so it should
+// be PARKED long (setQuotaExhausted), not retried every 90s. Deliberately
+// CONSERVATIVE: match only clear quota/daily/billing language; a bare
+// "429 / rate limit" stays a short transient cooldown. (Gemini's "exceeded your
+// current quota" and OpenRouter's "free-models-per-day" are the live cases.)
+function isQuotaExhaustionError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  return msg.includes('exceeded your current quota')
+    || msg.includes('insufficient_quota')
+    || msg.includes('quota exceeded')
+    || (msg.includes('quota') && msg.includes('exceeded'))
+    || msg.includes('per-day') || msg.includes('per day')
+    || msg.includes('free-models-per-day')
+    || msg.includes('daily limit') || msg.includes('daily quota')
+    || msg.includes('billing');
 }
 
 function isRetryableError(err: any): boolean {
@@ -916,6 +934,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       if (!retryable && isUnreachableError(err)) {
         void benchUnreachableModel(getPool(), route.modelDbId, `${route.displayName}: ${err.message}`);
         console.log(`[Proxy] AUTO-BENCH (unreachable): ${route.displayName} — ${err.message.slice(0, 60)}`);
+      }
+      // Quota parking: a daily/tier quota-exhausted 429 parks the model for hours
+      // (see setQuotaExhausted) instead of the 90s transient cooldown, so an
+      // exhausted free-tier model stops churning retries all day. The request
+      // still fails over to the next candidate this attempt.
+      if (isQuotaExhaustionError(err)) {
+        void setQuotaExhausted(getPool(), route.modelDbId, `${route.displayName}: ${err.message}`);
+        console.log(`[Proxy] QUOTA-PARK: ${route.displayName} — ${err.message.slice(0, 60)}`);
       }
       console.log(`[Proxy] ${retryable ? '' : '(non-retryable) '}${err.message.slice(0, 60)} from ${route.displayName}, falling back (attempt ${attempt + 1}/${maxRetries})`);
       continue;

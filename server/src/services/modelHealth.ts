@@ -23,6 +23,10 @@ const OBSERVATION_WINDOW_MIN = 30;   // recompute health from the last N minutes
 const COOLDOWN_MS = 90_000;          // circuit-break a just-failed instance for this long
 const INACTIVE_AFTER_CONSECUTIVE_429 = 6; // conservative escalation (Adam's choice)
 const REVIVE_POLL_MIN_AGE_MS = 24 * 60 * 60 * 1000; // daily revival poll cadence
+// A free-tier DAILY/tier quota is spent — park the model this long instead of
+// the 90s transient cooldown, so an exhausted model stops churning retries all
+// day (the load shape a parallel Ringer swarm exposes). Env-tunable.
+const QUOTA_BENCH_MS = Number(process.env.FEEDER_QUOTA_BENCH_MS ?? 6 * 60 * 60 * 1000); // 6h default
 
 function isRateLimitOrTimeout(error: string | null): boolean {
   if (!error) return false;
@@ -148,6 +152,26 @@ export async function benchUnreachableModel(pool: pg.Pool, modelDbId: number, ev
   console.log(`[ModelHealth] model ${modelDbId} benched (disabled_reason=unreachable): ${evidence.slice(0, 100)}`);
 }
 
+// Park a model whose free-tier DAILY/tier quota is exhausted (distinct from a
+// transient per-minute 429). Set from the proxy hot path the moment a quota-class
+// error is seen — immediate, so a burst can't keep re-hitting it. The router
+// skips any model with quota_exhausted_until in the future. Upserts ONLY that
+// column, so the cron recompute (which never writes it) preserves the parking;
+// it lapses naturally at expiry and a subsequent good call lets the model back.
+export async function setQuotaExhausted(pool: pg.Pool, modelDbId: number, evidence: string): Promise<void> {
+  const until = new Date(Date.now() + QUOTA_BENCH_MS);
+  try {
+    await run(pool, `
+      INSERT INTO model_health (model_db_id, quota_exhausted_until, updated_at)
+      VALUES (?, ?, now())
+      ON CONFLICT (model_db_id) DO UPDATE SET quota_exhausted_until = EXCLUDED.quota_exhausted_until, updated_at = now()
+    `, [modelDbId, until]);
+    console.log(`[ModelHealth] model ${modelDbId} quota-parked until ${until.toISOString()}: ${evidence.slice(0, 80)}`);
+  } catch (e) {
+    console.error('[ModelHealth] setQuotaExhausted failed:', e);
+  }
+}
+
 // Daily revival poll — the ONE active call this module makes. For each model
 // benched with disabled_reason='unhealthy' whose health row is stale enough,
 // send one cheap reachability ping; a clean response revives it. A single
@@ -193,12 +217,13 @@ export interface ModelHealthRow {
   recent_success_rate: number | null;
   status: string;
   cooldown_until: string | null;
+  quota_exhausted_until: string | null;
 }
 
 // Read helper for the selection engine (step 3) and the wiki's live pills.
 export async function getHealthMap(pool: pg.Pool): Promise<Map<number, ModelHealthRow>> {
   const rows = await all<ModelHealthRow>(pool, `
-    SELECT model_db_id, health_score, recent_latency_ms, recent_success_rate, status, cooldown_until FROM model_health
+    SELECT model_db_id, health_score, recent_latency_ms, recent_success_rate, status, cooldown_until, quota_exhausted_until FROM model_health
   `);
   return new Map(rows.map((r) => [r.model_db_id, r]));
 }
