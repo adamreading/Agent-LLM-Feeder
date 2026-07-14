@@ -37,7 +37,15 @@ const CODE_FENCE = /```|~~~/;
 const CODE_HINTS = /\b(def |function |class |import |const |let |var |public |private |return |async |await|=>|console\.|System\.|printf|std::|#include|npm |pip |git |SELECT .*FROM|CREATE TABLE|<\/?[a-z]+>)/;
 const CODE_ASKS = /\b(refactor|debug|stack ?trace|traceback|compile|syntax error|null ?pointer|segfault|unit test|regex|write (a |an )?(function|script|program|class|method|query|component|api)|fix (this|the|my) (code|bug|function)|implement (a|an|the)|code review)\b/i;
 const MATH_ASKS = /\b(integral|derivative|differentiate|integrate|equation|factorial|logarithm|matrix|probability|permutation|standard deviation|solve for|evaluate|simplify|square root|\bsqrt\b|modulo|prime factor)\b/i;
-const MATH_SYMBOLS = /√|∫|∑|∏|≥|≤|≠|\^\d|\bx\s*[\^]|\d+\s*[+\-*/×÷]\s*\d+|\d+\s*%\b|=\s*\?/;
+// Arithmetic-symbol signal. Deliberately PRECISE to avoid stamping prose as math
+// (Adam-flagged FP 2026-07-14: reasoning turns citing a ratio/date got 'math').
+//  - +, *, ×, ÷ are unambiguous → allowed tight ("5*3", "5 * 3").
+//  - - and / appear constantly in NON-math prose (dates 2023-2024, ratios 24/7,
+//    hours 9-5, versions 3.2/4.0), so they require WHITESPACE BOTH SIDES ("5 - 3",
+//    "10 / 2") — which real arithmetic has and dates/ratios/versions don't.
+//  - Dropped the old `\d+%` alt: `%\b` never fired on prose percentages ("140%")
+//    anyway (verified), and a percentage in a sentence isn't a math task.
+const MATH_SYMBOLS = /√|∫|∑|∏|≥|≤|≠|\^\d|\bx\s*\^|\d+\s*[+*×÷]\s*\d+|\d+\s+[-/]\s+\d+|=\s*\?/;
 const REASONING_ASKS = /\b(why |explain|prove|proof|step by step|reason(ing)?|logic|puzzle|deduce|infer|analy[sz]e|compare and contrast|walk me through|how does .* work|what causes|justify|trade-?offs?)\b/i;
 const CREATIVE_ASKS = /\b(write (a |an )?(poem|story|haiku|sonnet|song|lyric|essay|tagline|slogan|joke|limerick|screenplay|dialogue|narrative)|compose|brainstorm|imagine (a|an|that)|come up with (a|an|some)|creative|rewrite .* in the style)\b/i;
 const GREETING = /^(hi|hey|hello|yo|sup|thanks|thank you|thx|ok|okay|cool|nice|great|lol|good (morning|afternoon|evening|night))\b/i;
@@ -97,9 +105,12 @@ export function classifyTier0(text: string, ctx: Tier0Ctx = {}): Tier0Result {
   if (CODE_FENCE.test(t) || CODE_ASKS.test(t)) {
     return { taskClass: 'coding', confidence: 'high', structuralNeeds, reason: 'code fence / explicit code ask' };
   }
-  // Math: explicit math vocabulary OR arithmetic symbol patterns.
-  if (MATH_ASKS.test(t) || MATH_SYMBOLS.test(t)) {
-    return { taskClass: 'math', confidence: 'high', structuralNeeds, reason: 'math vocabulary / arithmetic symbols' };
+  // Math VOCABULARY (integral/derivative/solve for/…) is an unambiguous math
+  // signal → high, checked early. Bare arithmetic SYMBOLS are checked LATER
+  // (after reasoning) so a "why … 24/7 …" reasoning turn isn't hijacked to math
+  // by an incidental number pattern (Adam-flagged FP 2026-07-14).
+  if (MATH_ASKS.test(t)) {
+    return { taskClass: 'math', confidence: 'high', structuralNeeds, reason: 'math vocabulary' };
   }
   // Creative generation.
   if (CREATIVE_ASKS.test(t)) {
@@ -109,9 +120,16 @@ export function classifyTier0(text: string, ctx: Tier0Ctx = {}): Tier0Result {
   if (CODE_HINTS.test(t)) {
     return { taskClass: 'coding', confidence: 'medium', structuralNeeds, reason: 'code-like tokens present' };
   }
-  // Reasoning / explanation.
+  // Reasoning / explanation — checked BEFORE bare math symbols so an analytical
+  // turn ("why …", "explain …") that merely cites a number/ratio/date routes as
+  // reasoning, not math.
   if (REASONING_ASKS.test(t)) {
     return { taskClass: 'reasoning', confidence: 'medium', structuralNeeds, reason: 'reasoning/explanation ask' };
+  }
+  // Bare arithmetic symbols with no reasoning framing → an actual math task
+  // (e.g. "5 * 27 - 12", "∫x dx", "3 ≥ 2"). Precise pattern (see MATH_SYMBOLS).
+  if (MATH_SYMBOLS.test(t)) {
+    return { taskClass: 'math', confidence: 'high', structuralNeeds, reason: 'arithmetic symbols (no reasoning framing)' };
   }
   // Long input with no stronger signal → long-context handling.
   if ((ctx.estimatedTokens ?? 0) >= LONG_CONTEXT_TOKENS) {

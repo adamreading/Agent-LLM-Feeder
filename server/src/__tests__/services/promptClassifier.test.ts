@@ -24,6 +24,29 @@ describe('classifyTier0', () => {
     expect(tc('Compare and contrast REST and GraphQL')).toBe('reasoning');
   });
 
+  // Adam-flagged false-positive (2026-07-14): a reasoning turn citing a ratio/date
+  // was stamped 'math'. Guard: prose numerics (dates/ratios/versions/percentages)
+  // must NOT read as math, and reasoning framing must win over an incidental number.
+  it('does NOT stamp math on prose numerics (dates / ratios / versions / percentages)', () => {
+    expect(tc('we run 24/7 support')).not.toBe('math');
+    expect(tc('the 2023-2024 trend was flat')).not.toBe('math');
+    expect(tc('it is a 9-5 job')).not.toBe('math');
+    expect(tc('upgrade from version 3.2/4.0')).not.toBe('math');
+    expect(tc('egress is 140% over quota')).not.toBe('math');
+  });
+
+  it('reasoning framing wins over an incidental number pattern (precedence fix)', () => {
+    expect(tc('why did we hit 24/7 escalations')).toBe('reasoning');
+    expect(tc('explain the 2023-2024 trend')).toBe('reasoning');
+    expect(tc('why did you say 1 holding not 2')).toBe('reasoning');
+  });
+
+  it('still classifies genuine arithmetic (spaced or unambiguous operators) as math', () => {
+    expect(tc('what is 5 * 27 - 12?')).toBe('math');
+    expect(tc('compute 10 / 2')).toBe('math'); // spaced / is real arithmetic
+    expect(tc('3 + 4')).toBe('math');
+  });
+
   it('classifies creative prompts', () => {
     expect(tc('Write a haiku about the sea')).toBe('creative');
     expect(tc('Compose a short story opening about a lighthouse keeper')).toBe('creative');
