@@ -18,10 +18,19 @@ interface FallbackEntry {
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
-  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string }
+  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
 }
 
+interface SearchConfig { backend: string; available: string[]; keyed: string[]; keys: Record<string, { set: boolean; masked: string | null }> }
+
 const CHAT_SESSION_KEY = 'llm-chatbot:chat-session'
+const WEBSEARCH_PREF_KEY = 'llm-chatbot:websearch'
+
+function loadWebSearchPref(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(WEBSEARCH_PREF_KEY) === '1'
+}
+function saveWebSearchPref(on: boolean) { if (typeof window !== 'undefined') window.localStorage.setItem(WEBSEARCH_PREF_KEY, on ? '1' : '0') }
 
 function loadChatSession(): ChatMessage[] {
   if (typeof window === 'undefined') return []
@@ -41,12 +50,20 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('auto')
+  const [webSearch, setWebSearch] = useState<boolean>(() => loadWebSearchPref())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: keyData } = useQuery<{ apiKey: string }>({ queryKey: ['unified-key'], queryFn: () => apiFetch('/api/settings/api-key') })
   const { data: fallbackEntries = [] } = useQuery<FallbackEntry[]>({ queryKey: ['fallback-order'], queryFn: async () => (await apiFetch<{ rows: FallbackEntry[] }>('/api/fallback/order')).rows })
+  const { data: searchCfg } = useQuery<SearchConfig>({ queryKey: ['search-config'], queryFn: () => apiFetch('/api/settings/search') })
   const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
+  // Show the web-search toggle only when the onboarded provider can actually run:
+  // keyless backends (ddg/ollama) are always ready; keyed backends (tavily) need
+  // their key set. Prevents a dead "WEB" affordance that silently does nothing.
+  const searchAvailable = !!searchCfg && (
+    !searchCfg.keyed.includes(searchCfg.backend) || (searchCfg.keys[searchCfg.backend]?.set ?? false)
+  )
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
   useEffect(() => { saveChatSession(messages) }, [messages])
@@ -65,6 +82,10 @@ export default function PlaygroundPage() {
       // Always send an explicit model — 'auto' routes through the SAME classifier
       // + router as every other caller (a pinned id bypasses classification).
       const body: any = { model: selectedModel, messages: newMessages.map(m => ({ role: m.role, content: m.content })) }
+      // Web-search opt-in: 'force' runs the onboarded search backend (webSearch.ts)
+      // on every message while the toggle is on — the feeder injects the results
+      // as grounding before routing. Default off = the provenance-safe carve-out.
+      if (webSearch && searchAvailable) body.augment = 'force'
       const base = import.meta.env.BASE_URL.replace(/\/$/, '')
       const start = Date.now()
       const res = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
@@ -72,6 +93,7 @@ export default function PlaygroundPage() {
       const routedVia = res.headers.get('X-Routed-Via')
       const fallbackAttempts = res.headers.get('X-Fallback-Attempts')
       const taskClassHdr = res.headers.get('X-Task-Class')
+      const augmented = res.headers.get('X-Augmented') === 'web-search'
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }))
         setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.error?.message ?? 'unknown error'}` }])
@@ -81,7 +103,7 @@ export default function PlaygroundPage() {
       const content = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2)
       const via = data._routed_via ?? (routedVia ? { platform: routedVia.split('/')[0], model: routedVia.split('/').slice(1).join('/') } : undefined)
       const taskClass = data._task_class ?? taskClassHdr ?? undefined
-      setMessages([...newMessages, { role: 'assistant', content, meta: { platform: via?.platform, model: via?.model, latency, fallbackAttempts: fallbackAttempts ? parseInt(fallbackAttempts) : undefined, taskClass: taskClass || undefined } }])
+      setMessages([...newMessages, { role: 'assistant', content, meta: { platform: via?.platform, model: via?.model, latency, fallbackAttempts: fallbackAttempts ? parseInt(fallbackAttempts) : undefined, taskClass: taskClass || undefined, augmented: augmented || undefined } }])
     } catch (err: any) {
       setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.message}` }])
     } finally {
@@ -107,6 +129,17 @@ export default function PlaygroundPage() {
             <option value="auto">AUTO // ROUTER PICKS</option>
             {availableModels.map(m => <option key={m.modelDbId} value={m.modelId}>{m.displayName} — {m.platform}</option>)}
           </select>
+          {searchAvailable && (
+            <button
+              onClick={() => setWebSearch(v => { const n = !v; saveWebSearchPref(n); return n })}
+              title={`Web search via ${searchCfg?.backend ?? 'provider'} — ${webSearch ? 'ON' : 'OFF'}`}
+              className="cy-hover-acc"
+              style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '8px 12px',
+                border: `1px solid ${webSearch ? 'var(--acc2)' : 'var(--line)'}`,
+                color: webSearch ? 'var(--acc2)' : 'var(--dim)',
+                background: webSearch ? 'color-mix(in oklab, var(--acc2) 14%, transparent)' : 'transparent' }}
+            >{webSearch ? '◉' : '◯'} WEB</button>
+          )}
           {messages.length > 0 && (
             <button onClick={handleClear} className="cy-hover-acc" style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, border: '1px solid var(--line)', color: 'var(--dim)', padding: '8px 12px' }}>CLEAR</button>
           )}
@@ -140,6 +173,7 @@ export default function PlaygroundPage() {
                         {msg.meta.platform && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: platformColor(msg.meta.platform) }} />{msg.meta.platform}</span>}
                         {msg.meta.model && <span>· {msg.meta.model}</span>}
                         {msg.meta.taskClass && <span style={{ color: 'var(--acc)' }}>· {msg.meta.taskClass}</span>}
+                        {msg.meta.augmented && <span style={{ color: 'var(--acc2)' }}>· web ◉</span>}
                         {msg.meta.latency != null && <span style={{ color: 'var(--acc2)' }}>· {msg.meta.latency}ms</span>}
                         {msg.meta.fallbackAttempts != null && msg.meta.fallbackAttempts > 0 && <span style={{ color: 'var(--warn)' }}>· {msg.meta.fallbackAttempts} fallback{msg.meta.fallbackAttempts > 1 ? 's' : ''}</span>}
                       </div>

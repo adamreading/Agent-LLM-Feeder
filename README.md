@@ -97,7 +97,7 @@ Cyberpunk-themed, with three switchable colour "flavors" (holo / noir / acid) an
 |---|---|
 | **Onboarding** | Guided links to grab free-tier keys from each provider, with a connect-progress bar. |
 | **Model Wiki** (`/wiki`) | Every model, grouped across suppliers, with capability pills, arena scores, and a per-model detail page (capability matrix, task scores, served-by table with live latency). |
-| **Chatbot** | A playground to chat through the router (auto or a pinned model), showing which model served each turn + latency + fallback hops. |
+| **Chatbot** | A playground to chat through the router (auto or a pinned model), showing which model served each turn + its classified task class + latency + fallback hops, with Markdown/LaTeX rendering. A **WEB** toggle (shown when a search provider is onboarded) opts the chat into web-search grounding via the configured backend; turns that were grounded show a `web` badge. |
 | **Agent** | Attach workspace files as context and task a local agent through the router. |
 | **Key Vault** | Manage the unified key + per-provider keys, with live health/status. |
 | **Fallback** | Drag-to-reorder the fallback chain, toggle models, and view the monthly token budget. |
