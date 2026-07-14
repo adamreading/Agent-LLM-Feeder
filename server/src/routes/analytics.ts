@@ -5,6 +5,15 @@ import { all, get } from '../db/pgCompat.js';
 
 export const analyticsRouter = Router();
 
+// Analytics counts REAL routed traffic by default — probe calls (is_probe=true)
+// are excluded so the prober's exploration doesn't distort success%/latency/
+// counts (the router + health code already exclude probes; analytics now matches).
+// Opt back in with ?includeProbes=1. Returns one of two CONSTANT fragments (the
+// query param only toggles between them), so no SQL is user-controlled.
+function probeFilter(req: Request, col = 'is_probe'): string {
+  return req.query.includeProbes === '1' ? '' : ` AND ${col} = false`;
+}
+
 // Map range to a JS-computed ISO timestamp passed as a bind parameter,
 // so the SQL string never includes user-controlled fragments.
 function getSinceTimestamp(range: string): string {
@@ -33,7 +42,7 @@ analyticsRouter.get('/summary', async (req: Request, res: Response) => {
       SUM(output_tokens) as total_output_tokens,
       AVG(latency_ms) as avg_latency_ms
     FROM requests
-    WHERE created_at >= ?
+    WHERE created_at >= ?${probeFilter(req)}
   `, [since]);
 
   const totalRequests = Number(stats.total_requests ?? 0);
@@ -73,7 +82,7 @@ analyticsRouter.get('/by-model', async (req: Request, res: Response) => {
       SUM(r.output_tokens) as total_output_tokens
     FROM requests r
     LEFT JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
-    WHERE r.created_at >= ?
+    WHERE r.created_at >= ?${probeFilter(req, 'r.is_probe')}
     GROUP BY r.platform, r.model_id, m.display_name
     ORDER BY requests DESC
   `, [since]);
@@ -104,7 +113,7 @@ analyticsRouter.get('/by-platform', async (req: Request, res: Response) => {
       SUM(input_tokens) as total_input_tokens,
       SUM(output_tokens) as total_output_tokens
     FROM requests
-    WHERE created_at >= ?
+    WHERE created_at >= ?${probeFilter(req)}
     GROUP BY platform
     ORDER BY requests DESC
   `, [since]);
@@ -135,7 +144,7 @@ analyticsRouter.get('/timeline', async (req: Request, res: Response) => {
       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failure_count
     FROM requests
-    WHERE created_at >= ?
+    WHERE created_at >= ?${probeFilter(req)}
     GROUP BY to_char(created_at, '${dateFormat}')
     ORDER BY timestamp ASC
   `, [since]);
@@ -171,7 +180,7 @@ analyticsRouter.get('/error-distribution', async (req: Request, res: Response) =
       END as error_category,
       COUNT(*) as count
     FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    WHERE status = 'error' AND created_at >= ?${probeFilter(req)}
     GROUP BY platform, model_id, error_category
     ORDER BY count DESC
   `, [since]);
@@ -191,7 +200,7 @@ analyticsRouter.get('/error-distribution', async (req: Request, res: Response) =
       END as category,
       COUNT(*) as count
     FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    WHERE status = 'error' AND created_at >= ?${probeFilter(req)}
     GROUP BY category
     ORDER BY count DESC
   `, [since]);
@@ -200,7 +209,7 @@ analyticsRouter.get('/error-distribution', async (req: Request, res: Response) =
   const byPlatform = await all<any>(pool, `
     SELECT platform, COUNT(*) as count
     FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    WHERE status = 'error' AND created_at >= ?${probeFilter(req)}
     GROUP BY platform
     ORDER BY count DESC
   `, [since]);
@@ -220,7 +229,7 @@ analyticsRouter.get('/errors', async (req: Request, res: Response) => {
   const rows = await all<any>(getPool(), `
     SELECT id, platform, model_id, error, latency_ms, created_at
     FROM requests
-    WHERE status = 'error' AND created_at >= ?
+    WHERE status = 'error' AND created_at >= ?${probeFilter(req)}
     ORDER BY created_at DESC
     LIMIT 50
   `, [since]);

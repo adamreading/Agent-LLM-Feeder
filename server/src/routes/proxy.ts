@@ -436,10 +436,6 @@ function parseModelField(model: string | undefined): { taskClass: string | null;
 }
 
 proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
-  // Monotonic clock for elapsed-time measurement — Date.now() is wall-clock
-  // and can jump BACKWARDS on a clock adjustment (NTP step, WSL2 resume),
-  // which produced negative latency_ms rows. performance.now() never regresses.
-  const start = performance.now();
 
   // L4 outer gate: resolve trust tier before anything else. Non-local
   // requests without a recognized token are rejected exactly as before.
@@ -720,6 +716,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   let lastWasRetryable = false;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    // Per-attempt monotonic timer so logged latency_ms is THIS provider call's
+    // own duration, not cumulative wall-time from the start of the whole request
+    // (which made a model tried late in the failover chain look slow in
+    // analytics). performance.now() never regresses (unlike Date.now() on an NTP
+    // step / WSL2 resume, which produced negative latency rows).
+    const attemptStart = performance.now();
     let route: RouteResult;
     try {
       route = await routeRequest({
@@ -803,7 +805,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
           if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -815,7 +817,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -885,12 +887,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason,
+          Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason,
         );
         return;
       }
     } catch (err: any) {
-      const latency = Math.round(performance.now() - start);
+      const latency = Math.round(performance.now() - attemptStart);
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
 
       lastError = err;
