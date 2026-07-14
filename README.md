@@ -81,11 +81,22 @@ Open the UI, go to **Onboarding**, add one or more provider keys, then use the *
 | `ENCRYPTION_KEY` | ✅ | 64-char hex; encrypts stored provider keys (AES-256-GCM). |
 | `DATABASE_URL` | ✅ | Postgres connection string for the feeder database. |
 | `PORT` | – | API port (default `3001`). |
-| `WEB_SEARCH_BACKEND` | – | Web-search backend for model research (default `ollama`). |
-| `OLLAMA_API_KEY` | – | Key for the Ollama hosted web-search API (needed when the backend is `ollama`). |
+| `WEB_SEARCH_BACKEND` | – | Web-search backend (default `ollama`). **Bootstrap fallback only** — the DB overrides this at boot (see below). |
+| `OLLAMA_API_KEY` | – | Key for the Ollama hosted web-search API (needed when the backend is `ollama`). Also a fallback — a Tavily/other key set in the UI lives in the DB, not here. |
 | `RESEARCH_MODEL` | – | `platform/model_id` of the model that writes research summaries. If unset, the smartest reachable JSON-capable keyed model is auto-picked. |
 
 `.env` is gitignored — never commit real keys.
+
+> **Where secrets and search config actually live: the DB, not `.env`.** Provider
+> API keys, the unified caller key, **and the web-search backend + its API key** are
+> managed through the web UI (Key Vault / Onboarding "Search Key" card) and stored in
+> Postgres — provider/search keys **encrypted** (AES-256-GCM), the backend id and
+> unified key as plain `settings` rows. At startup (and after any UI change, no
+> restart needed) `loadSearchConfigIntoEnv()` copies the DB search config into
+> `process.env`, **overriding** the `.env` values above. Consequence: to know what's
+> *live*, query the `settings` / `api_keys` tables — a DB value injected at runtime
+> does **not** appear in `.env` or `/proc/<pid>/environ`. Only `ENCRYPTION_KEY` and
+> `DATABASE_URL` are true `.env`-only bootstrap secrets.
 
 ---
 
@@ -231,7 +242,7 @@ Consumers can also report their own measured capability facts via `POST /api/cap
 
 The **Model Wiki** shows a written summary of what each model is good at, plus per-task quality scores — grounded in real web data (arena leaderboards + general search) and written by one of *your own* connected models.
 
-- **Web-search backend** is pluggable (`server/src/services/webSearch.ts`), Ollama's hosted search by default. Add another (Tavily/Brave/SearXNG) by implementing `SearchBackend` and setting `WEB_SEARCH_BACKEND`.
+- **Web-search backend** is pluggable (`server/src/services/webSearch.ts`), Ollama's hosted search by default. Add another (Tavily/Brave/SearXNG) by implementing `SearchBackend`. **Select it and set its key from the UI** (Onboarding "Search Key" card) — that persists to the DB `settings` table (backend id plaintext, key encrypted) and overrides `WEB_SEARCH_BACKEND`/`*_API_KEY` in `.env` at boot via `loadSearchConfigIntoEnv` (`server/src/services/searchConfig.ts`). The `.env` vars are a bootstrap fallback; the DB is authoritative and live-editable without a restart.
 - **Writer model** is `RESEARCH_MODEL` (pick one strong at writing) or auto-picked.
 - **Grounded, not fabricated:** the writer uses only the fetched sources and nulls any score it can't support. Scores are `source='benchmark'` (an external claim), never presented as something feeder measured.
 

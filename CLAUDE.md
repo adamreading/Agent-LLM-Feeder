@@ -29,6 +29,21 @@ treat it as production.
 
 - **DB:** PostgreSQL `feeder` on localhost:5432 (`postgres`). Router/proxy live in
   `server/src`. Client (wiki/vault/analytics UI) in `client/src`.
+- **Secrets & search config live in the DB, NOT `.env`** (learned the hard way
+  2026-07-14 — cost a spelunk to answer a web-augment question). Only `ENCRYPTION_KEY`
+  + `DATABASE_URL` are true `.env` bootstrap secrets. Everything else is in Postgres:
+  provider keys + unified caller key (`api_keys` / `settings.unified_api_key`), AND
+  the **web-search backend + its API key** (`settings.web_search_backend` plaintext +
+  `settings.search_key_<backend>` encrypted, managed from the UI onboarding card).
+  `loadSearchConfigIntoEnv()` (`services/searchConfig.ts`) injects the DB search config
+  into `process.env` at boot / UI-update / CLI-research start, **overriding** `.env`.
+  ⇒ **To check what's LIVE, query the `settings`/`api_keys` tables** — a runtime-injected
+  value does NOT appear in `.env` OR `/proc/<pid>/environ` (that's the start-time snapshot).
+- **Web-augment mechanism:** per-call `augment` field / `X-Augment` header, values
+  **only** `off`/`auto`/`force` (`parseAugmentPolicy` — `on`/`true`/`1` silently → `off`).
+  No consumer forces it off except the `open-brain` hard-block (`AUGMENT_BLOCKED_CONSUMERS`);
+  default is env `FEEDER_AUGMENT_DEFAULT` (unset→off). Augmented calls are surfaced only on
+  the `X-Augmented` response header — NOT logged in the `requests` table.
 - **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
   Restart drops in-flight fleet requests — brief, but it's production.
 - **Capability truth lives in two places** — check BOTH: `model_capabilities`
