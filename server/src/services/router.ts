@@ -281,6 +281,10 @@ const COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000; // untouched ≥24h → full s
 // it nudges like the intelligence prior / 429-penalty, never bosses.
 const FEEDBACK_WEIGHT = Number(process.env.FEEDBACK_ROUTING_WEIGHT ?? 6);
 const FEEDBACK_SMOOTHING = 2;
+// Only feedback from the last N days counts (Adam, 2026-07-14): a model that was
+// bad last month but has since improved shouldn't carry stale down-votes forever
+// — recent sentiment is what should steer routing.
+const FEEDBACK_RECENCY_DAYS = Number(process.env.FEEDBACK_RECENCY_DAYS ?? 30);
 function feedbackAdjust(ups: number, downs: number): number {
   const total = ups + downs;
   if (total === 0) return 0;
@@ -513,8 +517,9 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     SELECT model_db_id, rating, count(*) AS n
     FROM response_feedback
     WHERE had_image = false AND model_db_id IS NOT NULL
+      AND created_at >= now() - make_interval(days => ?)
     GROUP BY model_db_id, rating
-  `);
+  `, [FEEDBACK_RECENCY_DAYS]);
   const feedbackMap = new Map<number, number>();
   {
     const agg = new Map<number, { ups: number; downs: number }>();
@@ -869,8 +874,9 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
     SELECT model_db_id, rating, count(*) AS n
     FROM response_feedback
     WHERE had_image = false AND model_db_id IS NOT NULL
+      AND created_at >= now() - make_interval(days => ?)
     GROUP BY model_db_id, rating
-  `);
+  `, [FEEDBACK_RECENCY_DAYS]);
   const feedbackMap = new Map<number, number>();
   {
     const agg = new Map<number, { ups: number; downs: number }>();

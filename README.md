@@ -194,7 +194,7 @@ Register feeder as a custom OpenAI-compatible provider (base URL + unified key).
 3. **Rank** the survivors by `health × (quality + latency)`, where latency's weight scales with the declared `latency_ceiling_ms` (tight → speed dominates for chat; loose → quality dominates for batch). Quality comes from web-researched per-task scores; until those exist it falls back to the curated intelligence rank.
 4. **Attempt** the top pick; on a retryable error, skip that model+key (cooldown it) and re-filter → next. Exhaustion → the typed errors above.
 
-The ranking also folds in a small **human-feedback** nudge: thumbs up/down from the Chatbot/Agent UI (`response_feedback` table). Non-image feedback is a general, task-agnostic score adjustment (`FEEDBACK_ROUTING_WEIGHT`, bounded well under the task-quality lift so it nudges, never dominates); image feedback instead drives the vision-capability demote (`FEEDBACK_VISION_DEMOTE_THRESHOLD`).
+The ranking also folds in a small **human-feedback** nudge: thumbs up/down from the Chatbot/Agent UI (`response_feedback` table). Non-image feedback is a general, task-agnostic score adjustment (`FEEDBACK_ROUTING_WEIGHT`, bounded well under the task-quality lift so it nudges, never dominates) over a rolling window (`FEEDBACK_RECENCY_DAYS`, default 30 — so stale votes age out); image feedback instead drives the vision-capability demote (`FEEDBACK_VISION_DEMOTE_THRESHOLD`).
 
 Capability facts are **measured, not assumed** — the probe suite exists because provider spec sheets and docs were wrong often enough to matter live (silent context truncation, unsupported reasoning params, ignored JSON mode, tool-schema rejection). A `declared` (docs/web) fact is a lead for the probe scheduler, never trusted for a hard gate.
 
