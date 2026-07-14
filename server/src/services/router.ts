@@ -482,6 +482,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
+    WHERE m.kind = 'chat'
     ORDER BY m.intelligence_rank ASC
   `);
 
@@ -593,8 +594,10 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   for (const entry of sortedChain) {
     if (!entry.enabled) continue;
 
-    // Get model details — fresh per candidate, per call (L9).
-    const model = await get<ModelRow>(pool, 'SELECT * FROM models WHERE id = ? AND enabled = true', [entry.model_db_id]);
+    // Get model details — fresh per candidate, per call (L9). kind='chat' is the
+    // hard modality gate: a non-chat row (embedding/tts/rerank/ner/image-gen)
+    // can never serve a chat completion even with an empty needs[] filter.
+    const model = await get<ModelRow>(pool, "SELECT * FROM models WHERE id = ? AND enabled = true AND kind = 'chat'", [entry.model_db_id]);
     if (!model) continue;
 
     // L8: caller-excluded platform (e.g. the one that just failed upstream).
@@ -855,6 +858,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
            (SELECT count(*) FROM api_keys k WHERE k.platform = m.platform AND k.enabled = true AND k.status != 'invalid') AS key_count
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
+    WHERE m.kind = 'chat'
   `);
 
   const healthMap = await getHealthMap(pool);

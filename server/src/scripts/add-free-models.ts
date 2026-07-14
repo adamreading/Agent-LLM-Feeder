@@ -7,6 +7,7 @@
 import '../env.js';
 import { initDb, closeDb, getPool } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
+import { classifyModelKind } from '../services/modelKind.js';
 import { readFileSync } from 'node:fs';
 
 function titleCase(id: string): string {
@@ -26,9 +27,9 @@ async function main() {
         `SELECT id FROM models WHERE platform=? AND model_id=?`, [platform, modelId]);
       if (existing) { skipped++; continue; }
       await run(getPool(), `
-        INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, cost_tier, disabled_reason, match_status)
-        VALUES (?, ?, ?, 500, 500, false, 'free', 'pending-liveness (free-sweep 2026-07-12)', 'unmatched')
-      `, [platform, modelId, titleCase(modelId)]);
+        INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, cost_tier, disabled_reason, match_status, kind)
+        VALUES (?, ?, ?, 500, 500, false, 'free', 'pending-liveness (free-sweep 2026-07-12)', 'unmatched', ?)
+      `, [platform, modelId, titleCase(modelId), classifyModelKind(modelId, titleCase(modelId))]);
       added++;
       addedByProv[platform] = (addedByProv[platform] ?? 0) + 1;
     }

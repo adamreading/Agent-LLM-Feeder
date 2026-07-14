@@ -190,7 +190,7 @@ Register feeder as a custom OpenAI-compatible provider (base URL + unified key).
 ## How routing works
 
 1. **Derive needs** from the request (tools present → `tools`; `response_format` → `json_mode`; `reasoning_effort` → `reasoning_control`) plus any caller-declared `needs[]`.
-2. **Hard filter** the catalogue, fresh per attempt: capability match (`json_mode`/`reasoning_control` against the provider dialect; everything else against `source='measured'` capability rows), cost-tier ceiling, context window vs estimated tokens, TPM ceiling, latency ceiling, a configured key, and not circuit-broken.
+2. **Hard filter** the catalogue, fresh per attempt: chat modality (`models.kind = 'chat'` — embedding/tts/rerank/ner/image-gen rows are structurally excluded from chat routing), capability match (`json_mode`/`reasoning_control` against the provider dialect; everything else against `source='measured'` capability rows), cost-tier ceiling, context window vs estimated tokens, TPM ceiling, latency ceiling, a configured key, and not circuit-broken.
 3. **Rank** the survivors by `health × (quality + latency)`, where latency's weight scales with the declared `latency_ceiling_ms` (tight → speed dominates for chat; loose → quality dominates for batch). Quality comes from web-researched per-task scores; until those exist it falls back to the curated intelligence rank.
 4. **Attempt** the top pick; on a retryable error, skip that model+key (cooldown it) and re-filter → next. Exhaustion → the typed errors above. A 429 that clearly signals a **daily/tier quota** is exhausted (not a transient per-minute limit) *parks* the model for `FEEDER_QUOTA_BENCH_MS` (default 6h) so it's skipped until the quota resets, rather than retried every ~90s all day.
 

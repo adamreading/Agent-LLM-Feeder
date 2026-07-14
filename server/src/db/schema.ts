@@ -31,6 +31,12 @@ export const models = pgTable(
     monthlyTokenBudget: text('monthly_token_budget').notNull().default(''),
     contextWindow: integer('context_window'),
     enabled: boolean('enabled').notNull().default(true),
+    // Modality gate (Adam, 2026-07-14): the router serves CHAT completions only.
+    // Non-chat rows (embedding / tts / rerank / moderation / image-gen / NER like
+    // Gliner) must be structurally excluded — routing filters kind='chat', so a
+    // non-chat model can't be picked for a chat call even with an empty needs[].
+    // 'chat' = a normal chat/completion model; anything else names why it's not.
+    kind: text('kind').notNull().default('chat'),
     // WHY this row is disabled when enabled=false, so multiple independent
     // auto-disable mechanisms never fight (the migration-DELETE/INSERT-war
     // failure class, L12). null = not disabled by a tracked mechanism.
