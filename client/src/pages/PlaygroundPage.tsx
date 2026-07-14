@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
 import { platformColor } from '@/lib/cyber'
+import { ChatMarkdown } from '@/components/Markdown'
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
@@ -17,7 +18,7 @@ interface FallbackEntry {
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
-  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number }
+  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string }
 }
 
 const CHAT_SESSION_KEY = 'llm-chatbot:chat-session'
@@ -61,14 +62,16 @@ export default function PlaygroundPage() {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
-      const body: any = { messages: newMessages.map(m => ({ role: m.role, content: m.content })) }
-      if (selectedModel !== 'auto') body.model = selectedModel
+      // Always send an explicit model — 'auto' routes through the SAME classifier
+      // + router as every other caller (a pinned id bypasses classification).
+      const body: any = { model: selectedModel, messages: newMessages.map(m => ({ role: m.role, content: m.content })) }
       const base = import.meta.env.BASE_URL.replace(/\/$/, '')
       const start = Date.now()
       const res = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
       const latency = Date.now() - start
       const routedVia = res.headers.get('X-Routed-Via')
       const fallbackAttempts = res.headers.get('X-Fallback-Attempts')
+      const taskClassHdr = res.headers.get('X-Task-Class')
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }))
         setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.error?.message ?? 'unknown error'}` }])
@@ -77,7 +80,8 @@ export default function PlaygroundPage() {
       const data = await res.json()
       const content = data.choices?.[0]?.message?.content ?? JSON.stringify(data, null, 2)
       const via = data._routed_via ?? (routedVia ? { platform: routedVia.split('/')[0], model: routedVia.split('/').slice(1).join('/') } : undefined)
-      setMessages([...newMessages, { role: 'assistant', content, meta: { platform: via?.platform, model: via?.model, latency, fallbackAttempts: fallbackAttempts ? parseInt(fallbackAttempts) : undefined } }])
+      const taskClass = data._task_class ?? taskClassHdr ?? undefined
+      setMessages([...newMessages, { role: 'assistant', content, meta: { platform: via?.platform, model: via?.model, latency, fallbackAttempts: fallbackAttempts ? parseInt(fallbackAttempts) : undefined, taskClass: taskClass || undefined } }])
     } catch (err: any) {
       setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.message}` }])
     } finally {
@@ -128,11 +132,14 @@ export default function PlaygroundPage() {
                     background: msg.role === 'user' ? 'color-mix(in oklab, var(--acc) 14%, transparent)' : 'var(--bg2)',
                     color: 'var(--ink)',
                   }}>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                    {msg.role === 'assistant'
+                      ? <ChatMarkdown content={msg.content} />
+                      : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
                     {msg.meta && (
                       <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', ...mono, fontSize: 10, color: 'var(--dim)' }}>
                         {msg.meta.platform && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: platformColor(msg.meta.platform) }} />{msg.meta.platform}</span>}
                         {msg.meta.model && <span>· {msg.meta.model}</span>}
+                        {msg.meta.taskClass && <span style={{ color: 'var(--acc)' }}>· {msg.meta.taskClass}</span>}
                         {msg.meta.latency != null && <span style={{ color: 'var(--acc2)' }}>· {msg.meta.latency}ms</span>}
                         {msg.meta.fallbackAttempts != null && msg.meta.fallbackAttempts > 0 && <span style={{ color: 'var(--warn)' }}>· {msg.meta.fallbackAttempts} fallback{msg.meta.fallbackAttempts > 1 ? 's' : ''}</span>}
                       </div>
