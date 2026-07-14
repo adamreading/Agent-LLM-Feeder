@@ -597,6 +597,9 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const hasImage = hasImageContent(messages);
   if (hasImage && !isPinned && !needs.includes('vision')) needs.push('vision');
   let effectiveTaskClass = taskClass;
+  // Content-free classification reason for the request log (wsl's 2026-07-14 ask):
+  // explains WHY this task_class was chosen without storing any prompt text.
+  let effectiveClassifyReason: string | null = taskClass ? 'explicit task_class' : (isPinned ? 'pinned model' : null);
   if (!taskClass && !isPinned) {
     const cls = await classifyPrompt(latestUserText(messages), {
       estimatedTokens: estimatedInputTokens,
@@ -605,6 +608,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       latencyCeilingMs: latency_ceiling_ms, // tier-1 only fires if the budget absorbs it
     });
     effectiveTaskClass = cls.taskClass;
+    effectiveClassifyReason = `tier${cls.tier}: ${cls.reason}`;
     for (const n of cls.structuralNeeds) if (!needs.includes(n)) needs.push(n);
   }
 
@@ -781,7 +785,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
           if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -793,7 +797,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - start), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -863,13 +867,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs,
+          Math.round(performance.now() - start), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason,
         );
         return;
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - start);
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
 
       lastError = err;
       const retryable = isRetryableError(err);
@@ -949,12 +953,13 @@ async function logRequest(
   taskClass?: string | null,
   consumer?: string | null,
   needs?: string[] | null,
+  classifyReason?: string | null,
 ) {
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }

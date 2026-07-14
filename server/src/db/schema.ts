@@ -233,6 +233,12 @@ export const requests = pgTable('requests', {
   // tools/long_context/<declared caps>) or the call ran unfiltered. Stored as a
   // comma-joined string; null/empty = no needs filter applied.
   needs: text('needs'),
+  // The classifier's REASON label for the chosen task_class — a FIXED, content-
+  // free string (e.g. 'math vocabulary', 'arithmetic symbols (no reasoning
+  // framing)', 'reasoning/explanation ask', or 'tier-1 (llama3.2:3b)'). Lets us
+  // audit WHY a class was picked (and catch false-positives) without ever storing
+  // prompt text (wsl's 2026-07-14 privacy-safe observability ask).
+  classifyReason: text('classify_reason'),
 });
 
 export const fallbackConfig = pgTable(
