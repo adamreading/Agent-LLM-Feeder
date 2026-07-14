@@ -12,12 +12,18 @@ import dotenv from 'dotenv';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
-// Apply every migration file in order (0000, 0001, ...) — not just the
-// first — so new test databases always reflect the current full schema.
+// Apply the journal-tracked migrations in order — mirroring exactly what
+// `drizzle-kit migrate` applies to the real DB. We read drizzle/meta/_journal.json
+// (NOT a glob of *.sql) so out-of-journal stray files — e.g. a hand-authored
+// hotfix like 0010_fix_qwen3_coder_caps.sql that drizzle itself never runs —
+// don't get applied here and break the test-DB build (a malformed stray was
+// throwing in createTestDb and cascading "drop is not a function" across every
+// DB-backed test file).
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../drizzle');
-const MIGRATION_FILES = fs.readdirSync(MIGRATIONS_DIR)
-  .filter(f => f.endsWith('.sql'))
-  .sort();
+const JOURNAL = JSON.parse(fs.readFileSync(path.join(MIGRATIONS_DIR, 'meta', '_journal.json'), 'utf8')) as { entries: { idx: number; tag: string }[] };
+const MIGRATION_FILES = JOURNAL.entries
+  .sort((a, b) => a.idx - b.idx)
+  .map(e => `${e.tag}.sql`);
 const MIGRATION_SQL = MIGRATION_FILES
   .map(f => fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8'))
   .join('\n--> statement-breakpoint\n');

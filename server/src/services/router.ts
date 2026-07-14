@@ -271,6 +271,23 @@ const COVERAGE_WEIGHT_TIGHT = 2;      // interactive: barely-there nudge
 const COVERAGE_WEIGHT_LOOSE = 4;      // batch: gentle freshness nudge
 const COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000; // untouched ≥24h → full staleness bonus
 
+// Human feedback (thumbs up/down) as a GENERAL, task-agnostic routing nudge
+// (Adam, 2026-07-14). ONLY non-image feedback feeds this — an image thumbs-down
+// drives the vision-capability demote instead (routes/agent.ts), so vision has
+// its own path and general scoring stays about general quality. A smoothed
+// sentiment in [-1,1] scaled by FEEDBACK_WEIGHT: net-positive LOWERS the
+// composite (tried earlier), net-negative RAISES it. Smoothing stops a single
+// vote from swinging routing; bounded well under the task-quality lift (20) so
+// it nudges like the intelligence prior / 429-penalty, never bosses.
+const FEEDBACK_WEIGHT = Number(process.env.FEEDBACK_ROUTING_WEIGHT ?? 6);
+const FEEDBACK_SMOOTHING = 2;
+function feedbackAdjust(ups: number, downs: number): number {
+  const total = ups + downs;
+  if (total === 0) return 0;
+  const sentiment = (ups - downs) / (total + FEEDBACK_SMOOTHING); // (-1,1)
+  return -sentiment * FEEDBACK_WEIGHT; // positive sentiment → negative → earlier
+}
+
 // A model counts as "long context" only if its declared window clears this bar.
 // Adam's call (2026-07-09): don't label an 8k/32k model long-context off a
 // low-target needle probe — require a genuinely large window.
@@ -372,12 +389,18 @@ function candidateScore(
   taskScore: number | undefined,
   sizeQualityFactor: number,
   dataAgeMs: number | null,
+  feedbackAdj: number,
 ): number {
   // COMPRESSED intelligence prior: normalize the raw rank (~1..RANK_REF) into a
   // small 0..BRAINS_WEIGHT nudge so "overall smarts" tie-breaks rather than
   // dominates (Adam, 2026-07-11). Lower rank = smaller number = tried earlier.
   const brains = Math.min(Math.max(basePriority, 1), RANK_REF) / RANK_REF * BRAINS_WEIGHT;
   let score = brains + getPenalty(modelDbId);
+
+  // Human feedback nudge (general quality signal; see feedbackAdjust). Additive
+  // in the same units as the 429-penalty: net-negative feedback raises the score
+  // (sinks the model), net-positive lowers it. Zero when no non-image feedback.
+  score += feedbackAdj;
 
   // Dynamic quality lift: a researched arena score for THIS task pulls the model
   // up (higher score = lower composite = tried earlier), scaled by size so a big
@@ -481,6 +504,29 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   `);
   const dataAgeMap = new Map(dataAgeRows.map(r => [r.model_db_id, Number(r.age_ms)]));
 
+  // Human-feedback aggregate (thumbs up/down), NON-image only — a general
+  // quality nudge on the composite score (Adam, 2026-07-14). Image feedback is
+  // excluded here (it drives the vision-capability demote instead). One cheap
+  // GROUP BY on the small response_feedback table, in line with the other
+  // per-call preloads above.
+  const feedbackRows = await all<{ model_db_id: number; rating: string; n: string }>(pool, `
+    SELECT model_db_id, rating, count(*) AS n
+    FROM response_feedback
+    WHERE had_image = false AND model_db_id IS NOT NULL
+    GROUP BY model_db_id, rating
+  `);
+  const feedbackMap = new Map<number, number>();
+  {
+    const agg = new Map<number, { ups: number; downs: number }>();
+    for (const r of feedbackRows) {
+      const e = agg.get(r.model_db_id) ?? { ups: 0, downs: 0 };
+      if (r.rating === 'up') e.ups = Number(r.n);
+      else if (r.rating === 'down') e.downs = Number(r.n);
+      agg.set(r.model_db_id, e);
+    }
+    for (const [id, { ups, downs }] of agg) feedbackMap.set(id, feedbackAdjust(ups, downs));
+  }
+
   // Step-3 selection: order by the composite score (see candidateScore).
   // healthMap is the persisted cron-derived summary — one cheap read per call.
   const healthMap = await getHealthMap(pool);
@@ -490,6 +536,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
       entry.intelligence_rank, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs,
       taskScoreMap.get(entry.model_db_id), sizeFactor(entry.size_label),
       dataAgeMap.has(entry.model_db_id) ? dataAgeMap.get(entry.model_db_id)! : null,
+      feedbackMap.get(entry.model_db_id) ?? 0,
     ),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
@@ -816,6 +863,26 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
   `);
   const dataAgeMap = new Map(dataAgeRows.map(r => [r.model_db_id, Number(r.age_ms)]));
 
+  // Same non-image feedback nudge the router applies, so explain/wiki/MCP
+  // ordering matches what routeRequest would actually do.
+  const feedbackRows = await all<{ model_db_id: number; rating: string; n: string }>(pool, `
+    SELECT model_db_id, rating, count(*) AS n
+    FROM response_feedback
+    WHERE had_image = false AND model_db_id IS NOT NULL
+    GROUP BY model_db_id, rating
+  `);
+  const feedbackMap = new Map<number, number>();
+  {
+    const agg = new Map<number, { ups: number; downs: number }>();
+    for (const r of feedbackRows) {
+      const e = agg.get(r.model_db_id) ?? { ups: 0, downs: 0 };
+      if (r.rating === 'up') e.ups = Number(r.n);
+      else if (r.rating === 'down') e.downs = Number(r.n);
+      agg.set(r.model_db_id, e);
+    }
+    for (const [id, { ups, downs }] of agg) feedbackMap.set(id, feedbackAdjust(ups, downs));
+  }
+
   const now = Date.now();
   const rows: RoutingExplainRow[] = models.map(m => {
     const health = healthMap.get(m.id);
@@ -823,7 +890,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
     const dataAgeMs = dataAgeMap.has(m.id) ? dataAgeMap.get(m.id)! : null;
     const keyCount = Number(m.key_count);
     const cooling = !!(health?.cooldown_until && new Date(health.cooldown_until).getTime() > now);
-    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs);
+    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0);
     const status: RoutingExplainRow['status'] =
       (!m.model_enabled || !m.fc_enabled) ? 'disabled'
         : keyCount === 0 ? 'no_key'

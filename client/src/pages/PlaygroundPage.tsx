@@ -18,7 +18,7 @@ interface FallbackEntry {
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
-  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
+  meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean; feedback?: 'up' | 'down' }
 }
 
 interface SearchConfig { backend: string; available: string[]; keyed: string[]; keys: Record<string, { set: boolean; masked: string | null }> }
@@ -112,6 +112,21 @@ export default function PlaygroundPage() {
     }
   }
 
+  const sendFeedback = async (index: number, rating: 'up' | 'down') => {
+    const msg = messages[index]
+    if (!msg?.meta) return
+    setMessages(prev => prev.map((m, i) => i === index ? { ...m, meta: { ...m.meta, feedback: rating } } : m))
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
+      const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+      await fetch(`${base}/api/agent/feedback`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ rating, platform: msg.meta.platform, modelId: msg.meta.model, taskClass: msg.meta.taskClass ?? null, hadImage: false, consumer: 'chatbot-ui' }),
+      })
+    } catch { /* best-effort */ }
+  }
+
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }
   const handleClear = () => { clearChatSession(); setMessages([]); inputRef.current?.focus() }
 
@@ -176,6 +191,10 @@ export default function PlaygroundPage() {
                         {msg.meta.augmented && <span style={{ color: 'var(--acc2)' }}>· web ◉</span>}
                         {msg.meta.latency != null && <span style={{ color: 'var(--acc2)' }}>· {msg.meta.latency}ms</span>}
                         {msg.meta.fallbackAttempts != null && msg.meta.fallbackAttempts > 0 && <span style={{ color: 'var(--warn)' }}>· {msg.meta.fallbackAttempts} fallback{msg.meta.fallbackAttempts > 1 ? 's' : ''}</span>}
+                        <span style={{ display: 'inline-flex', gap: 4, marginLeft: 4 }}>
+                          <button onClick={() => sendFeedback(i, 'up')} title="Good response" style={{ all: 'unset', cursor: 'pointer', color: msg.meta.feedback === 'up' ? 'var(--good)' : 'var(--dim)' }}>▲</button>
+                          <button onClick={() => sendFeedback(i, 'down')} title="Bad response" style={{ all: 'unset', cursor: 'pointer', color: msg.meta.feedback === 'down' ? 'var(--bad)' : 'var(--dim)' }}>▼</button>
+                        </span>
                       </div>
                     )}
                   </div>
