@@ -13,6 +13,15 @@ import { probeTools, probeJsonMode } from './methods.js';
 // steady state is a no-op.
 
 const DELAY_MS = Number(process.env.PROBE_DELAY_MS) || 1500;
+// Probe backoff: a transient probe outcome (timeout/429/5xx) records NO measured
+// row (runner.recordProbeResult bails on transient), so a model that always
+// times out stays "never probed" and would be re-probed on EVERY autoOnboard run
+// (which fires at each server start) — burning ~15s per attempt on a dead model.
+// So skip a model that has already failed >= N probe attempts in the last H
+// hours; it's retried once the window lapses (a genuinely-transient model
+// recovers). Defaults 2 fails / 24h.
+const PROBE_FAIL_BACKOFF_N = Number(process.env.PROBE_FAIL_BACKOFF_N) || 2;
+const PROBE_BACKOFF_HOURS = Number(process.env.PROBE_FAIL_BACKOFF_HOURS) || 24;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 type Logger = (msg: string) => void;
 
@@ -47,7 +56,7 @@ export async function reprobeSuspects(pool: pg.Pool, log: Logger = () => {}): Pr
 
 export async function probeNeverProbed(pool: pg.Pool, log: Logger = () => {}): Promise<number> {
   const neverProbed = await all<{ id: number; platform: string; model_id: string }>(pool, `
-    SELECT m.id, m.platform, m.model_id
+    SELECT DISTINCT m.id, m.platform, m.model_id
     FROM models m
     JOIN api_keys k ON k.platform = m.platform AND k.enabled = true AND k.status != 'invalid'
     WHERE m.enabled = true
@@ -55,8 +64,22 @@ export async function probeNeverProbed(pool: pg.Pool, log: Logger = () => {}): P
         SELECT 1 FROM model_capabilities mc
         WHERE mc.model_db_id = m.id AND mc.source = 'measured' AND mc.capability IN ('tools', 'json_mode')
       )
+      -- Backoff: skip a model that has already failed >= N probe attempts in the
+      -- last H hours (it keeps timing out; don't re-burn ~15s on it every start).
+      AND (
+        SELECT count(*) FROM requests r
+        WHERE r.platform = m.platform AND r.model_id = m.model_id
+          AND r.is_probe = true AND r.status = 'error'
+          AND r.created_at > now() - make_interval(hours => ?)
+      ) < ?
+      -- Don't probe a model that's currently quota-parked or circuit-broken —
+      -- it'll just fail and add to the backoff for no information gain.
+      AND NOT EXISTS (
+        SELECT 1 FROM model_health h WHERE h.model_db_id = m.id
+          AND (h.quota_exhausted_until > now() OR h.cooldown_until > now())
+      )
     ORDER BY m.platform, m.model_id
-  `);
+  `, [PROBE_BACKOFF_HOURS, PROBE_FAIL_BACKOFF_N]);
   for (const m of neverProbed) {
     const ctx = await contextFor(pool, m.platform, m.id);
     if (!ctx) continue;

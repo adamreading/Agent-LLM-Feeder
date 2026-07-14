@@ -133,7 +133,7 @@ export class OpenAICompatProvider extends BaseProvider {
         ...this.extraHeaders,
       },
       body: JSON.stringify(this.buildBody(messages, modelId, options, false)),
-    }, this.timeoutMs);
+    }, options?.timeoutMs ?? this.timeoutMs);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -161,7 +161,7 @@ export class OpenAICompatProvider extends BaseProvider {
         ...this.extraHeaders,
       },
       body: JSON.stringify(this.buildBody(messages, modelId, options, true)),
-    }, this.timeoutMs);
+    }, options?.timeoutMs ?? this.timeoutMs);
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

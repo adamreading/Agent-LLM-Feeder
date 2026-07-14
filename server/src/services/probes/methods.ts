@@ -1,6 +1,10 @@
 import type { ProbeContext, ProbeOutcome } from './runner.js';
 import { logProbeRequest } from './runner.js';
 
+// Probes fail fast: a dead/timing-out target should abort well before the 15s
+// serving timeout so a probe sweep doesn't burn 15s per broken model. Env-tunable.
+const PROBE_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS) || 8000;
+
 // A probe call failed for a reason unrelated to the model's actual
 // capability (rate limit, transport timeout, upstream 5xx) — recording a
 // false negative here would poison measured data with an infra artifact
@@ -29,6 +33,7 @@ export async function probeTools(ctx: ProbeContext): Promise<ProbeOutcome> {
     const result = await ctx.provider.chatCompletion(ctx.apiKey, [
       { role: 'user', content: 'What is the weather in Paris, France in celsius? Use the get_weather tool.' },
     ], ctx.modelId, {
+      timeoutMs: PROBE_TIMEOUT_MS,
       max_tokens: 100,
       tools: [{
         type: 'function',
@@ -98,6 +103,7 @@ export async function probeJsonMode(ctx: ProbeContext): Promise<ProbeOutcome> {
     const result = await ctx.provider.chatCompletion(ctx.apiKey, [
       { role: 'user', content: 'Reply with ONLY a JSON object of the exact shape {"answer": 42}. No other text.' },
     ], ctx.modelId, {
+      timeoutMs: PROBE_TIMEOUT_MS,
       max_tokens: 50,
       response_format: { type: 'json_object' },
     });
@@ -143,12 +149,13 @@ export async function probeReasoningControl(
   const prompt = 'Solve this step by step: if a train travels 240 miles in 4 hours, then speeds up by 25% for the next 2 hours, how far does it travel in total?';
   try {
     const baselineStart = Date.now();
-    const baselineResult = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, { max_tokens: 300 });
+    const baselineResult = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, { max_tokens: 300, timeoutMs: PROBE_TIMEOUT_MS });
     const baselineLatency = Date.now() - baselineStart;
     void logProbeRequest(ctx.platform, ctx.modelId, 'success', baselineResult.usage?.prompt_tokens ?? 0, baselineResult.usage?.completion_tokens ?? 0, baselineLatency, null);
 
     const testStart = Date.now();
     const testResult = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, {
+      timeoutMs: PROBE_TIMEOUT_MS,
       max_tokens: 300,
       reasoning_effort: 'none',
     });
@@ -188,6 +195,7 @@ export async function probeLongContext(ctx: ProbeContext, targetTokens: number):
   const start = Date.now();
   try {
     const result = await ctx.provider.chatCompletion(ctx.apiKey, [{ role: 'user', content: prompt }], ctx.modelId, {
+      timeoutMs: PROBE_TIMEOUT_MS,
       max_tokens: 50,
     });
     const latencyMs = Date.now() - start;

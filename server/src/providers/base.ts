@@ -71,6 +71,11 @@ export interface CompletionOptions {
   // model produced ONLY reasoning (empty content), the caller opted out of the
   // only text there was — content stays empty by design, rather than leaking.
   exclude_reasoning?: boolean;
+  // Per-call fetch timeout override (ms). Defaults to the provider's timeoutMs
+  // (15s). Probes pass a tighter value so a dead target fails fast instead of
+  // burning the full serving timeout on every attempt. Honored by the
+  // openai-compat provider (which serves the bulk of the catalog).
+  timeoutMs?: number;
 }
 
 export type ReasoningDialect =
