@@ -37,7 +37,7 @@ requestsRouter.get('/', async (req: Request, res: Response) => {
   // DESC + reverse → the most-recent window, presented chronologically.
   const rows = await all<any>(getPool(), `
     SELECT id, created_at, platform, model_id, status, task_class, consumer,
-           session_id, latency_ms, input_tokens, output_tokens, error, is_probe
+           session_id, latency_ms, input_tokens, output_tokens, error, is_probe, augmented
     FROM requests
     ${where}
     ORDER BY id DESC

@@ -1,0 +1,1 @@
+ALTER TABLE "requests" ADD COLUMN "augmented" boolean DEFAULT false NOT NULL;

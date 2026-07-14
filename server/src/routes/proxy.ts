@@ -468,6 +468,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // Validate request
   const parsed = chatCompletionSchema.safeParse(req.body);
   if (!parsed.success) {
+    // Observable rejection: a restart-dropped in-flight stream resurfaces as a
+    // malformed retry (e.g. empty assistant content) and 400s here — log it so
+    // deploy impact + a worker's bad calls show up in /api/requests (session
+    // from the header, since the body didn't validate).
+    logRejection('400', 'invalid_body', parsed.error.errors.map(e => e.message).join(', '),
+      sanitizeSessionId(req.header('x-session-id')), sanitizeConsumerLabel(req.header('x-consumer')) ?? baseConsumer);
     res.status(400).json({
       error: {
         message: `Invalid request: ${parsed.error.errors.map(e => e.message).join(', ')}`,
@@ -691,6 +697,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       if (matches.length === 1) {
         preferredModel = matches[0].id;
       } else if (matches.length > 1) {
+        logRejection('400', 'model_ambiguous', `${requestedModel} on ${matches.map(m => m.platform).join(',')}`, explicitSessionId, consumer);
         res.status(400).json({
           error: {
             message: `Model id '${requestedModel}' is ambiguous — it exists on multiple platforms (${matches.map(m => m.platform).join(', ')}). Specify 'platform/${requestedModel}' to pin the exact instance.`,
@@ -702,6 +709,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       } else {
         const disabled = await get<{ id: number }>(pool, 'SELECT id FROM models WHERE model_id = ?', [requestedModel]);
         const reason = disabled ? 'is disabled' : 'is not in the catalog';
+        logRejection('400', 'model_not_found', `${requestedModel} ${reason}`, explicitSessionId, consumer);
         res.status(400).json({
           error: {
             message: `Model '${requestedModel}' ${reason}. Omit the 'model' field to auto-route, or call /v1/models for the available list.`,
@@ -841,7 +849,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
           if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -853,7 +861,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -923,13 +931,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason,
+          Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented,
         );
         return;
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - attemptStart);
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
 
       lastError = err;
       const retryable = isRetryableError(err);
@@ -1018,13 +1026,39 @@ async function logRequest(
   consumer?: string | null,
   needs?: string[] | null,
   classifyReason?: string | null,
+  augmented?: boolean,
 ) {
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null, augmented ?? false]);
   } catch (e) {
     console.error('Failed to log request:', e);
+  }
+}
+
+// Log a PRE-ROUTING 4xx rejection (bad body, model-not-found/ambiguous) so a
+// restart-dropped stream or a worker's malformed call is OBSERVABLE in
+// /api/requests instead of vanishing (only post-routing outcomes were logged
+// before, so a downstream 400 from a dropped in-flight stream left no trace).
+// Sentinel platform='rejected'; the HTTP status goes in `status` and the reason
+// code/message in `error`. Flagged is_probe=true so it's SYNTHETIC — excluded
+// from real-traffic analytics by default (probeFilter) but visible on
+// /api/requests + the agent wall. Content-free: no prompt/body text.
+async function logRejection(
+  code: string,          // HTTP status as string, e.g. '400'
+  reason: string,        // machine reason, e.g. 'model_not_found' / 'invalid_body'
+  detail: string | null, // short message (no prompt text)
+  sessionId?: string,
+  consumer?: string | null,
+) {
+  try {
+    await run(getPool(), `
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, consumer, is_probe)
+      VALUES ('rejected', ?, ?, 0, 0, 0, ?, ?, ?, true)
+    `, [reason, code, detail ? detail.slice(0, 300) : reason, sessionId ?? null, consumer ?? null]);
+  } catch (e) {
+    console.error('Failed to log rejection:', e);
   }
 }

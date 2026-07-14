@@ -228,6 +228,11 @@ export const requests = pgTable('requests', {
   latencyMs: integer('latency_ms').notNull().default(0),
   error: text('error'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // SYNTHETIC / non-served-traffic flag — true for internal probe calls AND for
+  // pre-routing 4xx rejections (logged with platform='rejected'; see logRejection
+  // in proxy.ts). Analytics filters is_probe=false by default (probeFilter in
+  // routes/analytics.ts) so neither pollutes real success%/latency; both stay
+  // visible via /api/requests (unfiltered) and ?includeProbes=1.
   isProbe: boolean('is_probe').notNull().default(false),
   sessionId: text('session_id'),
   taskClass: text('task_class'),
@@ -248,6 +253,13 @@ export const requests = pgTable('requests', {
   // audit WHY a class was picked (and catch false-positives) without ever storing
   // prompt text (wsl's 2026-07-14 privacy-safe observability ask).
   classifyReason: text('classify_reason'),
+  // Was web-search grounding injected before routing (Phase 4 augment)? Mirrors
+  // the X-Augmented response header into the log so an augmented call is
+  // VERIFIABLE after the fact (the header alone is swallowed by callers like
+  // OpenCode's --format json). Added 2026-07-14 (Adam-approved) so RINGER's agent
+  // wall can show which research calls actually reached live web. Never true for
+  // ungrounded/code traffic.
+  augmented: boolean('augmented').notNull().default(false),
 });
 
 // Human thumbs-up/down on a served response (Agent/Chatbot UI, 2026-07-14).

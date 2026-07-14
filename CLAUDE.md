@@ -42,8 +42,12 @@ treat it as production.
 - **Web-augment mechanism:** per-call `augment` field / `X-Augment` header, values
   **only** `off`/`auto`/`force` (`parseAugmentPolicy` — `on`/`true`/`1` silently → `off`).
   No consumer forces it off except the `open-brain` hard-block (`AUGMENT_BLOCKED_CONSUMERS`);
-  default is env `FEEDER_AUGMENT_DEFAULT` (unset→off). Augmented calls are surfaced only on
-  the `X-Augmented` response header — NOT logged in the `requests` table.
+  default is env `FEEDER_AUGMENT_DEFAULT` (unset→off). Augmented calls are on the
+  `X-Augmented` response header AND logged to `requests.augmented` (2026-07-14) so
+  `/api/requests` surfaces which calls hit live web. Pre-routing 4xx rejections are also
+  logged now — sentinel `platform='rejected'`, `is_probe=true` (so they're excluded from
+  real-traffic analytics but visible via `/api/requests` + `?includeProbes=1`); makes a
+  restart-dropped stream's downstream 400 observable instead of invisible.
 - **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
   Restart drops in-flight fleet requests — brief, but it's production.
 - **Capability truth lives in two places** — check BOTH: `model_capabilities`
