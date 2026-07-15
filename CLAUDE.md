@@ -77,5 +77,12 @@ treat it as production.
 - **Endpoints:** OpenAI-compatible proxy at `/v1` (chat/completions, models); MCP
   server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless, read-only) exposing
   `list_usable_models` / `explain_routing` — both wrap `router.explainRouting()`.
-- **Coordination board** (with peers wsl-claude / ob-claude): run
-  `node .claude/coordination/coord.js {show|msg|...}` with `COORD_AGENT=feeder-claude`.
+- **Coordination board** (with peers wsl-claude / ringer-claude / ob-claude/windows):
+  the board script lives in the Open Brain project, NOT this repo — run
+  `node "/mnt/c/Users/<your-windows-user>/projects/Open Brain/.claude/coordination/coord.js" {show|msg|...}`
+  with `COORD_AGENT=feeder-claude`. (The `.claude/coordination/` path relative to this
+  repo does NOT exist — verified 2026-07-15. The SessionStart/UserPromptSubmit hooks in
+  `~/.claude/settings.json` already invoke `coord.js show --compact` from that absolute
+  path, which is how the board lands in context each turn.) Backtick trap: never inline a
+  backticked shell fragment in a `msg` argument — it triggers command substitution; write
+  the message to a scratchpad file and `msg "$(cat file)"`.
