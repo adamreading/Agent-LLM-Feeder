@@ -14,6 +14,7 @@ export const requestsRouter = Router();
 const querySchema = z.object({
   consumer: z.string().max(64).optional(),
   session_id: z.string().max(128).optional(),
+  run_id: z.string().max(128).optional(),     // swarm run id (X-Run-Id); groups all workers/attempts of one run
   since: z.string().datetime().optional(),   // ISO-8601, e.g. 2026-07-14T12:50:00Z
   limit: z.coerce.number().int().positive().max(1000).optional(),
 });
@@ -24,12 +25,13 @@ requestsRouter.get('/', async (req: Request, res: Response) => {
     res.status(400).json({ error: { message: `Invalid query: ${parsed.error.errors.map(e => e.message).join(', ')}` } });
     return;
   }
-  const { consumer, session_id, since, limit } = parsed.data;
+  const { consumer, session_id, run_id, since, limit } = parsed.data;
 
   const filters: string[] = [];
   const params: unknown[] = [];
   if (consumer) { filters.push('consumer = ?'); params.push(consumer); }
   if (session_id) { filters.push('session_id = ?'); params.push(session_id); }
+  if (run_id) { filters.push('run_id = ?'); params.push(run_id); }
   if (since) { filters.push('created_at >= ?'); params.push(since); }
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const lim = limit ?? 200;
@@ -37,7 +39,7 @@ requestsRouter.get('/', async (req: Request, res: Response) => {
   // DESC + reverse → the most-recent window, presented chronologically.
   const rows = await all<any>(getPool(), `
     SELECT id, created_at, platform, model_id, status, task_class, consumer,
-           session_id, latency_ms, input_tokens, output_tokens, error, is_probe, augmented
+           session_id, run_id, latency_ms, input_tokens, output_tokens, error, is_probe, augmented
     FROM requests
     ${where}
     ORDER BY id DESC

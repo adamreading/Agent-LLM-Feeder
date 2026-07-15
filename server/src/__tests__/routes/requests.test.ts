@@ -64,6 +64,18 @@ describe('Requests telemetry API (/api/requests)', () => {
     expect(body[1].error).toContain('429');
   });
 
+  it('projects run_id and filters by it (the field ringer surfaces on the wall)', async () => {
+    // A swarm run's worker rows carry run_id (X-Run-Id). Seed two with a run id.
+    await run(getPool(),
+      `INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, session_id, consumer, run_id, is_probe) VALUES
+       ('groq','m','success',10,5,100,'session:w-r','ringer-test','run-XYZ',false),
+       ('nvidia','m','success',10,5,100,'session:w-r','ringer-test','run-XYZ',false)`);
+    const { status, body } = await request(app, '/api/requests?run_id=run-XYZ');
+    expect(status).toBe(200);
+    expect(body.length).toBe(2);
+    expect(body.every((r: any) => r.run_id === 'run-XYZ')).toBe(true); // projected, not null
+  });
+
   it('rejects a malformed since with 400', async () => {
     const { status } = await request(app, '/api/requests?since=not-a-date');
     expect(status).toBe(400);

@@ -63,6 +63,19 @@ treat it as production.
   book on completion; N in-flight calls can overshoot by one wave) — a backstop,
   not a to-the-token meter; cap `--max-parallel` for tighter. In-mem counter seeded
   from the `requests` log on declare (`session_id` = per-attempt view is unchanged).
+- **Swarm zero-progress circuit-breaker** (`services/swarmProgress.ts`, 2026-07-15):
+  a BACKSTOP for degenerate agent loops. Root cause it kills (verified in the log):
+  a weak/free worker returns EMPTY completions, the OpenCode loop never converges,
+  and with NO step cap it resends the same ~21k context hundreds of times — one
+  observed session ran 252 rounds / 251 zero-output = **6.16M tokens of pure spin**.
+  Feeder is the only choke point that sees every call, so it detects the loop: a
+  round is "no-progress" when `output<=0 AND input grew < FEEDER_SWARM_NOPROGRESS_INPUT_DELTA`
+  (256); after `FEEDER_SWARM_NOPROGRESS_LIMIT` (15; 0=off) consecutive such rounds
+  the session is refused PRE-ROUTE with a terminal `429 error.code='no_progress_loop'`
+  (ringer STOPS the session, no retry). Swarm-consumers only, keyed on `session_id`
+  (one OpenCode loop), fail-open. Kills a spin at ~round 16 vs 252. The REAL fix is
+  an OpenCode step/turn cap (ringer's lane, flagged) — this is the safety net.
+  `/api/requests` now projects + filters `run_id` (was logged but not surfaced).
 - **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
   Restart drops in-flight fleet requests — brief, but it's production. After a machine
   **reboot** feeder has no supervisor (Postgres self-recovers via systemd; feeder does

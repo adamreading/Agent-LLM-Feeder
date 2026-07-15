@@ -18,6 +18,7 @@ import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { benchUnreachableModel, setQuotaExhausted } from '../services/modelHealth.js';
 import { isSwarmConsumer, hasLane, heldPlatformsExcluding, recordLane, withAssignLock } from '../services/swarmLanes.js';
 import { checkBudget, recordSpend } from '../services/swarmBudget.js';
+import { checkProgress, recordProgress } from '../services/swarmProgress.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -783,6 +784,31 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     }
   }
 
+  // Swarm zero-progress circuit-breaker (RINGER, 2026-07-15). If this swarm
+  // session has spun for LIMIT consecutive no-progress rounds (empty completions
+  // + nothing appended — the degenerate-loop signature that burned 6M tokens in
+  // one session), refuse further calls with a TERMINAL 429 so ringer stops the
+  // session instead of letting an unbounded OpenCode loop resend context forever.
+  // Backstop for the missing harness step-cap; opt-in + fail-open (see
+  // services/swarmProgress.ts). Keyed on session (one OpenCode agent loop).
+  if (isSwarmConsumer(consumer) && explicitSessionId) {
+    const spun = checkProgress(consumer, explicitSessionId);
+    if (spun) {
+      logRejection('429', 'no_progress_loop', `session=${explicitSessionId} zero-output streak=${spun.streak} limit=${spun.limit}`, explicitSessionId, consumer, runId);
+      res.status(429).json({
+        error: {
+          message: `Session '${explicitSessionId}' made ${spun.streak} consecutive no-progress rounds (empty output, no new context) — aborting a runaway agent loop. This is terminal: stop the session; retrying the same task/model will just re-spin.`,
+          type: 'no_progress_loop',
+          code: 'no_progress_loop',
+          session_id: explicitSessionId,
+          streak: spun.streak,
+          limit: spun.limit,
+        },
+      });
+      return;
+    }
+  }
+
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
   let lastError: any = null;
@@ -1075,6 +1101,9 @@ async function logRequest(
   // Book the tokens against this call's swarm run (no-op unless the run declared
   // a budget) BEFORE the insert, so a DB write failure can't skip metering.
   recordSpend(consumer, runId, (inputTokens ?? 0) + (outputTokens ?? 0));
+  // Feed the zero-progress circuit-breaker (no-op unless a swarm session): a
+  // completed round's token shape tells us if the agent loop is making progress.
+  recordProgress(consumer, sessionId, inputTokens ?? 0, outputTokens ?? 0);
   try {
     await run(getPool(), `
       INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented, run_id)
