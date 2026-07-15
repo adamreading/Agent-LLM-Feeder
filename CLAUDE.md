@@ -49,7 +49,10 @@ treat it as production.
   real-traffic analytics but visible via `/api/requests` + `?includeProbes=1`); makes a
   restart-dropped stream's downstream 400 observable instead of invisible.
 - **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
-  Restart drops in-flight fleet requests — brief, but it's production.
+  Restart drops in-flight fleet requests — brief, but it's production. After a machine
+  **reboot** feeder has no supervisor (Postgres self-recovers via systemd; feeder does
+  not) — bring it up via `~/recover-stack.sh` (fleet master) or manually; see
+  `RECOVERY.md` (repo root) → full docs at `~/.hermes/RECOVERY.md`.
 - **Capability truth lives in two places** — check BOTH: `model_capabilities`
   (measured/observed/declared per-model, the router's hard gate) AND
   `canonical_models` (`vision`/`audio`/`video` declared modality flags from research —
