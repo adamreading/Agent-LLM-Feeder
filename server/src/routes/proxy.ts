@@ -17,6 +17,7 @@ import { observeCapabilities, recordVisionUnsupported } from '../services/capabi
 import { markCapabilitySuspect } from '../services/probes/runner.js';
 import { benchUnreachableModel, setQuotaExhausted } from '../services/modelHealth.js';
 import { isSwarmConsumer, hasLane, heldPlatformsExcluding, recordLane, withAssignLock } from '../services/swarmLanes.js';
+import { checkBudget, recordSpend } from '../services/swarmBudget.js';
 import { getPool, getUnifiedApiKey } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 
@@ -60,6 +61,18 @@ function sanitizeConsumerLabel(raw: unknown): string | null {
 // and per-session request attribution for free. Sanitised + capped (session
 // ids like `ses_2f3a…` are word/`.-:` chars); longer cap than a consumer label.
 function sanitizeSessionId(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const s = raw.trim().replace(/[^\w.\-:]/g, '').slice(0, 128);
+  return s.length > 0 ? s : undefined;
+}
+
+// A swarm RUN id supplied via `X-Run-Id` (RINGER, 2026-07-15) = agent_tasks.id,
+// baked literally per-invocation into the OpenCode config so it survives
+// OpenCode's wire (unlike X-Session-Id, which OpenCode overwrites per call).
+// Groups every worker/attempt of one swarm run so cumulative spend can be
+// metered + hard-capped (services/swarmBudget.ts). Same charset/cap as a
+// session id; null for all non-swarm traffic.
+function sanitizeRunId(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const s = raw.trim().replace(/[^\w.\-:]/g, '').slice(0, 128);
   return s.length > 0 ? s : undefined;
@@ -579,6 +592,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
   const explicitSessionId = session_id ?? user ?? sanitizeSessionId(req.header('x-session-id'));
+  // Swarm run id (X-Run-Id) — groups all workers/attempts of one swarm run for
+  // per-run spend metering + the hard-cap enforcer. Independent of session_id
+  // (which is per-attempt). Null for non-swarm traffic.
+  const runId = sanitizeRunId(req.header('x-run-id'));
   const { taskClass, isAuto } = parseModelField(requestedModel);
 
   // Tier-0 heuristics: derive capability needs directly from the request's
@@ -740,6 +757,32 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // point ready for when one is added).
   const costTierCeiling = trustTier === 'external' ? 'free' as const : undefined;
 
+  // Swarm per-run spend cap (RINGER, 2026-07-15). If this call belongs to a
+  // swarm run that DECLARED a token budget (POST /api/swarm/budget) and the run
+  // has already crossed it, refuse BEFORE routing with a TERMINAL 429 — the
+  // enforcement choke point (same place the anti-affinity exclusion is applied
+  // below). Terminal, not retryable: the caller (ringer) STOPS the run rather
+  // than failing over. Opt-in + fail-open: a run with no declared budget, or
+  // one lost to a restart, is unlimited (checkBudget returns null). See
+  // services/swarmBudget.ts.
+  if (isSwarmConsumer(consumer) && runId) {
+    const over = checkBudget(consumer, runId);
+    if (over) {
+      logRejection('429', 'run_budget_exceeded', `run=${runId} spent=${over.spent} budget=${over.budget}`, explicitSessionId, consumer, runId);
+      res.status(429).json({
+        error: {
+          message: `Run '${runId}' has exhausted its declared token budget (${over.spent}/${over.budget}). This is terminal — stop the run; retrying will not help.`,
+          type: 'run_budget_exceeded',
+          code: 'run_budget_exceeded',
+          run_id: runId,
+          spent: over.spent,
+          budget: over.budget,
+        },
+      });
+      return;
+    }
+  }
+
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
   let lastError: any = null;
@@ -849,7 +892,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
           if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -861,7 +904,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -937,7 +980,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - attemptStart);
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
 
       lastError = err;
       const retryable = isRetryableError(err);
@@ -1027,12 +1070,16 @@ async function logRequest(
   needs?: string[] | null,
   classifyReason?: string | null,
   augmented?: boolean,
+  runId?: string | null,
 ) {
+  // Book the tokens against this call's swarm run (no-op unless the run declared
+  // a budget) BEFORE the insert, so a DB write failure can't skip metering.
+  recordSpend(consumer, runId, (inputTokens ?? 0) + (outputTokens ?? 0));
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null, augmented ?? false]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented, run_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null, augmented ?? false, runId ?? null]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }
@@ -1052,12 +1099,13 @@ async function logRejection(
   detail: string | null, // short message (no prompt text)
   sessionId?: string,
   consumer?: string | null,
+  runId?: string | null,
 ) {
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, consumer, is_probe)
-      VALUES ('rejected', ?, ?, 0, 0, 0, ?, ?, ?, true)
-    `, [reason, code, detail ? detail.slice(0, 300) : reason, sessionId ?? null, consumer ?? null]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, consumer, is_probe, run_id)
+      VALUES ('rejected', ?, ?, 0, 0, 0, ?, ?, ?, true, ?)
+    `, [reason, code, detail ? detail.slice(0, 300) : reason, sessionId ?? null, consumer ?? null, runId ?? null]);
   } catch (e) {
     console.error('Failed to log rejection:', e);
   }

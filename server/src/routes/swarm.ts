@@ -4,9 +4,15 @@ import { getPool } from '../db/index.js';
 import { all } from '../db/pgCompat.js';
 import { taskTypeFor } from '../services/router.js';
 import { heldPlatforms } from '../services/swarmLanes.js';
+import { declareBudget, peekBudget } from '../services/swarmBudget.js';
 
-// Swarm-allocation support for parallel task-runners (RINGER). Read-only.
+// Swarm-allocation support for parallel task-runners (RINGER). Read-only EXCEPT
+// POST /budget (declares a run's spend ceiling — localhost/dispatch-only).
 export const swarmRouter = Router();
+
+function isLocalReq(req: Request): boolean {
+  return req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
+}
 
 // GET /api/swarm/capacity?class=<wire_class>  ->  { sessions, class, task_type }
 //
@@ -53,4 +59,59 @@ swarmRouter.get('/capacity', async (req: Request, res: Response) => {
   const free = rows.filter(r => !held.has(r.platform)).length;
 
   res.json({ sessions: free, class: wireClass, task_type: taskType });
+});
+
+// POST /api/swarm/budget  { run_id, max_tokens, consumer? }  ->  { run_id, consumer, budget, spent }
+//
+// Declares a per-RUN cumulative token ceiling that feeder ENFORCES at the /v1
+// choke point: once (consumer, run_id) input+output tokens cross max_tokens,
+// further calls for that run are refused pre-route with a terminal 429
+// `run_budget_exceeded` (see services/swarmBudget.ts + the enforcer in
+// proxy.ts). The run id is carried on the wire as the `X-Run-Id` header.
+//
+// Contract (locked with ringer 2026-07-15):
+//  • Called ONCE by the DISPATCH layer at run start (ringer at claim) — NOT by
+//    workers. LOCALHOST-ONLY (the operator's own machine), matching /api/agent.
+//  • SET-ONCE + LOWER-ONLY: a second call for the same run may only REDUCE the
+//    ceiling, never raise it — so neither orchestrator nor worker can uncap
+//    mid-run. Enforced in declareBudget.
+//  • OPT-IN: a run with no declared budget is unlimited (today's behaviour).
+//  • consumer defaults to 'ringer' (the sole swarm consumer today); the pair
+//    (consumer, run_id) is the metering key, matching anti-affinity grouping.
+swarmRouter.post('/budget', async (req: Request, res: Response) => {
+  if (!isLocalReq(req)) {
+    res.status(403).json({ error: { message: 'POST /api/swarm/budget is localhost-only (dispatch layer)', type: 'forbidden' } });
+    return;
+  }
+  const body = (req.body ?? {}) as { run_id?: unknown; max_tokens?: unknown; consumer?: unknown };
+  const runId = typeof body.run_id === 'string' ? body.run_id.trim() : '';
+  const maxTokens = typeof body.max_tokens === 'number' ? body.max_tokens : Number(body.max_tokens);
+  const consumer = typeof body.consumer === 'string' && body.consumer.trim() ? body.consumer.trim() : 'ringer';
+  if (!runId) {
+    res.status(400).json({ error: { message: 'run_id (non-empty string) is required', type: 'invalid_request_error' } });
+    return;
+  }
+  if (!Number.isFinite(maxTokens) || maxTokens <= 0) {
+    res.status(400).json({ error: { message: 'max_tokens (positive number) is required', type: 'invalid_request_error' } });
+    return;
+  }
+  const { budget, spent } = await declareBudget(getPool(), consumer, runId, Math.floor(maxTokens));
+  res.json({ run_id: runId, consumer, budget, spent });
+});
+
+// GET /api/swarm/budget?run_id=&consumer=  ->  { run_id, consumer, budget, spent } | 404
+// Inspect a run's live budget state (metering read-out for the wall / probes).
+swarmRouter.get('/budget', (req: Request, res: Response) => {
+  const runId = typeof req.query.run_id === 'string' ? req.query.run_id : '';
+  const consumer = typeof req.query.consumer === 'string' && req.query.consumer ? req.query.consumer : 'ringer';
+  if (!runId) {
+    res.status(400).json({ error: { message: 'run_id query param is required', type: 'invalid_request_error' } });
+    return;
+  }
+  const state = peekBudget(consumer, runId);
+  if (!state) {
+    res.status(404).json({ error: { message: `no declared budget for run '${runId}' (consumer '${consumer}')`, type: 'not_found' } });
+    return;
+  }
+  res.json({ run_id: runId, consumer, ...state });
 });

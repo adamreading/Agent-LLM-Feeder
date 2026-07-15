@@ -260,6 +260,15 @@ export const requests = pgTable('requests', {
   // wall can show which research calls actually reached live web. Never true for
   // ungrounded/code traffic.
   augmented: boolean('augmented').notNull().default(false),
+  // The swarm RUN this call belongs to (RINGER, 2026-07-15) — a per-run id set
+  // by the dispatch layer and carried on the wire as the `X-Run-Id` header
+  // (baked literally per-invocation via OPENCODE_CONFIG; survives OpenCode like
+  // X-Consumer, unlike X-Session-Id which OpenCode clobbers per-invocation).
+  // Distinct from session_id (OpenCode's per-ATTEMPT id): run_id groups every
+  // worker/attempt of ONE swarm run, so cumulative (consumer, run_id) token
+  // spend is the key the per-run hard-cap enforcer (services/swarmBudget.ts)
+  // meters against. Null for all non-swarm traffic. Content-free.
+  runId: text('run_id'),
 });
 
 // Human thumbs-up/down on a served response (Agent/Chatbot UI, 2026-07-14).

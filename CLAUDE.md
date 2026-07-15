@@ -48,6 +48,21 @@ treat it as production.
   logged now — sentinel `platform='rejected'`, `is_probe=true` (so they're excluded from
   real-traffic analytics but visible via `/api/requests` + `?includeProbes=1`); makes a
   restart-dropped stream's downstream 400 observable instead of invisible.
+- **Swarm per-run spend cap** (`services/swarmBudget.ts`, RINGER, 2026-07-15): a
+  swarm run's cumulative `(consumer, run_id)` tokens can be HARD-CAPPED. Run id
+  arrives on the `X-Run-Id` header (baked literally per-invocation by ringer via
+  `OPENCODE_CONFIG` — survives OpenCode like `X-Consumer`, unlike `X-Session-Id`
+  which OpenCode clobbers) → read + logged to `requests.run_id`. The dispatch layer
+  declares a ceiling once via `POST /api/swarm/budget {run_id, max_tokens}`
+  (localhost-only, **set-once/lower-only** so it can't be uncapped mid-run); the
+  proxy then refuses over-budget calls PRE-ROUTE with a **terminal** `429`
+  (`error.code='run_budget_exceeded'` — ringer STOPS the run, doesn't fail over,
+  distinct from retryable `ALL_RATE_LIMITED`). **Opt-in + degrade-safe/fail-open:**
+  a run with no declared budget (or one lost to a restart) is unlimited — the
+  enforcer only ever ADDS a stop, never a false denial. Bounded-overshoot (tokens
+  book on completion; N in-flight calls can overshoot by one wave) — a backstop,
+  not a to-the-token meter; cap `--max-parallel` for tighter. In-mem counter seeded
+  from the `requests` log on declare (`session_id` = per-attempt view is unchanged).
 - **Run:** `npm run build:server` then `node dist/index.js` from `server/` (npm start).
   Restart drops in-flight fleet requests — brief, but it's production. After a machine
   **reboot** feeder has no supervisor (Postgres self-recovers via systemd; feeder does
@@ -77,6 +92,9 @@ treat it as production.
 - **Endpoints:** OpenAI-compatible proxy at `/v1` (chat/completions, models); MCP
   server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless, read-only) exposing
   `list_usable_models` / `explain_routing` — both wrap `router.explainRouting()`.
+  Swarm support (`routes/swarm.ts`): `GET /api/swarm/capacity` (free provider lanes),
+  `POST /api/swarm/budget` (declare a run's token ceiling, localhost-only) +
+  `GET /api/swarm/budget` (read live spend). Per-request telemetry: `GET /api/requests`.
 - **Coordination board** (with peers wsl-claude / ringer-claude / ob-claude/windows):
   the board script lives in the Open Brain project, NOT this repo — run
   `node "/mnt/c/Users/<your-windows-user>/projects/Open Brain/.claude/coordination/coord.js" {show|msg|...}`
