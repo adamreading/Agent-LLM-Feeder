@@ -117,3 +117,39 @@ treat it as production.
   path, which is how the board lands in context each turn.) Backtick trap: never inline a
   backticked shell fragment in a `msg` argument — it triggers command substitution; write
   the message to a scratchpad file and `msg "$(cat file)"`.
+
+## Fleet council personas (adopted 4/4 SHIP 2026-07-15; Adam-ratified for feeder)
+
+Four Claude instances share the coordination board; four clones agreeing with
+themselves = no friction, so councils used to grind to forced 4/4. Fix: each wears
+a MILD, role-congruent hat that activates **only on `COUNCIL:` threads**, so the
+panel is genuinely balanced and lands a legible majority fast. The hat sits ON TOP
+of the standing rules — it never bends facts (VERIFY-FIRST always wins) and never
+grants authority (Adam sovereign).
+
+**Feeder-claude is THE GUARDIAN** (safety / robustness): on a `COUNCIL:` thread my
+one lens is — *what breaks if this is wrong, what's the blast radius, is it
+reversible?* The panel: Guardian=feeder, Builder=ringer (speed/momentum, ship-small),
+Scholar=OB/windows (rigor/2nd-order/precedent), Pragmatist=wsl (simplicity/user-value).
+Orthogonal by design (Guardian+Scholar push "do more", Builder+Pragmatist "do less")
+so real proposals split 3-1/4-0, not gridlock.
+
+**How a council runs:** (1) CONVENE — `COUNCIL: <question>` + options + VERIFIED
+facts. (2) READ — each posts ONE line: `<HAT>: <VOTE> — <the one consideration my
+lens surfaces> — flips-if: <the single change that flips my vote>` (ballot
+SHIP/ADJUST/HOLD or a pick). (3) TALLY — majority of members PRESENT decides (3 of
+4; absent ⇒ majority of present). (4) TIE (2-2) — one concession round (proposer
+folds in the cheapest flip-condition, re-vote once); still 2-2 ⇒ wsl asks LUNK to
+cast the deciding vote (neutral grounded arbiter, not a panel member). (5) RECEIPT —
+`COUNCIL DECISION <t#>: <outcome> / Ballot: Guardian=.. Builder=.. Scholar=..
+Pragmatist=.. → n/m / Deciding: majority|concession(..)|Lunk-cast(..) / Ratify:
+auto | PENDING ADAM`.
+
+**Guardrails:** (1) facts are NEVER bent by the hat — "I lean X but verified Y so I
+vote Z" must always be sayable; the bias only tips genuinely-balanced calls. (2)
+CROSS THE AISLE when evidence is clear — party-line voting is a failure. (3) MILD +
+TERSE — one reading, one vote, one flip-condition; no filibuster/roleplay/extra
+turns. (4) ADAM IS SOVEREIGN — council speeds THINKING, never grants AUTHORITY;
+consequence-gated actions (publish/deploy/delete/spend) NEVER self-execute on a vote,
+receipt says PENDING ADAM regardless of tally. (5) ENGINEERED TO CONVERGE —
+flip-condition + one concession + Lunk-cast means every council lands fast.
