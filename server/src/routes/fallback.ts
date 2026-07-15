@@ -6,6 +6,22 @@ import { explainRouting } from '../services/router.js';
 
 export const fallbackRouter = Router();
 
+// Parse a human-authored monthly_token_budget note (e.g. "~6M/mo", "~1000 credits",
+// "Free tier (per-model caps, console.groq.com)") into a token count for the budget
+// bar. ROBUSTNESS (2026-07-15): the match must start with a DIGIT so free-text with
+// no number — a URL's dots like "console.groq.com" — yields 0, not NaN; and a
+// Number.isFinite guard makes doubly sure a single un-parseable note can never turn
+// into NaN and null the ENTIRE summed totalBudget (which hid the whole bar).
+export function parseMonthlyBudget(s: string | null | undefined): number {
+  if (!s) return 0;
+  const m = s.match(/~?(\d[\d.]*)(?:-(\d[\d.]*))?([MK])?/);
+  if (!m) return 0;
+  const high = parseFloat(m[2] ?? m[1]);
+  if (!Number.isFinite(high)) return 0;
+  const unit = m[3] === 'M' ? 1_000_000 : m[3] === 'K' ? 1_000 : 1;
+  return high * unit;
+}
+
 // READ-ONLY reality view: the real current effective priority order the router
 // would use right now, computed with the SAME candidateScore + structural
 // checks routeRequest uses, plus a per-model breakdown (intelligence rank,
@@ -42,17 +58,9 @@ fallbackRouter.get('/token-usage', async (_req: Request, res: Response) => {
     ORDER BY m.intelligence_rank ASC
   `);
 
-  function parseBudget(s: string): number {
-    const m = s.match(/~?([\d.]+)(?:-([\d.]+))?([MK])?/);
-    if (!m) return 0;
-    const high = parseFloat(m[2] ?? m[1]);
-    const unit = m[3] === 'M' ? 1_000_000 : m[3] === 'K' ? 1_000 : 1;
-    return high * unit;
-  }
-
   const modelBudgets = models
     .filter(m => platformSet.has(m.platform))
-    .map(m => ({ displayName: m.display_name, platform: m.platform, budget: parseBudget(m.monthly_token_budget) }));
+    .map(m => ({ displayName: m.display_name, platform: m.platform, budget: parseMonthlyBudget(m.monthly_token_budget) }));
 
   const totalBudget = modelBudgets.reduce((s, m) => s + m.budget, 0);
 

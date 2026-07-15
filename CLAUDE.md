@@ -61,6 +61,14 @@ treat it as production.
 - **Routing:** `services/router.ts` orders by composite score (task_scores dominant);
   `needs[]` is a hard capability filter; `promptClassifier.ts` turns a bare-`auto`
   prompt into a task_class. Vision uses a relaxed declared→try→confirm gate.
+- **Key health / self-healing** (`services/health.ts`, 5-min cron): a key that returns
+  401/403 gets `status='invalid'` and is auto-disabled after 3 consecutive failures.
+  `reviveRecoverableKeys` (added 2026-07-15) re-validates `enabled=false AND
+  status='invalid'` keys on a 15-min backoff and **auto-re-enables** any that pass again
+  — so a TRANSIENT cause (VPN egress block, brief network fault; NordVPN made a good
+  groq key look invalid 2026-07-15) self-heals instead of staying stuck. Only
+  `invalid` rows are touched, so a human-disabled *healthy* key is left off.
+  `platformKeyWatch` then revives that platform's `no_key`-disabled models next cycle.
 - **Web-search augment** (`services/augment.ts`, Phase 4): opt-in `augment`
   field/`X-Augment` header (off/auto/force). Default OFF (env-overridable via
   `FEEDER_AUGMENT_DEFAULT`). Precedence is load-bearing: the `consumer='open-brain'`

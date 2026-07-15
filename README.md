@@ -2,6 +2,7 @@
 
 **An agent-agnostic, OpenAI-compatible intelligent supply of free-tier LLMs.**
 
+![Agent-LLM-Feeder Onboarding Page](docs/screenshots/chatbot.png)
 Point any OpenAI-compatible client — an agent framework, Open WebUI, a script, curl — at one local endpoint with one key, and get served the *right* free model for each request, with automatic, capability-honest failover across every free-tier provider you've connected.
 
 It behaves like LiteLLM/Ollama as a drop-in OpenAI endpoint, but adds a precomputed intelligence layer: it knows (from live probes and web research) what each model can actually do and how fast/healthy each supplier is right now, and routes accordingly — without passing your prompt through an extra LLM to decide.
@@ -69,7 +70,7 @@ cd client && npm run dev
 ```
 
 Open the UI, go to **Onboarding**, add one or more provider keys, then use the **Chatbot** page or hit the endpoint directly (see **Using the endpoint**).
-
+![Agent-LLM-Feeder Onboarding Page](docs/screenshots/Onboarding.png)
 > The server seeds/updates the model catalogue on startup and auto-groups models into the wiki's canonical entries. One valid key is enough to start; more keys = more failover headroom.
 
 ---
@@ -264,6 +265,7 @@ It is **not** wired to a persistent schedule by default — a standing job that 
 
 - **Health** (`server/src/services/modelHealth.ts`) is derived on a 5-minute cadence from the request log — passively, no extra probe traffic. It tracks recent median latency, success rate, a circuit-breaker cooldown on fresh 429s/timeouts, and conservative quota-aware benching.
 - **No-key grace period:** if a platform loses its last usable key and it isn't replaced within 10 minutes, that platform's models are auto-disabled until a key returns.
+- **Key self-healing:** a provider key that returns 401/403 is marked `invalid` and auto-disabled after 3 consecutive failures — but the health cron then re-validates disabled `invalid` keys on a 15-minute backoff and **auto-re-enables** any that start passing again, so a *transient* cause (a VPN egress block, a brief network fault) recovers on its own without a manual re-enable. A key a human disabled while it was *healthy* is left alone.
 - A single `disabled_reason` (`no_key` / `unhealthy` / `manual`) ensures the auto-disable mechanisms and a human's manual toggle never fight each other.
 
 ---

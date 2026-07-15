@@ -1,3 +1,4 @@
+import type pg from 'pg';
 import { getPool } from '../db/index.js';
 import { all, get, run } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
@@ -57,6 +58,31 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   }
 }
 
+// Self-heal auto-disabled keys (2026-07-15). A key that trips `invalid` is
+// auto-disabled (enabled=false) and then falls OUT of checkAllKeys' enabled=true
+// sweep — so a TRANSIENT cause (VPN egress block, brief network fault) that later
+// clears would never recover without a manual re-enable. (This bit groq 2026-07-15:
+// NordVPN's egress made a perfectly good key return 401 → auto-disabled → stuck.)
+// Re-validate disabled+invalid keys on a slow backoff; re-enable any that now pass,
+// after which checkPlatformKeyGaps (called next) revives their no_key models the
+// same cycle. Only status='invalid' rows are touched, so a human who disabled a
+// HEALTHY key is left alone. Uses the cheap validateKey auth check — no
+// token-costing completion, safe on the 5-min cron.
+export async function reviveRecoverableKeys(pool: pg.Pool): Promise<void> {
+  const cands = await all<{ id: number; platform: string }>(pool, `
+    SELECT id, platform FROM api_keys
+    WHERE enabled = false AND status = 'invalid'
+      AND (last_checked_at IS NULL OR last_checked_at < now() - interval '15 minutes')
+  `);
+  for (const k of cands) {
+    const status = await checkKeyHealth(k.id); // re-validates + updates status/last_checked_at
+    if (status === 'healthy') {
+      await run(pool, 'UPDATE api_keys SET enabled = true WHERE id = ?', [k.id]);
+      console.log(`[Health] key ${k.id} (${k.platform}) RECOVERED — was auto-disabled invalid, now valid again; re-enabled (its no_key models revive on the platform-key-gap check)`);
+    }
+  }
+}
+
 export async function checkAllKeys(): Promise<void> {
   const keys = await all<{ id: number; platform: string }>(getPool(), 'SELECT id, platform FROM api_keys WHERE enabled = true');
 
@@ -65,6 +91,10 @@ export async function checkAllKeys(): Promise<void> {
   for (const key of keys) {
     await checkKeyHealth(key.id);
   }
+
+  // Self-heal any transiently-failed keys BEFORE the key-gap check, so a recovered
+  // key's models revive in the same cycle.
+  await reviveRecoverableKeys(getPool());
 
   await checkPlatformKeyGaps(getPool());
 
