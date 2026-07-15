@@ -6,20 +6,27 @@ import { explainRouting } from '../services/router.js';
 
 export const fallbackRouter = Router();
 
-// Parse a human-authored monthly_token_budget note (e.g. "~6M/mo", "~1000 credits",
-// "Free tier (per-model caps, console.groq.com)") into a token count for the budget
-// bar. ROBUSTNESS (2026-07-15): the match must start with a DIGIT so free-text with
-// no number — a URL's dots like "console.groq.com" — yields 0, not NaN; and a
-// Number.isFinite guard makes doubly sure a single un-parseable note can never turn
-// into NaN and null the ENTIRE summed totalBudget (which hid the whole bar).
-export function parseMonthlyBudget(s: string | null | undefined): number {
-  if (!s) return 0;
-  const m = s.match(/~?(\d[\d.]*)(?:-(\d[\d.]*))?([MK])?/);
-  if (!m) return 0;
+// Parse a human-authored monthly_token_budget note into a MONTHLY TOKEN count, or
+// null when the note carries no genuine token figure. (2026-07-15, Adam) HONEST
+// DISPLAY: a real monthly-token allowance is written with an M/K unit — "~6M/mo",
+// "~18-45M", "~30M/mo (1M tok/day)". A BARE number in the note is an RPM/RPD/credit
+// limit, NOT monthly tokens — "Free: 20 RPM · 50/day" or "~1000 credits; 40 RPM" —
+// so returning that number as a token count was a misparse ("20 RPM" shown as 20
+// tokens, "1000 credits" as 1K). We now require an M/K unit and return null
+// otherwise, so the UI renders "—" instead of a fabricated count. Robust by
+// construction: the match must start with a digit (URL dots like "console.groq.com"
+// never match) and a Number.isFinite guard means no NaN can ever poison the sum.
+export function monthlyTokenBudget(s: string | null | undefined): number | null {
+  if (!s) return null;
+  // Require an M (millions) unit: every genuine monthly-token allowance in the
+  // catalogue is written in millions ("~6M/mo", "~18-45M"). K only ever shows up
+  // in daily/credit SUB-figures ("1K/day", "200K tok/day", "1K/day with credits"),
+  // never as the monthly headline — so matching K would re-introduce the misparse.
+  const m = s.match(/~?(\d[\d.]*)(?:-(\d[\d.]*))?\s*M\b/i);
+  if (!m) return null;
   const high = parseFloat(m[2] ?? m[1]);
-  if (!Number.isFinite(high)) return 0;
-  const unit = m[3] === 'M' ? 1_000_000 : m[3] === 'K' ? 1_000 : 1;
-  return high * unit;
+  if (!Number.isFinite(high)) return null;
+  return high * 1_000_000;
 }
 
 // READ-ONLY reality view: the real current effective priority order the router
@@ -60,9 +67,11 @@ fallbackRouter.get('/token-usage', async (_req: Request, res: Response) => {
 
   const modelBudgets = models
     .filter(m => platformSet.has(m.platform))
-    .map(m => ({ displayName: m.display_name, platform: m.platform, budget: parseMonthlyBudget(m.monthly_token_budget) }));
+    .map(m => ({ displayName: m.display_name, platform: m.platform, budget: monthlyTokenBudget(m.monthly_token_budget) }));
 
-  const totalBudget = modelBudgets.reduce((s, m) => s + m.budget, 0);
+  // Sum only the models with a genuine monthly-token figure (null = no published
+  // token cap → shown as "—", not counted).
+  const totalBudget = modelBudgets.reduce((s, m) => s + (m.budget ?? 0), 0);
 
   const usage = await get<{ total_used: string }>(pool, `
     SELECT COALESCE(SUM(input_tokens + output_tokens), 0) as total_used

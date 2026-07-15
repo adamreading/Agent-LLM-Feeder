@@ -26,7 +26,7 @@ const REASON_LABEL: Record<string, string> = {
   manual: 'TURNED OFF',
 }
 interface OrderData { taskType: string; rows: ExplainRow[] }
-interface TokenUsageData { totalBudget: number; totalUsed: number; models: { displayName: string; platform: string; budget: number }[] }
+interface TokenUsageData { totalBudget: number; totalUsed: number; models: { displayName: string; platform: string; budget: number | null }[] }
 
 // Same weights the router uses (server/src/services/router.ts) so the breakdown
 // the page SHOWS matches how a model is actually scored. Display only. Kept in
@@ -60,7 +60,7 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
   const { totalBudget, totalUsed, models } = data
   const remaining = Math.max(0, totalBudget - totalUsed)
   const remainingPct = totalBudget > 0 ? Math.round((remaining / totalBudget) * 100) : 0
-  const withWidth = models.map(m => ({ ...m, widthPct: totalBudget > 0 ? (m.budget / totalBudget) * (remaining / totalBudget) * 100 : 0, rem: totalBudget > 0 ? (m.budget / totalBudget) * remaining : 0 }))
+  const withWidth = models.map(m => ({ ...m, widthPct: totalBudget > 0 ? ((m.budget ?? 0) / totalBudget) * (remaining / totalBudget) * 100 : 0, rem: totalBudget > 0 ? ((m.budget ?? 0) / totalBudget) * remaining : 0 }))
   const usedPct = totalBudget > 0 ? (totalUsed / totalBudget) * 100 : 0
   return (
     <section style={{ border: '1px solid var(--line)', background: 'var(--panel)', padding: 20 }}>
@@ -86,7 +86,7 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 9, ...mono, fontSize: 11.5, padding: '1px 0' }}>
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: platformColor(m.platform), flexShrink: 0 }} />
             <span style={{ flex: 1, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={`${m.displayName} · ${m.platform}`}>{m.displayName}</span>
-            <span style={{ color: 'var(--dim)' }}>{formatTokens(m.budget)}</span>
+            <span style={{ color: 'var(--dim)' }} title={m.budget == null ? 'no published monthly-token cap' : undefined}>{m.budget != null ? formatTokens(m.budget) : '—'}</span>
           </div>
         ))}
       </div>
