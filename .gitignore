@@ -29,3 +29,8 @@ TEAM-ONBOARDING.md
 # Python bytecode (scripts/ tooling)
 __pycache__/
 *.pyc
+# --- coord (twinning) local state — never commit ---
+scripts/coord/coord.config.json
+scripts/coord/events.jsonl
+scripts/coord/events.lock
+.claude/settings.json.bak
