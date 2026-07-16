@@ -1,3 +1,7 @@
+<!-- SANITIZED TEMPLATE. Public repo = world-readable forever (history included).
+Machine/fleet briefs (real paths, usernames, peer setup) are GITIGNORED; this .example
+is the shareable version. Copy to the real filename locally and fill in your own values. -->
+
 # CLAUDE.md — Agent-LLM-Feeder
 
 Guidance for any Claude working in this repo. The feeder is a live, OpenAI-compatible
