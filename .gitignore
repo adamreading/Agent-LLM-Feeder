@@ -25,3 +25,7 @@ tmp/
 # Machine/fleet briefs — local only; public repo is world-readable forever. Shareable copies live in *.example.md
 CLAUDE.md
 TEAM-ONBOARDING.md
+
+# Python bytecode (scripts/ tooling)
+__pycache__/
+*.pyc

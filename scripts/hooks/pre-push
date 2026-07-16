@@ -1,0 +1,62 @@
+#!/bin/sh
+# Pre-push security gate — enforcement of the fleet baseline (#8 content-scan, #9 pre-push).
+# Fail-CLOSED: any secret/PII finding, or a commit authored under a private email,
+# blocks the push. Bypass only with a deliberate `git push --no-verify` (discouraged;
+# a bypass means YOU are asserting the diff is clean).
+#
+# Install (versioned, whole-repo): git config core.hooksPath scripts/hooks
+# Optional bonus layer: if `gitleaks` is on PATH it runs too (never required).
+#
+# stdin protocol (one line per ref): <local_ref> <local_sha> <remote_ref> <remote_sha>
+set -u
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+SCAN="$REPO_ROOT/scripts/pii_secret_scan.py"
+ZERO=0000000000000000000000000000000000000000
+rc=0
+
+# Fail-CLOSED if the operator PII terms are not seeded — an empty/missing terms
+# file would let the PII scan silently pass everything (a security tool must not
+# give false assurance). Secret rules run regardless; PII detection needs terms.
+if ! python3 "$SCAN" terms-status >/dev/null 2>&1; then
+    echo "PUSH BLOCKED: PII terms not seeded (~/.config/ringer/pii-scan-terms.txt empty/missing)." >&2
+    echo "  The gate cannot verify PII, so it refuses rather than pass silently." >&2
+    echo "  Seed at least your personal email + machine username, then re-push." >&2
+    exit 1
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    [ "$local_sha" = "$ZERO" ] && continue          # branch deletion — nothing to scan
+
+    if [ "$remote_sha" = "$ZERO" ]; then
+        base=EMPTY                                   # new branch: diff vs empty tree
+        emails="$local_sha --not --remotes"          # only genuinely-new commits
+    else
+        base="$remote_sha"                           # existing branch: only the delta
+        emails="$remote_sha..$local_sha"
+    fi
+
+    # (1) content scan of ADDED lines
+    if ! python3 "$SCAN" scan-diff "$base" "$local_sha"; then rc=1; fi
+    # (2) author/committer email guard (recurrence: no commits under a private email)
+    # shellcheck disable=SC2086
+    if ! python3 "$SCAN" scan-emails $emails; then rc=1; fi
+done
+
+# (3) optional bonus layer — gitleaks, only if installed
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks protect --staged --redact -q 2>/dev/null; then
+        echo "pre-push: gitleaks flagged staged content" >&2
+        rc=1
+    fi
+fi
+
+if [ "$rc" -ne 0 ]; then
+    echo "" >&2
+    echo "PUSH BLOCKED by the pre-push security gate. Fix the finding(s) above." >&2
+    echo "  - secret value?  remove it, ROTATE the credential (it's compromised), scrub history." >&2
+    echo "  - PII / private email?  sanitise the content / re-author under your GitHub noreply." >&2
+    echo "  - false positive?  tighten scripts/pii_secret_scan.py, or push --no-verify (you assert clean)." >&2
+fi
+exit "$rc"

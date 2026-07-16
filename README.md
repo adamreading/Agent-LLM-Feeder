@@ -284,6 +284,28 @@ cd client && npm run build     # vite
 
 Schema changes: edit `server/src/db/schema.ts`, then `npx drizzle-kit generate` + `npx drizzle-kit migrate`.
 
+### Security: pre-push gate (fleet standard)
+
+This repo ships the fleet's pre-push security gate under `scripts/` — a fail-closed,
+stdlib-only content scan that blocks a push carrying a hardcoded secret value, operator
+PII, or a commit authored under a private email. Enable it once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks          # versioned, whole-repo hook
+# seed your PII terms (off-repo, gitignored, chmod 600) — at minimum your
+# personal email + machine username, one per line:
+mkdir -p ~/.config/ringer && printf '%s\n' "you@example.com" "your-username" \
+  > ~/.config/ringer/pii-scan-terms.txt && chmod 600 ~/.config/ringer/pii-scan-terms.txt
+python3 scripts/checks/prepush_gate_check.sh     # executed proof the gate works
+```
+
+The committed tool is PII-free (scrub terms live only in the off-repo file). It
+fails **closed** — an unseeded terms file refuses the push rather than pass silently.
+A rare legitimate flag (e.g. a UI label like `Bearer token`) is exempted inline with a
+`// pii-scan: allow` marker on the line; a genuine false positive can also be bypassed
+per-push with `git push --no-verify` (you then assert the diff is clean). Verify before
+publish — a public repo is world-readable forever, history included.
+
 ---
 
 ## Credits

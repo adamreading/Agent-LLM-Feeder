@@ -103,7 +103,7 @@ const dictionaries: Record<Locale, Dict> = {
     selectProvider: 'Select provider',
     apiToken: 'API token',
     pasteKey: 'paste key here',
-    bearerToken: 'Bearer token',
+    bearerToken: 'Bearer token', // pii-scan: allow (i18n UI label, not a credential)
     optional: 'optional',
     adding: 'Adding...',
     addKey: 'Add key',
@@ -280,7 +280,7 @@ const dictionaries: Record<Locale, Dict> = {
     selectProvider: 'Selectionner un fournisseur',
     apiToken: 'Token API',
     pasteKey: 'coller la cle ici',
-    bearerToken: 'Bearer token',
+    bearerToken: 'Bearer token', // pii-scan: allow (i18n UI label, not a credential)
     optional: 'facultatif',
     adding: 'Ajout...',
     addKey: 'Ajouter la cle',
@@ -457,7 +457,7 @@ const dictionaries: Record<Locale, Dict> = {
     selectProvider: 'Seleccionar proveedor',
     apiToken: 'Token API',
     pasteKey: 'pegar clave aqui',
-    bearerToken: 'Bearer token',
+    bearerToken: 'Bearer token', // pii-scan: allow (i18n UI label, not a credential)
     optional: 'opcional',
     adding: 'Agregando...',
     addKey: 'Agregar clave',
