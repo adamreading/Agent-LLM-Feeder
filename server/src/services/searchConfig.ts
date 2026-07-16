@@ -3,22 +3,86 @@ import { get, run } from '../db/pgCompat.js';
 import { encrypt, decrypt } from '../lib/crypto.js';
 
 // Web-search configuration persisted in the settings table so it's managed from
-// the UI (the onboarding "Search Key" card) instead of hand-edited in .env.
-// Search keys are third-party secrets, so they're stored ENCRYPTED (same
-// crypto as provider api_keys), unlike the plaintext unified key. The active
-// backend id is a non-secret plaintext setting.
+// the UI (Onboarding + Key Vault "Search Providers" card) instead of hand-edited
+// in .env. Search keys are third-party secrets, so they're stored ENCRYPTED (same
+// crypto as provider api_keys) under `search_key_<id>`, one row PER provider —
+// e.g. an Ollama search key lives in `search_key_ollama`, logged separately from
+// any Ollama model-provider key even when the underlying credential is the same.
+// The active backend id is a non-secret plaintext setting (`web_search_backend`).
 //
-// webSearch.ts reads process.env (WEB_SEARCH_BACKEND / TAVILY_API_KEY), so
-// loadSearchConfigIntoEnv() bridges the DB values into env: called at server
-// startup, after a UI update (live, no restart), and at CLI-research startup.
-// DB is authoritative — a value stored via the UI overrides .env.
+// This CATALOG is the single source of truth: the server derives the env-var
+// bridge + keyed set from it, and the UI renders its cards from it (returned by
+// GET /api/settings/search). Add a provider here + implement its SearchBackend
+// in webSearch.ts under the same id — nothing else needs editing.
+//
+// webSearch.ts reads process.env (WEB_SEARCH_BACKEND + each provider's env var),
+// so loadSearchConfigIntoEnv() bridges the DB values into env: at server startup,
+// after a UI update (live, no restart), and at CLI-research startup. DB is
+// authoritative — a value stored via the UI overrides .env.
 
-const KEY_PREFIX = 'search_key_'; // + backend id
+export interface SearchProviderMeta {
+  id: string;
+  name: string;
+  keyed: boolean;
+  /** process.env var webSearch.ts reads the key from (keyed providers only). */
+  envVar?: string;
+  /** Where to get a key (shown as a button in the UI). */
+  getUrl?: string;
+  /** Short free-tier / pricing tag for the card. */
+  tier: string;
+  /** Example key prefix, shown as the input placeholder. */
+  prefix?: string;
+  /** One-line description for the card. */
+  note: string;
+}
+
+// Commonly-used web-search backends. Each keyed entry must have a matching
+// implementation in webSearch.ts (same id). Keyless entries (ddg) need no key.
+export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
+  {
+    id: 'tavily', name: 'Tavily', keyed: true, envVar: 'TAVILY_API_KEY',
+    getUrl: 'https://tavily.com', tier: 'FREE · 1K SEARCHES / MO', prefix: 'tvly-…',
+    note: 'Search + page content in one call, built for LLM research. Reliable primary — keyed, so no IP blocking.',
+  },
+  {
+    id: 'ollama', name: 'Ollama Web Search', keyed: true, envVar: 'OLLAMA_API_KEY',
+    getUrl: 'https://ollama.com/settings/keys', tier: 'FREE · HOURLY + WEEKLY CAPS', prefix: 'ollama key',
+    note: 'Hosted web_search + web_fetch. A dedicated search key (stored separately from any model key). Reliable, but the free tier throttles hard under a big catalog sweep.',
+  },
+  {
+    id: 'brave', name: 'Brave Search', keyed: true, envVar: 'BRAVE_SEARCH_API_KEY',
+    getUrl: 'https://brave.com/search/api/', tier: 'FREE · 2K QUERIES / MO', prefix: 'BSA…',
+    note: 'Independent index (not Google/Bing reseller). Generous free tier, privacy-first, stable API.',
+  },
+  {
+    id: 'serper', name: 'Serper', keyed: true, envVar: 'SERPER_API_KEY',
+    getUrl: 'https://serper.dev', tier: 'FREE · 2.5K CREDITS', prefix: 'serper key',
+    note: 'Fast Google SERP results as JSON. Big one-off free credit grant; good for a full catalog populate.',
+  },
+  {
+    id: 'exa', name: 'Exa', keyed: true, envVar: 'EXA_API_KEY',
+    getUrl: 'https://exa.ai', tier: 'FREE TIER', prefix: 'exa key',
+    note: 'Neural/semantic search built for AI, returns page text inline. Good for research-style queries.',
+  },
+  {
+    id: 'ddg', name: 'DuckDuckGo', keyed: false,
+    tier: 'KEYLESS', prefix: '—',
+    note: 'Free, no key. Fine for light use, but DDG IP-blocks sustained scraping — unreliable as a heavy primary from a datacenter/WSL egress.',
+  },
+];
+
+const KEY_PREFIX = 'search_key_'; // + provider id
 const BACKEND_SETTING = 'web_search_backend';
 
-// Backends that take an API key, mapped to the env var webSearch.ts reads.
-export const KEYED_SEARCH_BACKENDS: Record<string, string> = { tavily: 'TAVILY_API_KEY' };
-export const SEARCH_BACKENDS = ['ollama', 'ddg', 'tavily'];
+// Derived from the catalog — do not hand-maintain.
+export const SEARCH_BACKENDS: string[] = SEARCH_PROVIDER_CATALOG.map((p) => p.id);
+export const KEYED_SEARCH_BACKENDS: Record<string, string> = Object.fromEntries(
+  SEARCH_PROVIDER_CATALOG.filter((p) => p.keyed && p.envVar).map((p) => [p.id, p.envVar as string]),
+);
+
+export function isKnownBackend(id: string): boolean {
+  return SEARCH_BACKENDS.includes(id);
+}
 
 async function upsertSetting(pool: pg.Pool, key: string, value: string): Promise<void> {
   await run(pool, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, value]);
@@ -54,7 +118,8 @@ export async function getActiveSearchBackend(pool: pg.Pool): Promise<string | nu
 }
 
 // Bridge DB-stored config into process.env so webSearch.ts uses it. DB wins over
-// a pre-existing env value (the UI is the intended management surface).
+// a pre-existing env value (the UI is the intended management surface). Every
+// keyed provider is bridged, so a key added via the UI is live without a restart.
 export async function loadSearchConfigIntoEnv(pool: pg.Pool): Promise<void> {
   const backend = await getActiveSearchBackend(pool);
   if (backend) process.env.WEB_SEARCH_BACKEND = backend;

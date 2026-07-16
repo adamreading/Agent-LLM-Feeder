@@ -93,18 +93,104 @@ const tavilyBackend: SearchBackend = {
   },
 }
 
-// Register additional backends here (e.g. Brave, SearXNG). Each just needs to
-// implement SearchBackend; selecting it is then WEB_SEARCH_BACKEND=<id>.
+// Brave Search API — independent index, keyed via X-Subscription-Token. Basic
+// tier returns snippet-level content (description); page fetch delegates to
+// Ollama (best-effort) like DDG.
+const braveBackend: SearchBackend = {
+  id: 'brave',
+  isConfigured: () => !!process.env.BRAVE_SEARCH_API_KEY,
+  search: async (q, max = 6) => {
+    const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(q)}&count=${max}`
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json', 'X-Subscription-Token': process.env.BRAVE_SEARCH_API_KEY ?? '' },
+    })
+    if (!res.ok) throw new Error(`Brave search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { web?: { results?: { title?: string; url?: string; description?: string }[] } }
+    return (data.web?.results ?? []).map((r) => ({
+      title: r.title ?? '', url: r.url ?? '', content: (r.description ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => {
+    const r = await ollamaFetch(url)
+    return { title: r.title, content: r.content }
+  },
+}
+
+// Serper.dev — Google SERP results as JSON, keyed via X-API-KEY. Snippet-level
+// content; page fetch delegates to Ollama (best-effort).
+const serperBackend: SearchBackend = {
+  id: 'serper',
+  isConfigured: () => !!process.env.SERPER_API_KEY,
+  search: async (q, max = 6) => {
+    const res = await fetch('https://google.serper.dev/search', {
+      method: 'POST',
+      headers: { 'X-API-KEY': process.env.SERPER_API_KEY ?? '', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ q, num: max }),
+    })
+    if (!res.ok) throw new Error(`Serper search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { organic?: { title?: string; link?: string; snippet?: string }[] }
+    return (data.organic ?? []).map((r) => ({
+      title: r.title ?? '', url: r.link ?? '', content: (r.snippet ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => {
+    const r = await ollamaFetch(url)
+    return { title: r.title, content: r.content }
+  },
+}
+
+// Exa — neural/semantic search built for AI, keyed via x-api-key. Returns page
+// text inline (contents.text), so search alone is content-rich; fetch uses Exa's
+// own /contents endpoint.
+const exaBackend: SearchBackend = {
+  id: 'exa',
+  isConfigured: () => !!process.env.EXA_API_KEY,
+  search: async (q, max = 6) => {
+    const res = await fetch('https://api.exa.ai/search', {
+      method: 'POST',
+      headers: { 'x-api-key': process.env.EXA_API_KEY ?? '', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, numResults: max, contents: { text: { maxCharacters: 2000 } } }),
+    })
+    if (!res.ok) throw new Error(`Exa search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { results?: { title?: string; url?: string; text?: string }[] }
+    return (data.results ?? []).map((r) => ({
+      title: r.title ?? '', url: r.url ?? '', content: (r.text ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => {
+    const res = await fetch('https://api.exa.ai/contents', {
+      method: 'POST',
+      headers: { 'x-api-key': process.env.EXA_API_KEY ?? '', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls: [url], text: { maxCharacters: 8000 } }),
+    })
+    if (!res.ok) throw new Error(`Exa contents error ${res.status}`)
+    const data = await res.json() as { results?: { title?: string; text?: string }[] }
+    return { title: data.results?.[0]?.title ?? url, content: (data.results?.[0]?.text ?? '').slice(0, 8000) }
+  },
+}
+
+// Register additional backends here. Each just needs to implement SearchBackend
+// and be listed in searchConfig.ts SEARCH_PROVIDER_CATALOG under the same id;
+// selecting it is then WEB_SEARCH_BACKEND=<id>.
 const BACKENDS: Record<string, SearchBackend> = {
   ollama: ollamaBackend,
   ddg: ddgBackend,
   tavily: tavilyBackend,
+  brave: braveBackend,
+  serper: serperBackend,
+  exa: exaBackend,
+}
+
+/** Look up a backend by id (for targeted verify / diagnostics). */
+export function getBackendById(id: string): SearchBackend | undefined {
+  return BACKENDS[id.toLowerCase()]
 }
 
 export function getSearchBackend(): SearchBackend {
-  // Default stays 'ollama' — it's the only keyless backend confirmed reachable
-  // from every egress. Set WEB_SEARCH_BACKEND=ddg (unblocked egress) or
-  // =tavily (with TAVILY_API_KEY) to move search off Ollama's quota.
+  // ddg is the only KEYLESS backend; every other provider needs its key present
+  // (isConfigured gates that). The active backend is normally set in the DB and
+  // bridged to WEB_SEARCH_BACKEND at boot/UI-update; 'ollama' is the .env-less
+  // fallback for legacy configs.
   const id = (process.env.WEB_SEARCH_BACKEND || 'ollama').toLowerCase()
   const backend = BACKENDS[id]
   if (!backend) {
