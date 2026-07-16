@@ -21,7 +21,7 @@ interface ChatMessage {
   meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean; feedback?: 'up' | 'down' }
 }
 
-interface SearchConfig { backend: string; available: string[]; keyed: string[]; keys: Record<string, { set: boolean; masked: string | null }> }
+interface SearchConfig { backend: string; providers: { id: string; keyed: boolean; keySet: boolean }[] }
 
 const CHAT_SESSION_KEY = 'llm-chatbot:chat-session'
 const WEBSEARCH_PREF_KEY = 'llm-chatbot:websearch'
@@ -61,9 +61,8 @@ export default function PlaygroundPage() {
   // Show the web-search toggle only when the onboarded provider can actually run:
   // keyless backends (ddg/ollama) are always ready; keyed backends (tavily) need
   // their key set. Prevents a dead "WEB" affordance that silently does nothing.
-  const searchAvailable = !!searchCfg && (
-    !searchCfg.keyed.includes(searchCfg.backend) || (searchCfg.keys[searchCfg.backend]?.set ?? false)
-  )
+  const activeSearch = searchCfg?.providers.find(p => p.id === searchCfg.backend)
+  const searchAvailable = !!activeSearch && (!activeSearch.keyed || activeSearch.keySet)
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
   useEffect(() => { saveChatSession(messages) }, [messages])

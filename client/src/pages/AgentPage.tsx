@@ -16,7 +16,7 @@ interface BrowseEntry { name: string; path: string; type: 'dir' | 'file'; kind?:
 interface BrowseResp { path: string; parent: string | null; entries: BrowseEntry[] }
 interface ReadFile { path: string; kind?: 'image' | 'text'; content?: string; dataUri?: string; mime?: string; size?: number; error?: string }
 interface FallbackEntry { modelDbId: number; platform: string; modelId: string; displayName: string; keyCount: number; status: string }
-interface SearchConfig { backend: string; keyed: string[]; keys: Record<string, { set: boolean; masked: string | null }> }
+interface SearchConfig { backend: string; providers: { id: string; keyed: boolean; keySet: boolean }[] }
 interface SelectedFile { path: string; name: string; kind: 'image' | 'text' }
 interface ReplyMeta { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
 interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean }
@@ -52,7 +52,8 @@ export default function AgentPage() {
   const { data: searchCfg } = useQuery<SearchConfig>({ queryKey: ['search-config'], queryFn: () => apiFetch('/api/settings/search') })
 
   const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
-  const searchAvailable = !!searchCfg && (!searchCfg.keyed.includes(searchCfg.backend) || (searchCfg.keys[searchCfg.backend]?.set ?? false))
+  const activeSearch = searchCfg?.providers.find(p => p.id === searchCfg.backend)
+  const searchAvailable = !!activeSearch && (!activeSearch.keyed || activeSearch.keySet)
   const apiKey = keyData?.apiKey
   const authHeaders = useMemo<Record<string, string>>(() => (apiKey ? { Authorization: `Bearer ${apiKey}` } : {} as Record<string, string>), [apiKey])
 
