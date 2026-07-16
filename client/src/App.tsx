@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate, NavLink } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, NavLink, useLocation } from 'react-router-dom'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nProvider } from '@/lib/i18n'
 import { ThemeProvider, useTheme, FLAVORS } from '@/lib/theme'
@@ -130,6 +131,31 @@ function Footer() {
   )
 }
 
+// Page routes wrapped in an ErrorBoundary keyed on the path: a page that throws
+// shows a recoverable message (header/nav stay outside the boundary, so the user
+// can navigate away), and changing route remounts the boundary to clear it.
+function RoutedContent() {
+  const location = useLocation()
+  return (
+    <ErrorBoundary key={location.pathname}>
+      <Routes>
+        <Route path="/" element={<Navigate to="/wiki" replace />} />
+        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/wiki" element={<ModelWikiPage />} />
+        <Route path="/wiki/:slug" element={<ModelDetailPage />} />
+        <Route path="/playground" element={<PlaygroundPage />} />
+        <Route path="/agent" element={<AgentPage />} />
+        <Route path="/keys" element={<KeysPage />} />
+        <Route path="/fallback" element={<FallbackPage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
+        <Route path="/howto" element={<HowToPage />} />
+        <Route path="/test" element={<Navigate to="/playground" replace />} />
+        <Route path="/health" element={<Navigate to="/keys" replace />} />
+      </Routes>
+    </ErrorBoundary>
+  )
+}
+
 function AppShell() {
   return (
     <BrowserRouter basename={import.meta.env.BASE_URL}>
@@ -137,20 +163,7 @@ function AppShell() {
         <Scanlines />
         <Header />
         <div style={{ flex: 1 }}>
-          <Routes>
-            <Route path="/" element={<Navigate to="/wiki" replace />} />
-            <Route path="/onboarding" element={<OnboardingPage />} />
-            <Route path="/wiki" element={<ModelWikiPage />} />
-            <Route path="/wiki/:slug" element={<ModelDetailPage />} />
-            <Route path="/playground" element={<PlaygroundPage />} />
-            <Route path="/agent" element={<AgentPage />} />
-            <Route path="/keys" element={<KeysPage />} />
-            <Route path="/fallback" element={<FallbackPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/howto" element={<HowToPage />} />
-            <Route path="/test" element={<Navigate to="/playground" replace />} />
-            <Route path="/health" element={<Navigate to="/keys" replace />} />
-          </Routes>
+          <RoutedContent />
         </div>
         <Footer />
       </div>
