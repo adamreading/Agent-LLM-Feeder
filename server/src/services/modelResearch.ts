@@ -170,19 +170,27 @@ export interface ResearchSweepResult {
   skipped: 'none' | 'no_missing' | 'no_search_backend' | 'no_writer' | 'search_rate_limited';
 }
 
-// Research every canonical model that still lacks a summary (new arrivals),
-// bounded to `limit` per pass. Shared by autoOnboard (boot, unbounded) and the
-// daily catalogSync (limit=10 so a burst of new provider ids can't spike token
-// spend — the rest fill in over subsequent days). Reuses researchCanonicalModel
-// + recordResearch; a tagged SEARCH rate-limit stops the pass cleanly (it
-// resumes next run) while a single writer error just skips that model.
+// Research every canonical model that still lacks a summary AND has a live
+// (enabled) instance, bounded to `limit` per pass. Shared by autoOnboard (boot,
+// capped) and the daily catalogSync (limit=10). Reuses researchCanonicalModel +
+// recordResearch; a tagged SEARCH rate-limit stops the pass cleanly.
+//
+// ENABLED-GATE (2026-07-17): only canonicals with ≥1 enabled instance are
+// researched. The wiki (GET /api/canon) ONLY shows canonicals that have an
+// enabled instance, so researching pending-liveness / paid / dead / non-chat
+// models produced 450 invisible summaries and burned free-tier search credits on
+// models no one can see. Gating to enabled aligns "what we research" with "what
+// the wiki shows" (~122 real entries vs 572 total) and kills the credit sink.
 export async function researchMissingCanonicals(
   pool: pg.Pool,
   opts: { limit?: number; log?: (m: string) => void } = {}
 ): Promise<ResearchSweepResult> {
   const log = opts.log ?? (() => {});
   const missing = await all<{ id: number; name: string }>(pool, `
-    SELECT id, name FROM canonical_models WHERE summary IS NULL OR summary = '' ORDER BY name ASC
+    SELECT id, name FROM canonical_models c
+    WHERE (summary IS NULL OR summary = '')
+      AND EXISTS (SELECT 1 FROM models m WHERE m.canonical_model_id = c.id AND m.enabled = true)
+    ORDER BY name ASC
     ${opts.limit != null ? `LIMIT ${Math.max(0, Math.floor(opts.limit))}` : ''}
   `);
   if (missing.length === 0) { log('no un-researched canonical models'); return { researched: [], skipped: 'no_missing' }; }

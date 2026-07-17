@@ -37,6 +37,12 @@ export interface SearchProviderMeta {
   /** PAID provider — kept OUT of the free even-spread rotation and used only as a
    *  last-resort fallback tier when every free engine is exhausted (searchPool.ts). */
   paid?: boolean;
+  /** Best-effort free-tier quota, used to spread load intelligently (searchPool.ts):
+   *  an engine near its cap drops to the back of the rotation so its last credits
+   *  are spared. `period: 'month'` resets monthly; `'total'` is a one-off grant.
+   *  Omit for effectively-unlimited engines (keyless/self-hosted/rate-limited-only).
+   *  APPROXIMATE — tune as real limits are observed. */
+  freeQuota?: { limit: number; period: 'month' | 'total' };
 }
 
 // Commonly-used web-search backends. Each keyed entry must have a matching
@@ -46,6 +52,7 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     id: 'tavily', name: 'Tavily', keyed: true, envVar: 'TAVILY_API_KEY',
     getUrl: 'https://tavily.com', tier: 'FREE · 1K SEARCHES / MO', prefix: 'tvly-…',
     note: 'Search + page content in one call, built for LLM research. Reliable primary — keyed, so no IP blocking.',
+    freeQuota: { limit: 1000, period: 'month' },
   },
   {
     id: 'ollama', name: 'Ollama Web Search', keyed: true, envVar: 'OLLAMA_API_KEY',
@@ -56,21 +63,25 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     id: 'brave', name: 'Brave Search', keyed: true, envVar: 'BRAVE_SEARCH_API_KEY',
     getUrl: 'https://brave.com/search/api/', tier: 'FREE 2K/MO · CARD REQUIRED', prefix: 'BSA…',
     note: 'Independent index (not Google/Bing reseller), privacy-first, stable API. NB: sign-up now requires a credit card even for the free tier (confirmed 2026-07-17) — integration works if you add one.',
+    freeQuota: { limit: 2000, period: 'month' },
   },
   {
     id: 'serper', name: 'Serper', keyed: true, envVar: 'SERPER_API_KEY',
     getUrl: 'https://serper.dev', tier: 'FREE · 2.5K CREDITS', prefix: 'serper key',
     note: 'Fast Google SERP results as JSON. Big one-off free credit grant; good for a full catalog populate.',
+    freeQuota: { limit: 2500, period: 'total' },
   },
   {
     id: 'exa', name: 'Exa', keyed: true, envVar: 'EXA_API_KEY',
     getUrl: 'https://exa.ai', tier: 'FREE TIER', prefix: 'exa key',
     note: 'Neural/semantic search built for AI, returns page text inline. Good for research-style queries.',
+    freeQuota: { limit: 1000, period: 'month' },
   },
   {
     id: 'serpapi', name: 'SerpApi', keyed: true, envVar: 'SERPAPI_API_KEY',
     getUrl: 'https://serpapi.com', tier: 'FREE TIER · SERP', prefix: 'serpapi key',
     note: 'Real Google SERP as JSON (serpapi.com — distinct from Serper). Rich organic results; modest free tier, so good as one lane in the spread, not a sole primary.',
+    freeQuota: { limit: 100, period: 'month' },
   },
   {
     id: 'tinyfish', name: 'TinyFish', keyed: true, envVar: 'TINYFISH_API_KEY',
@@ -81,11 +92,13 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     id: 'contextwire', name: 'ContextWire', keyed: true, envVar: 'CONTEXTWIRE_API_KEY',
     getUrl: 'https://contextwire.dev', tier: 'FREE 1K/MO · SIGNUPS PAUSED', prefix: 'contextwire key',
     note: 'AI-agent search (contextwire.dev/api/search). 1,000 free queries/mo, no card. NB: sign-ups were paused as of 2026-07-17 — integration is ready for when they reopen.',
+    freeQuota: { limit: 1000, period: 'month' },
   },
   {
     id: 'scavio', name: 'Scavio', keyed: true, envVar: 'SCAVIO_API_KEY',
     getUrl: 'https://dashboard.scavio.dev', tier: 'FREE · 250 / MO', prefix: 'scavio key',
     note: 'Real-time multi-platform search (Google et al). 250 free credits/mo + 50 on signup, no card.',
+    freeQuota: { limit: 250, period: 'month' },
   },
   {
     id: 'searxng', name: 'SearXNG (self-hosted)', keyed: true, envVar: 'SEARXNG_URL',
@@ -115,6 +128,11 @@ export const SEARCH_PROVIDER_BY_ID: Record<string, SearchProviderMeta> = Object.
 /** Is this engine a PAID last-resort provider (kept out of the free rotation)? */
 export function isPaidBackend(id: string): boolean {
   return !!SEARCH_PROVIDER_BY_ID[id]?.paid;
+}
+
+/** Best-effort free-tier quota for an engine, or null if effectively unlimited. */
+export function getFreeQuota(id: string): { limit: number; period: 'month' | 'total' } | null {
+  return SEARCH_PROVIDER_BY_ID[id]?.freeQuota ?? null;
 }
 
 // Derived from the catalog — do not hand-maintain.

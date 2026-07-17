@@ -66,6 +66,7 @@ async function searchState() {
         recentLatencyMs: h.recent_latency_ms, successCount: h.success_count, failCount: h.fail_count,
         callsTotal: h.calls_total, cooldownUntil: h.cooldown_until, lastError: h.last_error,
         lastUsedAt: h.last_used_at, estSpendUsd: h.estSpendUsd,
+        quotaLimit: h.quotaLimit, quotaPeriod: h.quotaPeriod, remaining: h.remaining,
       } : null,
     });
   }

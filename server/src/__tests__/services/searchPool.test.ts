@@ -106,6 +106,20 @@ describe('searchPool — spread / cooldown / last-resort / caps', () => {
     expect(capped.backend).toBeNull();
   });
 
+  it('skips a quota-EXHAUSTED free engine, uses one with headroom', async () => {
+    await setSearchPool(getPool(), ['serpapi', 'tinyfish']); // serpapi cap=100/mo; tinyfish uncapped
+    await run(getPool(), `INSERT INTO search_backend_health (backend, period_calls, period_start, calls_total) VALUES ('serpapi', 100, now(), 100)`);
+    const r = await served();
+    expect(r.backend).toBe('tinyfish'); // serpapi remaining 0 → skipped
+  });
+
+  it('deprioritizes a near-exhausted engine (low headroom) below a healthy one', async () => {
+    await setSearchPool(getPool(), ['serpapi', 'tinyfish']);
+    await run(getPool(), `INSERT INTO search_backend_health (backend, period_calls, period_start, calls_total) VALUES ('serpapi', 90, now(), 90)`); // 10/100 = 10% < 15% → low band
+    const r = await served();
+    expect(r.backend).toBe('tinyfish'); // high-headroom carries load; serpapi's last credits spared
+  });
+
   it('records per-engine telemetry (latency + success)', async () => {
     await setSearchPool(getPool(), ['tavily']);
     await served();

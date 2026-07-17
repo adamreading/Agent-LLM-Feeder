@@ -127,6 +127,13 @@
       "when": 1784299670874,
       "tag": "0017_search_backend_health",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784303426828,
+      "tag": "0018_search_quota_window",
+      "breakpoints": true
     }
   ]
 }

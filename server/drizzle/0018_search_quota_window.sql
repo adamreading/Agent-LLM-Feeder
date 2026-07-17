@@ -1,0 +1,2 @@
+ALTER TABLE "search_backend_health" ADD COLUMN "period_calls" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "search_backend_health" ADD COLUMN "period_start" timestamp with time zone;

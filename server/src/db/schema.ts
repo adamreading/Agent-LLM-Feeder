@@ -225,7 +225,12 @@ export const searchBackendHealth = pgTable('search_backend_health', {
   successCount: integer('success_count').notNull().default(0),
   failCount: integer('fail_count').notNull().default(0),
   consecutiveFailures: integer('consecutive_failures').notNull().default(0),
-  callsTotal: integer('calls_total').notNull().default(0), // lifetime attempts (spend basis for paid)
+  callsTotal: integer('calls_total').notNull().default(0), // lifetime attempts (spend basis for paid + 'total'-period quotas)
+  // Monthly usage window for quota-aware spread (searchPool.ts): period_calls
+  // resets when the month rolls (period_start tracks the window). remaining =
+  // catalog freeQuota.limit - (period_calls for 'month' | calls_total for 'total').
+  periodCalls: integer('period_calls').notNull().default(0),
+  periodStart: timestamp('period_start', { withTimezone: true }),
   cooldownUntil: timestamp('cooldown_until', { withTimezone: true }), // skip until (set on throttle/error)
   lastError: text('last_error'),
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }), // LRU spread key

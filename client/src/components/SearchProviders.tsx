@@ -16,6 +16,7 @@ interface EngineStats {
   recentLatencyMs: number | null; successCount: number; failCount: number
   callsTotal: number; cooldownUntil: string | null; lastError: string | null
   lastUsedAt: string | null; estSpendUsd: number | null
+  quotaLimit: number | null; quotaPeriod: string | null; remaining: number | null
 }
 interface Provider {
   id: string; name: string; keyed: boolean; tier: string; note: string; paid: boolean
@@ -88,6 +89,10 @@ export default function SearchProviders() {
                 <div style={{ ...mono, fontSize: 9.5, letterSpacing: '.3px', color: cooling ? 'var(--bad, #ff6b6b)' : 'var(--dim)', lineHeight: 1.5, borderTop: '1px solid var(--line)', paddingTop: 6 }}>
                   {st.recentLatencyMs != null && <span>⚡ {st.recentLatencyMs}ms  </span>}
                   <span>✓ {st.successCount}/{st.successCount + st.failCount}  </span>
+                  {st.quotaLimit != null && st.remaining != null && (
+                    <span style={{ color: st.remaining / st.quotaLimit < 0.15 ? 'var(--warn, #ffc13d)' : 'inherit' }}>
+                      · {st.remaining}/{st.quotaLimit} left{st.quotaPeriod === 'month' ? '/mo' : ''}  </span>
+                  )}
                   {p.paid && st.estSpendUsd != null && <span style={{ color: 'var(--warn, #ffc13d)' }}>· ${st.estSpendUsd.toFixed(2)}/${data?.youCaps?.globalCapUsd ?? 180}  </span>}
                   {cooling && <span>· COOLING DOWN</span>}
                 </div>
