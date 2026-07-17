@@ -189,6 +189,79 @@ const serpapiBackend: SearchBackend = {
   },
 }
 
+// TinyFish — free web search for agents (api.search.tinyfish.ai), keyed via
+// X-API-Key. GET ?query=. Response { results: [{title, url, snippet}] }.
+const tinyfishBackend: SearchBackend = {
+  id: 'tinyfish',
+  isConfigured: () => !!process.env.TINYFISH_API_KEY,
+  search: async (q, max = 6) => {
+    const url = `https://api.search.tinyfish.ai/?query=${encodeURIComponent(q)}`
+    const res = await fetch(url, { headers: { 'X-API-Key': process.env.TINYFISH_API_KEY ?? '' } })
+    if (!res.ok) throw new Error(`TinyFish search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { results?: { title?: string; url?: string; snippet?: string }[] }
+    return (data.results ?? []).slice(0, max).map((r) => ({
+      title: r.title ?? '', url: r.url ?? '', content: (r.snippet ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => { const r = await ollamaFetch(url); return { title: r.title, content: r.content } },
+}
+
+// ContextWire — AI-agent search (contextwire.dev), keyed via Authorization: Bearer.
+// GET /api/search?q=. Response { results: [{title, url, snippet?}] }.
+const contextwireBackend: SearchBackend = {
+  id: 'contextwire',
+  isConfigured: () => !!process.env.CONTEXTWIRE_API_KEY,
+  search: async (q, max = 6) => {
+    const url = `https://contextwire.dev/api/search?q=${encodeURIComponent(q)}`
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${process.env.CONTEXTWIRE_API_KEY ?? ''}` } })
+    if (!res.ok) throw new Error(`ContextWire search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { results?: { title?: string; url?: string; snippet?: string; description?: string; content?: string }[] }
+    return (data.results ?? []).slice(0, max).map((r) => ({
+      title: r.title ?? '', url: r.url ?? '', content: (r.snippet ?? r.description ?? r.content ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => { const r = await ollamaFetch(url); return { title: r.title, content: r.content } },
+}
+
+// Scavio — real-time multi-platform search (api.scavio.dev), keyed via
+// Authorization: Bearer. POST /api/v2/google { query }. Response
+// { organic_results: [{title, link, snippet}] }.
+const scavioBackend: SearchBackend = {
+  id: 'scavio',
+  isConfigured: () => !!process.env.SCAVIO_API_KEY,
+  search: async (q, max = 6) => {
+    const res = await fetch('https://api.scavio.dev/api/v2/google', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${process.env.SCAVIO_API_KEY ?? ''}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, language: 'en' }),
+    })
+    if (!res.ok) throw new Error(`Scavio search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { organic_results?: { title?: string; link?: string; snippet?: string }[] }
+    return (data.organic_results ?? []).slice(0, max).map((r) => ({
+      title: r.title ?? '', url: r.link ?? '', content: (r.snippet ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => { const r = await ollamaFetch(url); return { title: r.title, content: r.content } },
+}
+
+// SearXNG — SELF-HOSTED metasearch. The "key" is the instance BASE URL
+// (SEARXNG_URL); no auth. GET <url>/search?q=&format=json (json must be enabled
+// in the instance settings.yml). Response { results: [{title, url, content}] }.
+const searxngBackend: SearchBackend = {
+  id: 'searxng',
+  isConfigured: () => !!process.env.SEARXNG_URL,
+  search: async (q, max = 6) => {
+    const base = (process.env.SEARXNG_URL ?? '').replace(/\/+$/, '')
+    const res = await fetch(`${base}/search?q=${encodeURIComponent(q)}&format=json`, { headers: { Accept: 'application/json' } })
+    if (!res.ok) throw new Error(`SearXNG search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { results?: { title?: string; url?: string; content?: string }[] }
+    return (data.results ?? []).slice(0, max).map((r) => ({
+      title: r.title ?? '', url: r.url ?? '', content: (r.content ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => { const r = await ollamaFetch(url); return { title: r.title, content: r.content } },
+}
+
 // You.com — PAID, LLM-ready web+news search (ydc-index.io), keyed via X-API-Key.
 // The paid last-resort backend: searchPool.ts only calls it when every free engine is
 // exhausted, gated by per-job ($5) + global spend caps. Response is
@@ -226,6 +299,10 @@ const BACKENDS: Record<string, SearchBackend> = {
   serper: serperBackend,
   exa: exaBackend,
   serpapi: serpapiBackend,
+  tinyfish: tinyfishBackend,
+  contextwire: contextwireBackend,
+  scavio: scavioBackend,
+  searxng: searxngBackend,
   you: youBackend,
 }
 

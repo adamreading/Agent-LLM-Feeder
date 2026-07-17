@@ -73,6 +73,26 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     note: 'Real Google SERP as JSON (serpapi.com — distinct from Serper). Rich organic results; modest free tier, so good as one lane in the spread, not a sole primary.',
   },
   {
+    id: 'tinyfish', name: 'TinyFish', keyed: true, envVar: 'TINYFISH_API_KEY',
+    getUrl: 'https://agent.tinyfish.ai', tier: 'FREE · 30 QPM', prefix: 'tinyfish key',
+    note: 'Free web search for AI agents (api.search.tinyfish.ai). 30 queries/min, no card — a generous free lane for the spread.',
+  },
+  {
+    id: 'contextwire', name: 'ContextWire', keyed: true, envVar: 'CONTEXTWIRE_API_KEY',
+    getUrl: 'https://contextwire.dev', tier: 'FREE · 1K / MO', prefix: 'contextwire key',
+    note: 'AI-agent search (contextwire.dev/api/search). 1,000 free queries/mo, no card.',
+  },
+  {
+    id: 'scavio', name: 'Scavio', keyed: true, envVar: 'SCAVIO_API_KEY',
+    getUrl: 'https://dashboard.scavio.dev', tier: 'FREE · 250 / MO', prefix: 'scavio key',
+    note: 'Real-time multi-platform search (Google et al). 250 free credits/mo + 50 on signup, no card.',
+  },
+  {
+    id: 'searxng', name: 'SearXNG (self-hosted)', keyed: true, envVar: 'SEARXNG_URL',
+    getUrl: 'https://docs.searxng.org/admin/installation.html', tier: 'FREE · SELF-HOSTED · UNLIMITED', prefix: 'https://searxng.example.org',
+    note: 'Self-hosted metasearch — aggregates many upstream engines, unlimited + private, no card. The "key" is your instance BASE URL (enable `json` in the instance settings.yml formats). Best durable free lane if you run one.',
+  },
+  {
     id: 'ddg', name: 'DuckDuckGo', keyed: false,
     tier: 'KEYLESS', prefix: '—',
     note: 'Free, no key. Fine for light use, but DDG IP-blocks sustained scraping — unreliable as a heavy primary from a datacenter/WSL egress.',
