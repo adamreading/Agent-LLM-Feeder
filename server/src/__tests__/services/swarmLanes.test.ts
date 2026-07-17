@@ -21,6 +21,28 @@ describe('swarmLanes', () => {
     expect(SL.isSwarmConsumer(null)).toBe(false);
   });
 
+  it('recognises sub-labels of a swarm consumer (ringer-research), but not lookalikes', () => {
+    // Regression 2026-07-17: 'ringer-research' (distinct augment label) fell out
+    // of the swarm set (exact-match 'ringer' only) → anti-affinity disengaged.
+    expect(SL.isSwarmConsumer('ringer-research')).toBe(true);
+    expect(SL.isSwarmConsumer('ringer-anything')).toBe(true);
+    expect(SL.swarmGroup('ringer-research')).toBe('ringer');
+    expect(SL.swarmGroup('RINGER-Research')).toBe('ringer');
+    // A lookalike with no group boundary is NOT a swarm consumer.
+    expect(SL.isSwarmConsumer('ringerx')).toBe(false);
+    expect(SL.swarmGroup('hermes')).toBe(null);
+  });
+
+  it('sub-labels share ONE anti-affinity group (ringer vs ringer-research spread apart)', () => {
+    SL.recordLane('session:a', 'ringer', 'groq');
+    SL.recordLane('session:b', 'ringer-research', 'google');
+    // The research worker must avoid the plain-ringer worker's platform and vice
+    // versa — they are one swarm app, so a new sibling of either sees BOTH.
+    expect([...SL.heldPlatformsExcluding('session:c', 'ringer-research')].sort()).toEqual(['google', 'groq']);
+    expect([...SL.heldPlatformsExcluding('session:a', 'ringer-research')]).toEqual(['google']);
+    expect([...SL.heldPlatformsExcluding('session:b', 'ringer')]).toEqual(['groq']);
+  });
+
   it('records a lane and reports hasLane', () => {
     expect(SL.hasLane('session:a')).toBe(false);
     SL.recordLane('session:a', 'ringer', 'groq');

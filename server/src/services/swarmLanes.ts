@@ -38,8 +38,24 @@ const SWARM_CONSUMERS = new Set(
 // call. Tighten later by calibrating from p95 inter-call gap in `requests`.
 const LANE_IDLE_MS = Number(process.env.FEEDER_SWARM_LANE_IDLE_MS ?? 300_000);
 
+// Map a consumer to its swarm GROUP: an exact base name OR a `<base>-<suffix>`
+// sub-label. So 'ringer', 'ringer-research', 'ringer-<anything>' are ONE swarm
+// app sharing a SINGLE anti-affinity group — a sub-label must never fall out of
+// anti-affinity. (Learned live 2026-07-17: 'ringer-research' workers, using a
+// distinct label for augment telemetry, weren't in SWARM_CONSUMERS (exact-match
+// 'ringer' only) so anti-affinity silently disengaged and multiple workers
+// piled onto the same provider/model.) Returns the base group, or null.
+export function swarmGroup(consumer: string | null | undefined): string | null {
+  const c = consumer?.toLowerCase().trim();
+  if (!c) return null;
+  for (const g of SWARM_CONSUMERS) {
+    if (c === g || c.startsWith(g + '-')) return g;
+  }
+  return null;
+}
+
 export function isSwarmConsumer(consumer: string | null | undefined): boolean {
-  return !!consumer && SWARM_CONSUMERS.has(consumer.toLowerCase());
+  return swarmGroup(consumer) !== null;
 }
 
 function live(lane: Lane, now: number): boolean {
@@ -64,10 +80,13 @@ export function hasLane(sessionKey: string): boolean {
 export function heldPlatformsExcluding(sessionKey: string, consumer: string): Set<string> {
   const now = Date.now();
   prune(now);
+  // Group by swarm GROUP (not raw consumer) so 'ringer' + 'ringer-research'
+  // sessions anti-affine against EACH OTHER — they're one app.
+  const group = swarmGroup(consumer);
   const out = new Set<string>();
   for (const [key, lane] of lanes) {
     if (key === sessionKey) continue;
-    if (lane.consumer.toLowerCase() !== consumer.toLowerCase()) continue;
+    if (lane.consumer !== group) continue; // lane.consumer is stored as the group
     out.add(lane.platform);
   }
   return out;
@@ -86,7 +105,8 @@ export function heldPlatforms(): Set<string> {
 /** Record/refresh a session's assigned platform. Called after every successful
  *  route for a swarm session (refreshes lastUsed + tracks re-pins). */
 export function recordLane(sessionKey: string, consumer: string, platform: string): void {
-  lanes.set(sessionKey, { platform, consumer, lastUsed: Date.now() });
+  // Store the swarm GROUP so all sub-labels of one app share a lane group.
+  lanes.set(sessionKey, { platform, consumer: swarmGroup(consumer) ?? consumer.toLowerCase(), lastUsed: Date.now() });
   if (lanes.size > 2000) prune(Date.now()); // backstop against unbounded growth
 }
 
