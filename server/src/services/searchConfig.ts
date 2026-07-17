@@ -80,7 +80,7 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
   {
     id: 'you', name: 'You.com', keyed: true, envVar: 'YOU_API_KEY', paid: true,
     getUrl: 'https://you.com/platform', tier: 'PAID · $5/1K · LAST-RESORT', prefix: 'you key',
-    note: 'Paid LLM-ready web+news search (api.ydc-index.io). NOT in the free rotation — used only as the last line of defence when every free engine is throttled/failed. Guarded by a per-job ($5) + global spend cap.',
+    note: 'Paid LLM-ready web+news search (ydc-index.io). NOT in the free rotation — used only as the last line of defence when every free engine is throttled/failed. Guarded by a per-job ($5) + global spend cap.',
   },
 ];
 

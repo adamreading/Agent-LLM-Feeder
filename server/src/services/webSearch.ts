@@ -189,7 +189,7 @@ const serpapiBackend: SearchBackend = {
   },
 }
 
-// You.com — PAID, LLM-ready web+news search (api.ydc-index.io), keyed via X-API-Key.
+// You.com — PAID, LLM-ready web+news search (ydc-index.io), keyed via X-API-Key.
 // The paid last-resort backend: searchPool.ts only calls it when every free engine is
 // exhausted, gated by per-job ($5) + global spend caps. Response is
 // { results: { web: [{title, url, snippets[], description}], news: [...] } }; page
@@ -199,7 +199,7 @@ const youBackend: SearchBackend = {
   id: 'you',
   isConfigured: () => !!process.env.YOU_API_KEY,
   search: async (q, max = 6) => {
-    const url = `https://api.ydc-index.io/v1/search?query=${encodeURIComponent(q)}&count=${max}`
+    const url = `https://ydc-index.io/v1/search?query=${encodeURIComponent(q)}&count=${max}`
     const res = await fetch(url, { headers: { 'X-API-Key': process.env.YOU_API_KEY ?? '' } })
     if (!res.ok) throw new Error(`You.com search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
     const data = await res.json() as { results?: { web?: YouWebResult[] } }
