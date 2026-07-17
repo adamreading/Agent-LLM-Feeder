@@ -52,17 +52,20 @@ describe('isAugmentBlockedConsumer — OB P4b hard block', () => {
   });
 });
 
-describe('runWebAugment — degrade-safe', () => {
-  it('returns null (unaugmented) when the backend is not configured', async () => {
+describe('runWebAugment — degrade-safe + skip reasons', () => {
+  it('skipped=no-config when the backend is not configured', async () => {
+    vi.resetModules();
     vi.doMock('../../services/webSearch.js', () => ({
       getSearchBackend: () => ({ isConfigured: () => false, search: async () => [] }),
     }));
     const { runWebAugment: fn } = await import('../../services/augment.js');
-    expect(await fn('latest news')).toBeNull();
+    const r = await fn('latest news');
+    expect(r.context).toBeNull();
+    expect(r.skipped).toBe('no-config');
     vi.doUnmock('../../services/webSearch.js');
   });
 
-  it('formats results into a labelled grounding block when the backend returns hits', async () => {
+  it('formats results into a labelled grounding block (skipped=null) on hits', async () => {
     vi.resetModules();
     vi.doMock('../../services/webSearch.js', () => ({
       getSearchBackend: () => ({
@@ -74,11 +77,64 @@ describe('runWebAugment — degrade-safe', () => {
       }),
     }));
     const { runWebAugment: fn } = await import('../../services/augment.js');
-    const block = await fn('latest news', { timeoutMs: 1000 });
-    expect(block).toContain('Feeder web-search context');
-    expect(block).toContain('https://a.test/1');
-    expect(block).toContain('Result Two');
+    const r = await fn('latest news hits', { timeoutMs: 1000 });
+    expect(r.skipped).toBeNull();
+    expect(r.context).toContain('Feeder web-search context');
+    expect(r.context).toContain('https://a.test/1');
+    expect(r.context).toContain('Result Two');
     vi.doUnmock('../../services/webSearch.js');
+  });
+
+  it('skipped=no-results when the backend returns an empty set', async () => {
     vi.resetModules();
+    vi.doMock('../../services/webSearch.js', () => ({
+      getSearchBackend: () => ({ isConfigured: () => true, search: async () => [] }),
+    }));
+    const { runWebAugment: fn } = await import('../../services/augment.js');
+    const r = await fn('nothing found query', { timeoutMs: 1000 });
+    expect(r.context).toBeNull();
+    expect(r.skipped).toBe('no-results');
+    vi.doUnmock('../../services/webSearch.js');
+  });
+
+  it('skipped=throttled when the backend errors with a rate-limit/quota signal', async () => {
+    vi.resetModules();
+    vi.doMock('../../services/webSearch.js', () => ({
+      getSearchBackend: () => ({ isConfigured: () => true, search: async () => { throw new Error('429 Too Many Requests: hourly quota exceeded'); } }),
+    }));
+    const { runWebAugment: fn } = await import('../../services/augment.js');
+    const r = await fn('throttled query', { timeoutMs: 1000 });
+    expect(r.context).toBeNull();
+    expect(r.skipped).toBe('throttled');
+    vi.doUnmock('../../services/webSearch.js');
+  });
+
+  it('skipped=error on a generic (non-throttle) backend fault', async () => {
+    vi.resetModules();
+    vi.doMock('../../services/webSearch.js', () => ({
+      getSearchBackend: () => ({ isConfigured: () => true, search: async () => { throw new Error('ECONNRESET socket hang up'); } }),
+    }));
+    const { runWebAugment: fn } = await import('../../services/augment.js');
+    const r = await fn('broken query', { timeoutMs: 1000 });
+    expect(r.context).toBeNull();
+    expect(r.skipped).toBe('error');
+    vi.doUnmock('../../services/webSearch.js');
+  });
+
+  it('shared cache dedups an identical query — second call hits cache, no second backend search', async () => {
+    vi.resetModules();
+    const searchSpy = vi.fn(async () => [{ title: 'X', url: 'https://x.test', content: 'c' }]);
+    vi.doMock('../../services/webSearch.js', () => ({
+      getSearchBackend: () => ({ isConfigured: () => true, search: searchSpy }),
+    }));
+    const { runWebAugment: fn } = await import('../../services/augment.js');
+    const { _resetSearchCache } = await import('../../services/searchCache.js');
+    _resetSearchCache();
+    const a = await fn('same cached question', { timeoutMs: 1000 });
+    const b = await fn('SAME cached question  ', { timeoutMs: 1000 }); // normalized-equal
+    expect(a.context).toContain('https://x.test');
+    expect(b.context).toContain('https://x.test');
+    expect(searchSpy).toHaveBeenCalledTimes(1); // 2nd served from cache
+    vi.doUnmock('../../services/webSearch.js');
   });
 });

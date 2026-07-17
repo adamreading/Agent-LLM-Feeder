@@ -15,8 +15,21 @@
 // fail a completion.
 
 import { getSearchBackend } from './webSearch.js';
+import { getCachedSearch, setCachedSearch } from './searchCache.js';
 
 export type AugmentPolicy = 'off' | 'auto' | 'force';
+
+// Why augmentation did NOT inject grounding, when a search WAS attempted. Surfaced
+// on the X-Augment-Skipped response header + logged (requests.augment_skipped) so a
+// caller (e.g. a research swarm) can distinguish "the free tier is throttled/
+// exhausted — back off / self-ground" from "search genuinely found nothing" —
+// previously all collapsed to a bare unaugmented response (RINGER, 2026-07-17).
+export type AugmentSkipReason = 'throttled' | 'no-results' | 'no-config' | 'error';
+export interface AugmentResult { context: string | null; skipped: AugmentSkipReason | null; }
+
+// A backend error that means the tier is rate-limited/exhausted (vs a generic
+// network/parse fault) — lets the caller back off specifically on 'throttled'.
+const THROTTLE_RE = /429|rate.?limit|too many requests|quota|exhaust|throttl|capacity|overloaded|insufficient/i;
 
 export function parseAugmentPolicy(raw: unknown): AugmentPolicy {
   return raw === 'auto' || raw === 'force' ? raw : 'off';
@@ -79,19 +92,32 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 // block, or null if nothing usable. The block is explicitly LABELLED as external
 // web content (not the user's words) so a model treats it as grounding, and so a
 // human reading the transcript can see the provenance.
-export async function runWebAugment(query: string, opts: { maxResults?: number; timeoutMs?: number } = {}): Promise<string | null> {
+export async function runWebAugment(query: string, opts: { maxResults?: number; timeoutMs?: number } = {}): Promise<AugmentResult> {
   const maxResults = opts.maxResults ?? 4;
   const timeoutMs = opts.timeoutMs ?? 4000;
+  const backend = getSearchBackend();
+  if (!backend.isConfigured()) return { context: null, skipped: 'no-config' };
+  const q = query.slice(0, 400);
   try {
-    const backend = getSearchBackend();
-    if (!backend.isConfigured()) return null;
-    const results = await withTimeout(backend.search(query.slice(0, 400), maxResults), timeoutMs);
-    if (!results || results.length === 0) return null;
+    // Shared query cache first — a cache HIT costs no backend call, so it can't
+    // throttle and dedups a swarm's repeated/overlapping queries (searchCache.ts).
+    let results = getCachedSearch(q);
+    if (!results) {
+      results = await withTimeout(backend.search(q, maxResults), timeoutMs);
+      setCachedSearch(q, results ?? []); // only non-empty sets actually cache
+    }
+    if (!results || results.length === 0) return { context: null, skipped: 'no-results' };
     const body = results.slice(0, maxResults).map((r, i) =>
       `${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${(r.content || '').replace(/\s+/g, ' ').slice(0, 500)}`
     ).join('\n\n');
-    return `[Feeder web-search context — live external web results retrieved to help answer the user's question. Prefer these over prior knowledge for current facts, and treat them as external sources (not the user's words). Cite the source URLs where relevant.]\n\n${body}`;
-  } catch {
-    return null; // no-config / timeout / network / parse — proceed unaugmented
+    return {
+      context: `[Feeder web-search context — live external web results retrieved to help answer the user's question. Prefer these over prior knowledge for current facts, and treat them as external sources (not the user's words). Cite the source URLs where relevant.]\n\n${body}`,
+      skipped: null,
+    };
+  } catch (err: any) {
+    // Distinguish a throttle/exhaustion from a generic fault so the caller can
+    // back off specifically. Degrade-safe either way (request proceeds unaugmented).
+    const msg = String(err?.message ?? err);
+    return { context: null, skipped: THROTTLE_RE.test(msg) ? 'throttled' : 'error' };
   }
 }

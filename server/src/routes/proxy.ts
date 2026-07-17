@@ -553,6 +553,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // Placed before the token estimate so the injected context is counted. Fully
   // degrade-safe: any no-config/timeout/error leaves the request unaugmented.
   let augmented = false;
+  let augmentSkipped: string | null = null;
   // Precedence (OB P4b, windows' load-bearing point): the consumer hard-block wins
   // over EVERYTHING and is evaluated FIRST — so flipping FEEDER_AUGMENT_DEFAULT to
   // 'auto' someday can never re-open augmentation for a blocked grounded consumer.
@@ -564,11 +565,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     ? 'off'
     : (rawAugment != null ? parseAugmentPolicy(rawAugment) : augmentDefault());
   if (augmentPolicy !== 'off' && shouldAugment(augmentPolicy, latestUserText(messages))) {
-    const ctx = await runWebAugment(latestUserText(messages));
-    if (ctx) {
-      messages.unshift({ role: 'system', content: ctx });
+    const aug = await runWebAugment(latestUserText(messages));
+    if (aug.context) {
+      messages.unshift({ role: 'system', content: aug.context });
       augmented = true;
       console.log(`[Augment] injected web-search context (policy=${augmentPolicy}, consumer=${consumer})`);
+    } else {
+      // A search was attempted but injected nothing — surface WHY (throttled /
+      // no-results / no-config / error) so a caller can back off on 'throttled'
+      // rather than fly blind. Degrade-safe: the request still proceeds.
+      augmentSkipped = aug.skipped;
+      console.log(`[Augment] skipped=${aug.skipped} (policy=${augmentPolicy}, consumer=${consumer})`);
     }
   }
 
@@ -890,6 +897,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
               res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
               res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
               if (augmented) res.setHeader('X-Augmented', 'web-search');
+              else if (augmentSkipped) res.setHeader('X-Augment-Skipped', augmentSkipped);
               if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
               streamStarted = true;
             }
@@ -918,7 +926,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           recordSuccess(route.modelDbId);
           setStickyModel(messages, route.modelDbId, explicitSessionId);
           if (handoffMode !== 'off') recordSuccessfulModel({ sessionKey: handoffSessionKey, modelKey: `${route.platform}/${route.modelId}` });
-          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
+          logRequest(route.platform, route.modelId, 'success', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId, augmentSkipped);
           return;
         } catch (streamErr: any) {
           if (streamStarted) {
@@ -930,7 +938,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
             const payload = { error: { message: `Provider error (${route.displayName}): stream interrupted`, type: 'stream_error' } };
             try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { /* socket gone */ }
             try { res.write('data: [DONE]\n\n'); res.end(); } catch { /* socket gone */ }
-            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
+            logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, totalOutputTokens, Math.round(performance.now() - attemptStart), streamErr.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId, augmentSkipped);
             return;
           }
           // Pre-stream error — bubble to outer retry/502 handler.
@@ -993,6 +1001,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
         res.setHeader('X-Task-Class', effectiveTaskClass ?? 'overall');
         if (augmented) res.setHeader('X-Augmented', 'web-search');
+              else if (augmentSkipped) res.setHeader('X-Augment-Skipped', augmentSkipped);
         if (attempt > 0) res.setHeader('X-Fallback-Attempts', String(attempt));
         res.json(result);
 
@@ -1000,13 +1009,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
           route.platform, route.modelId, 'success',
           result.usage?.prompt_tokens ?? 0,
           result.usage?.completion_tokens ?? 0,
-          Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented,
+          Math.round(performance.now() - attemptStart), null, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId, augmentSkipped,
         );
         return;
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - attemptStart);
-      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId);
+      logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId, augmentSkipped);
 
       lastError = err;
       const retryable = isRetryableError(err);
@@ -1097,6 +1106,7 @@ async function logRequest(
   classifyReason?: string | null,
   augmented?: boolean,
   runId?: string | null,
+  augmentSkipped?: string | null,
 ) {
   // Book the tokens against this call's swarm run (no-op unless the run declared
   // a budget) BEFORE the insert, so a DB write failure can't skip metering.
@@ -1106,9 +1116,9 @@ async function logRequest(
   recordProgress(consumer, sessionId, inputTokens ?? 0, outputTokens ?? 0);
   try {
     await run(getPool(), `
-      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented, run_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null, augmented ?? false, runId ?? null]);
+      INSERT INTO requests (platform, model_id, status, input_tokens, output_tokens, latency_ms, error, session_id, task_class, consumer, needs, classify_reason, augmented, run_id, augment_skipped)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [platform, modelId, status, inputTokens, outputTokens, Math.max(0, Math.round(latencyMs)), error, sessionId ?? null, taskClass ?? null, consumer ?? null, needs && needs.length > 0 ? needs.join(',') : null, classifyReason ?? null, augmented ?? false, runId ?? null, augmentSkipped ?? null]);
   } catch (e) {
     console.error('Failed to log request:', e);
   }

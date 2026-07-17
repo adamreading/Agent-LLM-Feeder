@@ -278,6 +278,11 @@ export const requests = pgTable('requests', {
   // spend is the key the per-run hard-cap enforcer (services/swarmBudget.ts)
   // meters against. Null for all non-swarm traffic. Content-free.
   runId: text('run_id'),
+  // Why augmentation injected NOTHING when a search was attempted (mirrors the
+  // X-Augment-Skipped response header): 'throttled' | 'no-results' | 'no-config'
+  // | 'error'. Null when not augmented-attempted OR augmentation succeeded — lets
+  // a caller tell tier-exhaustion from empty-results after the fact (RINGER, 2026-07-17).
+  augmentSkipped: text('augment_skipped'),
 });
 
 // Human thumbs-up/down on a served response (Agent/Chatbot UI, 2026-07-14).
