@@ -54,8 +54,8 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
   },
   {
     id: 'brave', name: 'Brave Search', keyed: true, envVar: 'BRAVE_SEARCH_API_KEY',
-    getUrl: 'https://brave.com/search/api/', tier: 'FREE · 2K QUERIES / MO', prefix: 'BSA…',
-    note: 'Independent index (not Google/Bing reseller). Generous free tier, privacy-first, stable API.',
+    getUrl: 'https://brave.com/search/api/', tier: 'FREE 2K/MO · CARD REQUIRED', prefix: 'BSA…',
+    note: 'Independent index (not Google/Bing reseller), privacy-first, stable API. NB: sign-up now requires a credit card even for the free tier (confirmed 2026-07-17) — integration works if you add one.',
   },
   {
     id: 'serper', name: 'Serper', keyed: true, envVar: 'SERPER_API_KEY',
@@ -79,8 +79,8 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
   },
   {
     id: 'contextwire', name: 'ContextWire', keyed: true, envVar: 'CONTEXTWIRE_API_KEY',
-    getUrl: 'https://contextwire.dev', tier: 'FREE · 1K / MO', prefix: 'contextwire key',
-    note: 'AI-agent search (contextwire.dev/api/search). 1,000 free queries/mo, no card.',
+    getUrl: 'https://contextwire.dev', tier: 'FREE 1K/MO · SIGNUPS PAUSED', prefix: 'contextwire key',
+    note: 'AI-agent search (contextwire.dev/api/search). 1,000 free queries/mo, no card. NB: sign-ups were paused as of 2026-07-17 — integration is ready for when they reopen.',
   },
   {
     id: 'scavio', name: 'Scavio', keyed: true, envVar: 'SCAVIO_API_KEY',

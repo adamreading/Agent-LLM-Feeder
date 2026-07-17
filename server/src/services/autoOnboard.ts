@@ -26,10 +26,14 @@ export async function autoOnboardNewArrivals(pool: pg.Pool): Promise<void> {
     if (suspects === 0 && probed === 0) log('no new/suspect models to probe');
 
     // 2. Research canonical models that have no summary yet (new arrivals).
-    //    Unbounded at boot (fill in whatever's outstanding); skipped cleanly if
-    //    no search backend/writer is configured. Shared with the daily
-    //    catalogSync (which caps its pass at 10/day).
-    await researchMissingCanonicals(pool, { log });
+    //    BOUNDED per boot (FEEDER_ONBOARD_RESEARCH_LIMIT, default 20) — was
+    //    unbounded, which burned ~284 free-tier search credits on 2026-07-17 when
+    //    a big new-canonical backlog met ~8 restarts (each boot chewed the whole
+    //    backlog). The daily catalogSync (cap 10) clears the rest over days, so a
+    //    restart can no longer trigger a large search spend. Skipped cleanly if no
+    //    search backend/writer is configured.
+    const bootLimit = Number(process.env.FEEDER_ONBOARD_RESEARCH_LIMIT ?? 20);
+    await researchMissingCanonicals(pool, { log, limit: bootLimit });
   } catch (err: any) {
     log(`error: ${err?.message ?? err}`);
   } finally {
