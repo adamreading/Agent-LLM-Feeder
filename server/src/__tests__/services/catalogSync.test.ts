@@ -136,6 +136,20 @@ describe('runCatalogSync — reconciliation (add / retire / reappear / safety)',
     expect(ns!.missing_polls).toBe(0);
   });
 
+  it('survives a provider that lists the same id twice (no unique-violation crash)', async () => {
+    // Regression: a real /models response returned a duplicate id, which crashed
+    // the whole sync on the unique (platform, model_id) constraint. Dedup + ON
+    // CONFLICT DO NOTHING must make it a no-op, not an abort.
+    h.discovery = { groq: { status: 200, ids: ['dup', 'dup', 'fresh'] } };
+
+    const s = await runCatalogSync(getPool(), {});
+
+    expect(s.note).toBeUndefined();      // did NOT abort into the error path
+    expect(s.added).toBe(2);             // 'dup' counted once + 'fresh'
+    const rows = await all<{ model_id: string }>(getPool(), `SELECT model_id FROM models WHERE platform='groq' ORDER BY model_id`);
+    expect(rows.map(r => r.model_id)).toEqual(['dup', 'fresh']);
+  });
+
   it('passes the per-run caps through to the token-touching stages', async () => {
     h.discovery = { groq: { status: 200, ids: ['a'] } };
     await seed({ platform: 'groq', modelId: 'a', lastSeenLive: 'now' });

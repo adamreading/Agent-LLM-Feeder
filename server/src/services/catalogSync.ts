@@ -1,5 +1,5 @@
 import type pg from 'pg';
-import { all, get, run, runReturningId } from '../db/pgCompat.js';
+import { all, get, run } from '../db/pgCompat.js';
 import { discoverLiveModels, isTrustworthyPoll, type DiscoveryResult } from './catalogDiscovery.js';
 import { classifyModelKind } from './modelKind.js';
 import { matchModels, createCanonicalFromModel } from './modelCanon.js';
@@ -84,20 +84,25 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
         log(`${platform}: poll not trustworthy (HTTP ${d.status}, ${d.ids.length} ids)${d.err ? ' — ' + d.err : ''} — skipping add/retire`);
         continue;
       }
-      const liveIds = d.ids;
+      // Dedupe the live list — some providers list the same id twice in one
+      // /models response, which would otherwise self-collide on insert.
+      const liveIds = Array.from(new Set(d.ids));
 
-      // 2. ADD unseen ids
+      // 2. ADD unseen ids. ON CONFLICT DO NOTHING makes this robust to a
+      //    provider dup-listing OR a concurrent run — a collision skips that row
+      //    instead of aborting the whole sync (returns no id → not counted).
       const existing = await all<{ model_id: string }>(pool, `SELECT model_id FROM models WHERE platform = ?`, [platform]);
       const existingSet = new Set(existing.map((e) => e.model_id));
       for (const modelId of liveIds) {
         if (existingSet.has(modelId)) continue;
         const name = titleCase(modelId);
-        const id = await runReturningId(pool, `
+        const row = await get<{ id: number }>(pool, `
           INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, cost_tier, disabled_reason, match_status, kind, last_seen_live, missing_polls)
           VALUES (?, ?, ?, 500, 500, false, 'free', 'pending-liveness (daily-sync)', 'unmatched', ?, now(), 0)
+          ON CONFLICT (platform, model_id) DO NOTHING
+          RETURNING id
         `, [platform, modelId, name, classifyModelKind(modelId, name)]);
-        newlyAddedIds.push(id);
-        summary.added++;
+        if (row?.id) { newlyAddedIds.push(row.id); summary.added++; }
       }
 
       // 3a. Reappearance: a delisted model back in the live list re-enters liveness.
