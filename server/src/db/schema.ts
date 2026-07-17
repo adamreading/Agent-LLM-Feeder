@@ -212,6 +212,26 @@ export const modelHealth = pgTable('model_health', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// Per web-search engine health + usage (searchPool.ts, 2026-07-17). Search now
+// spreads across a BANK of engines (like the model router spreads across
+// providers); this table is the search analog of model_health. One row per
+// engine id (tavily/ollama/brave/serper/exa/ddg/you). Drives selection
+// (LRU spread via last_used_at, skip-on-cooldown) + the UI's "which engine is
+// best / how much has You.com cost" view. calls_total is the lifetime counter
+// backing the global You.com spend cap (calls_total × $0.005).
+export const searchBackendHealth = pgTable('search_backend_health', {
+  backend: text('backend').primaryKey(), // engine id
+  recentLatencyMs: integer('recent_latency_ms'), // last observed search latency
+  successCount: integer('success_count').notNull().default(0),
+  failCount: integer('fail_count').notNull().default(0),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  callsTotal: integer('calls_total').notNull().default(0), // lifetime attempts (spend basis for paid)
+  cooldownUntil: timestamp('cooldown_until', { withTimezone: true }), // skip until (set on throttle/error)
+  lastError: text('last_error'),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }), // LRU spread key
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const apiKeys = pgTable('api_keys', {
   id: serial('id').primaryKey(),
   platform: text('platform').notNull(),

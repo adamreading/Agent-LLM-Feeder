@@ -34,6 +34,9 @@ export interface SearchProviderMeta {
   prefix?: string;
   /** One-line description for the card. */
   note: string;
+  /** PAID provider — kept OUT of the free even-spread rotation and used only as a
+   *  last-resort fallback tier when every free engine is exhausted (searchPool.ts). */
+  paid?: boolean;
 }
 
 // Commonly-used web-search backends. Each keyed entry must have a matching
@@ -65,14 +68,34 @@ export const SEARCH_PROVIDER_CATALOG: SearchProviderMeta[] = [
     note: 'Neural/semantic search built for AI, returns page text inline. Good for research-style queries.',
   },
   {
+    id: 'serpapi', name: 'SerpApi', keyed: true, envVar: 'SERPAPI_API_KEY',
+    getUrl: 'https://serpapi.com', tier: 'FREE TIER · SERP', prefix: 'serpapi key',
+    note: 'Real Google SERP as JSON (serpapi.com — distinct from Serper). Rich organic results; modest free tier, so good as one lane in the spread, not a sole primary.',
+  },
+  {
     id: 'ddg', name: 'DuckDuckGo', keyed: false,
     tier: 'KEYLESS', prefix: '—',
     note: 'Free, no key. Fine for light use, but DDG IP-blocks sustained scraping — unreliable as a heavy primary from a datacenter/WSL egress.',
   },
+  {
+    id: 'you', name: 'You.com', keyed: true, envVar: 'YOU_API_KEY', paid: true,
+    getUrl: 'https://you.com/platform', tier: 'PAID · $5/1K · LAST-RESORT', prefix: 'you key',
+    note: 'Paid LLM-ready web+news search (api.ydc-index.io). NOT in the free rotation — used only as the last line of defence when every free engine is throttled/failed. Guarded by a per-job ($5) + global spend cap.',
+  },
 ];
 
 const KEY_PREFIX = 'search_key_'; // + provider id
-const BACKEND_SETTING = 'web_search_backend';
+const BACKEND_SETTING = 'web_search_backend'; // legacy single-active (back-compat)
+const POOL_SETTING = 'web_search_pool';       // JSON array of activated engine ids
+
+export const SEARCH_PROVIDER_BY_ID: Record<string, SearchProviderMeta> = Object.fromEntries(
+  SEARCH_PROVIDER_CATALOG.map((p) => [p.id, p]),
+);
+
+/** Is this engine a PAID last-resort provider (kept out of the free rotation)? */
+export function isPaidBackend(id: string): boolean {
+  return !!SEARCH_PROVIDER_BY_ID[id]?.paid;
+}
 
 // Derived from the catalog — do not hand-maintain.
 export const SEARCH_BACKENDS: string[] = SEARCH_PROVIDER_CATALOG.map((p) => p.id);
@@ -115,6 +138,39 @@ export async function setActiveSearchBackend(pool: pg.Pool, id: string): Promise
 export async function getActiveSearchBackend(pool: pg.Pool): Promise<string | null> {
   const row = await get<{ value: string }>(pool, `SELECT value FROM settings WHERE key = ?`, [BACKEND_SETTING]);
   return row?.value ?? null;
+}
+
+// The ACTIVATED BANK — the set of engines search load spreads across. Stored as a
+// JSON array under `web_search_pool`. Back-compat: if unset, fall back to the legacy
+// single active backend (so an install that never opened the new UI keeps working).
+export async function getSearchPool(pool: pg.Pool): Promise<string[]> {
+  const row = await get<{ value: string }>(pool, `SELECT value FROM settings WHERE key = ?`, [POOL_SETTING]);
+  if (row?.value) {
+    try {
+      const ids = JSON.parse(row.value);
+      if (Array.isArray(ids)) return ids.filter((x): x is string => typeof x === 'string' && isKnownBackend(x));
+    } catch { /* fall through to legacy */ }
+  }
+  const single = await getActiveSearchBackend(pool);
+  return single && isKnownBackend(single) ? [single] : [];
+}
+
+export async function setSearchPool(pool: pg.Pool, ids: string[]): Promise<void> {
+  const clean = Array.from(new Set(ids.filter(isKnownBackend)));
+  await upsertSetting(pool, POOL_SETTING, JSON.stringify(clean));
+}
+
+export async function addToPool(pool: pg.Pool, id: string): Promise<string[]> {
+  const cur = await getSearchPool(pool);
+  if (!cur.includes(id)) cur.push(id);
+  await setSearchPool(pool, cur);
+  return cur;
+}
+
+export async function removeFromPool(pool: pg.Pool, id: string): Promise<string[]> {
+  const cur = (await getSearchPool(pool)).filter((x) => x !== id);
+  await setSearchPool(pool, cur);
+  return cur;
 }
 
 // Bridge DB-stored config into process.env so webSearch.ts uses it. DB wins over

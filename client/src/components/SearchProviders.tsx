@@ -12,13 +12,20 @@ const initials = (name: string) =>
 // catalog + per-provider key state come from the server (GET /api/settings/search),
 // which is the single source of truth (searchConfig.ts SEARCH_PROVIDER_CATALOG).
 // Shown on BOTH the Onboarding page and the Key Vault (Adam, 2026-07-11).
-interface Provider {
-  id: string; name: string; keyed: boolean; tier: string; note: string
-  getUrl: string | null; prefix: string | null
-  active: boolean; keySet: boolean; keyMasked: string | null
+interface EngineStats {
+  recentLatencyMs: number | null; successCount: number; failCount: number
+  callsTotal: number; cooldownUntil: string | null; lastError: string | null
+  lastUsedAt: string | null; estSpendUsd: number | null
 }
-interface SearchState { backend: string; providers: Provider[] }
-type SearchBody = { activate?: string; setKey?: { backend: string; key: string }; clearKey?: string }
+interface Provider {
+  id: string; name: string; keyed: boolean; tier: string; note: string; paid: boolean
+  getUrl: string | null; prefix: string | null
+  active: boolean; inPool: boolean; keySet: boolean; keyMasked: string | null
+  stats: EngineStats | null
+}
+interface YouCaps { costPerCall: number; jobCapUsd: number; globalCapUsd: number }
+interface SearchState { backend: string; providers: Provider[]; pool: string[]; youCaps: YouCaps }
+type SearchBody = { activate?: string; setKey?: { backend: string; key: string }; clearKey?: string; pool?: { backend: string; action: 'add' | 'remove' } }
 type VerifyOutcome = { state: 'ok' | 'fail'; msg: string }
 
 export default function SearchProviders() {
@@ -50,8 +57,8 @@ export default function SearchProviders() {
     <div style={{ marginTop: 40 }}>
       <div style={{ ...mono, fontSize: 10, color: 'var(--acc2)', letterSpacing: 3, marginBottom: 6 }}>// RESEARCH FEED</div>
       <h2 style={{ margin: '0 0 4px', fontSize: 26, fontWeight: 700, letterSpacing: 1 }}>SEARCH PROVIDERS</h2>
-      <p style={{ margin: '0 0 16px', color: 'var(--dim)', fontSize: 13, maxWidth: 640 }}>
-        Powers the Model Wiki's street-research — web summaries + task scores per model. Not used for chat. Keys are stored encrypted in the database (never in <code>.env</code>). Add a key, VERIFY it with one live query, then pick which backend is active.
+      <p style={{ margin: '0 0 16px', color: 'var(--dim)', fontSize: 13, maxWidth: 680 }}>
+        Powers web-search augment + the Model Wiki's research. Not used for chat. Keys are stored encrypted in the database (never in <code>.env</code>). Add a key, VERIFY it, then <strong>add engines to the BANK</strong> — search load spreads evenly across the activated free engines so none gets rate-limited, with per-engine latency tracked below. <strong>You.com is the paid last-resort</strong> (fires only when every free engine is exhausted; guarded by a ${data?.youCaps?.jobCapUsd ?? 5}/job + ${data?.youCaps?.globalCapUsd ?? 180} global spend cap).
       </p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(340px,1fr))', gap: 14 }}>
         {providers.map(p => {
@@ -59,8 +66,11 @@ export default function SearchProviders() {
           const hasKey = p.keySet
           const editing = draft.trim().length > 0
           const v = verify[p.id]
-          const cardBorder = p.active ? 'rgba(61,255,160,.45)' : 'var(--line)'
-          const canActivate = !p.active && (!p.keyed || hasKey)
+          const inBank = p.inPool
+          const cardBorder = inBank ? (p.paid ? 'rgba(255,193,61,.5)' : 'rgba(61,255,160,.45)') : 'var(--line)'
+          const canAdd = !inBank && (!p.keyed || hasKey)
+          const cooling = !!p.stats?.cooldownUntil && new Date(p.stats.cooldownUntil).getTime() > Date.now()
+          const st = p.stats
           return (
             <div key={p.id} className="cy-hover-acc" style={{ border: `1px solid ${cardBorder}`, background: 'var(--panel)', padding: 16, display: 'flex', flexDirection: 'column', gap: 10, position: 'relative' }}>
               <div style={{ position: 'absolute', top: 0, right: 0, width: 14, height: 14, background: `linear-gradient(135deg, transparent 50%, ${cardBorder} 50%)` }} />
@@ -70,9 +80,18 @@ export default function SearchProviders() {
                   <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: '.5px' }}>{p.name}</div>
                   <div style={{ ...mono, fontSize: 9.5, color: 'var(--dim)', letterSpacing: '.5px' }}>{p.tier}</div>
                 </div>
-                {p.active && <span style={{ ...mono, fontSize: 9, letterSpacing: 1, color: 'var(--good)', border: '1px solid var(--good)', padding: '3px 6px', boxShadow: '0 0 8px rgba(61,255,160,.25)' }}>◈ ACTIVE</span>}
+                {inBank && <span style={{ ...mono, fontSize: 9, letterSpacing: 1, color: p.paid ? 'var(--warn, #ffc13d)' : 'var(--good)', border: `1px solid ${p.paid ? 'var(--warn, #ffc13d)' : 'var(--good)'}`, padding: '3px 6px' }}>{p.paid ? '◈ FALLBACK' : '◈ IN BANK'}</span>}
               </div>
               <p style={{ ...mono, fontSize: 10.5, color: 'var(--dim)', lineHeight: 1.5, margin: 0, minHeight: 44 }}>{p.note}</p>
+
+              {st && (st.callsTotal > 0 || st.recentLatencyMs != null) && (
+                <div style={{ ...mono, fontSize: 9.5, letterSpacing: '.3px', color: cooling ? 'var(--bad, #ff6b6b)' : 'var(--dim)', lineHeight: 1.5, borderTop: '1px solid var(--line)', paddingTop: 6 }}>
+                  {st.recentLatencyMs != null && <span>⚡ {st.recentLatencyMs}ms  </span>}
+                  <span>✓ {st.successCount}/{st.successCount + st.failCount}  </span>
+                  {p.paid && st.estSpendUsd != null && <span style={{ color: 'var(--warn, #ffc13d)' }}>· ${st.estSpendUsd.toFixed(2)}/${data?.youCaps?.globalCapUsd ?? 180}  </span>}
+                  {cooling && <span>· COOLING DOWN</span>}
+                </div>
+              )}
 
               {p.keyed && (
                 <>
@@ -110,17 +129,17 @@ export default function SearchProviders() {
               )}
 
               <button
-                onClick={() => mutate.mutate({ activate: p.id })}
-                disabled={!canActivate || mutate.isPending}
+                onClick={() => mutate.mutate({ pool: { backend: p.id, action: inBank ? 'remove' : 'add' } })}
+                disabled={(!canAdd && !inBank) || mutate.isPending}
                 className="cy-btn"
                 style={{
-                  all: 'unset', textAlign: 'center', cursor: canActivate ? 'pointer' : 'default',
+                  all: 'unset', textAlign: 'center', cursor: (canAdd || inBank) ? 'pointer' : 'default',
                   fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '8px 0',
-                  border: `1px solid ${p.active ? 'var(--good)' : 'var(--acc)'}`,
-                  color: p.active ? 'var(--good)' : (canActivate ? 'var(--acc)' : 'var(--dim)'),
-                  background: 'transparent', opacity: (!canActivate && !p.active) ? 0.5 : 1,
+                  border: `1px solid ${inBank ? 'var(--dim)' : 'var(--acc)'}`,
+                  color: inBank ? 'var(--dim)' : (canAdd ? 'var(--acc)' : 'var(--dim)'),
+                  background: 'transparent', opacity: (!canAdd && !inBank) ? 0.5 : 1,
                 }}
-              >{p.active ? 'IN USE' : (p.keyed && !hasKey ? 'ADD KEY TO USE' : 'USE THIS')}</button>
+              >{inBank ? 'REMOVE FROM BANK' : (p.keyed && !hasKey ? 'ADD KEY FIRST' : 'ADD TO BANK')}</button>
             </div>
           )
         })}

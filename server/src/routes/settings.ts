@@ -4,11 +4,24 @@ import { z } from 'zod';
 import { getUnifiedApiKey, regenerateUnifiedKey, getPool } from '../db/index.js';
 import { maskKey } from '../lib/crypto.js';
 import {
-  SEARCH_BACKENDS, KEYED_SEARCH_BACKENDS, SEARCH_PROVIDER_CATALOG, isKnownBackend,
+  SEARCH_BACKENDS, KEYED_SEARCH_BACKENDS, SEARCH_PROVIDER_CATALOG, isKnownBackend, isPaidBackend,
   getActiveSearchBackend, setActiveSearchBackend,
+  getSearchPool, setSearchPool, addToPool, removeFromPool,
   getSearchKey, setSearchKey, clearSearchKey, loadSearchConfigIntoEnv,
 } from '../services/searchConfig.js';
 import { getBackendById } from '../services/webSearch.js';
+import { getSearchHealth, YOU_CAPS } from '../services/searchPool.js';
+
+// Keep the legacy single-active (web_search_backend) pointing at a member of the
+// pool — it back-stops searchConfigured() (sync) + any legacy reader. Prefer a
+// FREE member; fall back to the first, or leave as-is if the pool is empty.
+async function syncLegacyActive(pool: any, poolIds: string[]): Promise<void> {
+  if (poolIds.length === 0) return;
+  const cur = await getActiveSearchBackend(pool);
+  if (cur && poolIds.includes(cur)) return;
+  const free = poolIds.find((id) => !isPaidBackend(id));
+  await setActiveSearchBackend(pool, free ?? poolIds[0]);
+}
 
 export const settingsRouter = Router();
 
@@ -31,6 +44,8 @@ settingsRouter.post('/api-key/regenerate', async (_req: Request, res: Response) 
 async function searchState() {
   const pool = getPool();
   const backend = (await getActiveSearchBackend(pool)) ?? process.env.WEB_SEARCH_BACKEND ?? 'ollama';
+  const inPool = new Set(await getSearchPool(pool));
+  const health = new Map((await getSearchHealth()).map((h) => [h.backend, h]));
   const providers = [];
   for (const p of SEARCH_PROVIDER_CATALOG) {
     let keySet = false;
@@ -40,15 +55,26 @@ async function searchState() {
       keySet = !!k;
       keyMasked = k ? maskKey(k) : null;
     }
+    const h = health.get(p.id);
     providers.push({
-      id: p.id, name: p.name, keyed: p.keyed, tier: p.tier, note: p.note,
+      id: p.id, name: p.name, keyed: p.keyed, tier: p.tier, note: p.note, paid: !!p.paid,
       getUrl: p.getUrl ?? null, prefix: p.prefix ?? null,
-      active: p.id === backend, keySet, keyMasked,
+      active: p.id === backend,      // legacy single-active (back-compat)
+      inPool: inPool.has(p.id),      // activated bank membership (the new model)
+      keySet, keyMasked,
+      stats: h ? {
+        recentLatencyMs: h.recent_latency_ms, successCount: h.success_count, failCount: h.fail_count,
+        callsTotal: h.calls_total, cooldownUntil: h.cooldown_until, lastError: h.last_error,
+        lastUsedAt: h.last_used_at, estSpendUsd: h.estSpendUsd,
+      } : null,
     });
   }
   // `available`/`keyed` retained for any legacy consumer; `providers` is the
-  // catalog the UI renders from.
-  return { backend, providers, available: SEARCH_BACKENDS, keyed: Object.keys(KEYED_SEARCH_BACKENDS) };
+  // catalog the UI renders from. `youCaps` powers the You.com spend display.
+  return {
+    backend, providers, available: SEARCH_BACKENDS, keyed: Object.keys(KEYED_SEARCH_BACKENDS),
+    pool: [...inPool], youCaps: YOU_CAPS,
+  };
 }
 
 settingsRouter.get('/search', async (_req: Request, res: Response) => {
@@ -59,7 +85,9 @@ const searchSchema = z.object({
   activate: z.string().optional(),
   setKey: z.object({ backend: z.string(), key: z.string().min(1) }).optional(),
   clearKey: z.string().optional(),
-}).refine((d) => d.activate || d.setKey || d.clearKey, { message: 'No action given' });
+  // Add/remove an engine from the activated BANK (the load-balanced pool).
+  pool: z.object({ backend: z.string(), action: z.enum(['add', 'remove']) }).optional(),
+}).refine((d) => d.activate || d.setKey || d.clearKey || d.pool, { message: 'No action given' });
 
 settingsRouter.post('/search', async (req: Request, res: Response) => {
   const parsed = searchSchema.safeParse(req.body);
@@ -68,22 +96,42 @@ settingsRouter.post('/search', async (req: Request, res: Response) => {
     return;
   }
   const pool = getPool();
-  const { activate, setKey, clearKey } = parsed.data;
+  const { activate, setKey, clearKey, pool: poolOp } = parsed.data;
 
   // Validate every referenced backend id against the catalog.
-  for (const id of [activate, setKey?.backend, clearKey].filter(Boolean) as string[]) {
+  for (const id of [activate, setKey?.backend, clearKey, poolOp?.backend].filter(Boolean) as string[]) {
     if (!isKnownBackend(id)) {
       res.status(400).json({ error: { message: `Unknown search backend '${id}'.`, type: 'invalid_request_error' } });
       return;
     }
   }
 
-  if (clearKey) await clearSearchKey(pool, clearKey);
+  if (clearKey) {
+    await clearSearchKey(pool, clearKey);
+    await removeFromPool(pool, clearKey); // a keyless-again engine can't serve — drop it from the bank
+  }
   if (setKey) {
     await setSearchKey(pool, setKey.backend, setKey.key.trim());
-    // Pasting a key implies wanting to use it — activate that backend unless the
-    // caller explicitly activates a different one in the same request.
-    if (!activate) await setActiveSearchBackend(pool, setKey.backend);
+    // Pasting a key implies wanting to use it — add that backend to the bank
+    // unless the caller is doing an explicit activate/pool op in the same request.
+    if (!activate && !poolOp) await addToPool(pool, setKey.backend);
+  }
+  if (poolOp) {
+    if (poolOp.action === 'add') {
+      // Don't add a keyed engine with no key (would just be skipped as unconfigured).
+      const envVar = KEYED_SEARCH_BACKENDS[poolOp.backend];
+      if (envVar) {
+        const hasKey = !!(await getSearchKey(pool, poolOp.backend)) || (setKey && setKey.backend === poolOp.backend);
+        if (!hasKey) {
+          res.status(400).json({ error: { message: `'${poolOp.backend}' needs a key before it can join the bank.`, type: 'invalid_request_error' } });
+          return;
+        }
+      }
+      await addToPool(pool, poolOp.backend);
+    } else {
+      await removeFromPool(pool, poolOp.backend);
+    }
+    await syncLegacyActive(pool, await getSearchPool(pool));
   }
   if (activate) {
     // Don't activate a keyed backend that has no key (would break research).
@@ -96,6 +144,7 @@ settingsRouter.post('/search', async (req: Request, res: Response) => {
       }
     }
     await setActiveSearchBackend(pool, activate);
+    await addToPool(pool, activate); // legacy activate also joins the bank (non-destructive)
   }
 
   // Apply to THIS running server immediately (no restart) so the next research

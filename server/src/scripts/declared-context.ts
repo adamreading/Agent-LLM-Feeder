@@ -9,7 +9,8 @@ import '../env.js';
 import { initDb, closeDb, getPool } from '../db/index.js';
 import { all, run } from '../db/pgCompat.js';
 import { loadSearchConfigIntoEnv } from '../services/searchConfig.js';
-import { getSearchBackend, searchConfigured } from '../services/webSearch.js';
+import { searchConfigured } from '../services/webSearch.js';
+import { poolSearch } from '../services/searchPool.js';
 import { routedChat } from '../services/routedCompletion.js';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -18,7 +19,6 @@ async function main() {
   await initDb();
   await loadSearchConfigIntoEnv(getPool());
   if (!searchConfigured()) { console.error('no search backend'); process.exit(1); }
-  const backend = getSearchBackend();
 
   // distinct canonicals with a null-context enabled instance + a representative model_id/name
   const groups = await all<{ canonical_id: number; name: string; sample_model: string }>(getPool(), `
@@ -33,15 +33,9 @@ async function main() {
   let filled = 0, notfound = 0;
   for (const g of groups) {
     const leaf = (g.sample_model.split('/').pop() ?? g.sample_model).replace(/:free$/, '');
-    let snippets = '';
-    try {
-      const results = await backend.search(`${leaf} model maximum context window length tokens`, 5);
-      snippets = results.map((r) => `# ${r.title}\n${r.content}`).join('\n\n').slice(0, 6000);
-    } catch (e: any) {
-      console.log(`[search-fail] ${g.name}: ${e.message?.slice(0, 60)}`);
-      if (/anomaly|rate|429/i.test(e.message ?? '')) { console.log('search rate-limited — stopping; re-run later.'); break; }
-      continue;
-    }
+    const res = await poolSearch(`${leaf} model maximum context window length tokens`, 5);
+    if (!res.results.length && res.reason === 'throttled') { console.log('search pool throttled — stopping; re-run later.'); break; }
+    const snippets = res.results.map((r) => `# ${r.title}\n${r.content}`).join('\n\n').slice(0, 6000);
     if (!snippets) { notfound++; console.log(`[no-snippets] ${g.name}`); continue; }
 
     const prompt = `From the sources below, what is the MAXIMUM context window (in tokens) of the LLM "${leaf}"? Only use an EXPLICITLY stated number for THIS model. Convert "128k"->131072, "1M"->1048576, "200k"->200000 style values to exact token counts. If not explicitly stated for this model, return null.\n\nReturn ONLY: {"context_tokens": <integer or null>}\n\nSOURCES:\n${snippets}`;

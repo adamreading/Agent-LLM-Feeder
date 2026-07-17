@@ -169,6 +169,52 @@ const exaBackend: SearchBackend = {
   },
 }
 
+// SerpApi (serpapi.com) — real Google SERP as JSON, keyed via the api_key query
+// param. DISTINCT from Serper. Snippet-level content; page fetch delegates to Ollama.
+const serpapiBackend: SearchBackend = {
+  id: 'serpapi',
+  isConfigured: () => !!process.env.SERPAPI_API_KEY,
+  search: async (q, max = 6) => {
+    const url = `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(q)}&num=${max}&api_key=${encodeURIComponent(process.env.SERPAPI_API_KEY ?? '')}`
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`SerpApi search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { organic_results?: { title?: string; link?: string; snippet?: string }[] }
+    return (data.organic_results ?? []).map((r) => ({
+      title: r.title ?? '', url: r.link ?? '', content: (r.snippet ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => {
+    const r = await ollamaFetch(url)
+    return { title: r.title, content: r.content }
+  },
+}
+
+// You.com — PAID, LLM-ready web+news search (api.ydc-index.io), keyed via X-API-Key.
+// The paid last-resort backend: searchPool.ts only calls it when every free engine is
+// exhausted, gated by per-job ($5) + global spend caps. Response is
+// { results: { web: [{title, url, snippets[], description}], news: [...] } }; page
+// fetch uses livecrawl-style content when present, else delegates to Ollama.
+interface YouWebResult { title?: string; url?: string; snippets?: string[]; description?: string }
+const youBackend: SearchBackend = {
+  id: 'you',
+  isConfigured: () => !!process.env.YOU_API_KEY,
+  search: async (q, max = 6) => {
+    const url = `https://api.ydc-index.io/v1/search?query=${encodeURIComponent(q)}&count=${max}`
+    const res = await fetch(url, { headers: { 'X-API-Key': process.env.YOU_API_KEY ?? '' } })
+    if (!res.ok) throw new Error(`You.com search error ${res.status}: ${await res.text().catch(() => res.statusText)}`)
+    const data = await res.json() as { results?: { web?: YouWebResult[] } }
+    return (data.results?.web ?? []).map((r) => ({
+      title: r.title ?? '',
+      url: r.url ?? '',
+      content: ((r.snippets && r.snippets.length ? r.snippets.join(' ') : r.description) ?? '').trim(),
+    })).filter((r) => r.url && r.title)
+  },
+  fetch: async (url) => {
+    const r = await ollamaFetch(url)
+    return { title: r.title, content: r.content }
+  },
+}
+
 // Register additional backends here. Each just needs to implement SearchBackend
 // and be listed in searchConfig.ts SEARCH_PROVIDER_CATALOG under the same id;
 // selecting it is then WEB_SEARCH_BACKEND=<id>.
@@ -179,6 +225,8 @@ const BACKENDS: Record<string, SearchBackend> = {
   brave: braveBackend,
   serper: serperBackend,
   exa: exaBackend,
+  serpapi: serpapiBackend,
+  you: youBackend,
 }
 
 /** Look up a backend by id (for targeted verify / diagnostics). */

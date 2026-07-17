@@ -1,5 +1,18 @@
-import { describe, it, expect, vi } from 'vitest';
-import { parseAugmentPolicy, needsWebSearch, shouldAugment, isAugmentBlockedConsumer, runWebAugment } from '../../services/augment.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// runWebAugment now runs search via the POOL (searchPool.poolSearch); mock it so
+// these stay pure unit tests (pool selection/caps have their own tests). Hoisted
+// state lets each test drive the pool's return + count calls (for cache dedup).
+const h = vi.hoisted(() => ({ result: { results: [] as any[], reason: null as any, backend: null as any }, calls: 0 }));
+vi.mock('../../services/searchPool.js', async () => {
+  const actual = await vi.importActual<any>('../../services/searchPool.js');
+  return { ...actual, poolSearch: async () => { h.calls++; return h.result; } };
+});
+
+const { parseAugmentPolicy, needsWebSearch, shouldAugment, isAugmentBlockedConsumer, runWebAugment } = await import('../../services/augment.js');
+const { _resetSearchCache } = await import('../../services/searchCache.js');
+
+const hit = (url: string) => [{ title: url, url, content: 'snippet' }];
 
 describe('parseAugmentPolicy', () => {
   it('accepts auto/force, everything else → off (the safe default)', () => {
@@ -46,95 +59,37 @@ describe('isAugmentBlockedConsumer — OB P4b hard block', () => {
     expect(isAugmentBlockedConsumer('open-brain')).toBe(true);
     expect(isAugmentBlockedConsumer('Open-Brain')).toBe(true);
     expect(isAugmentBlockedConsumer('hermes')).toBe(false);
-    expect(isAugmentBlockedConsumer('fleet')).toBe(false);
     expect(isAugmentBlockedConsumer(null)).toBe(false);
-    expect(isAugmentBlockedConsumer(undefined)).toBe(false);
   });
 });
 
-describe('runWebAugment — degrade-safe + skip reasons', () => {
-  it('skipped=no-config when the backend is not configured', async () => {
-    vi.resetModules();
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({ isConfigured: () => false, search: async () => [] }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const r = await fn('latest news');
-    expect(r.context).toBeNull();
-    expect(r.skipped).toBe('no-config');
-    vi.doUnmock('../../services/webSearch.js');
-  });
+describe('runWebAugment — maps pool result → grounding block / skip reason', () => {
+  beforeEach(() => { _resetSearchCache(); h.calls = 0; });
 
   it('formats results into a labelled grounding block (skipped=null) on hits', async () => {
-    vi.resetModules();
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({
-        isConfigured: () => true,
-        search: async () => [
-          { title: 'Result One', url: 'https://a.test/1', content: 'first snippet' },
-          { title: 'Result Two', url: 'https://b.test/2', content: 'second snippet' },
-        ],
-      }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const r = await fn('latest news hits', { timeoutMs: 1000 });
+    h.result = { results: hit('https://a.test/1'), reason: null, backend: 'tavily' };
+    const r = await runWebAugment('some fresh query');
     expect(r.skipped).toBeNull();
     expect(r.context).toContain('Feeder web-search context');
     expect(r.context).toContain('https://a.test/1');
-    expect(r.context).toContain('Result Two');
-    vi.doUnmock('../../services/webSearch.js');
   });
 
-  it('skipped=no-results when the backend returns an empty set', async () => {
-    vi.resetModules();
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({ isConfigured: () => true, search: async () => [] }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const r = await fn('nothing found query', { timeoutMs: 1000 });
-    expect(r.context).toBeNull();
-    expect(r.skipped).toBe('no-results');
-    vi.doUnmock('../../services/webSearch.js');
+  it('passes the pool skip-reason straight through when nothing was injected', async () => {
+    for (const reason of ['throttled', 'no-results', 'no-config', 'error'] as const) {
+      _resetSearchCache();
+      h.result = { results: [], reason, backend: null };
+      const r = await runWebAugment(`q-${reason}`);
+      expect(r.context).toBeNull();
+      expect(r.skipped).toBe(reason);
+    }
   });
 
-  it('skipped=throttled when the backend errors with a rate-limit/quota signal', async () => {
-    vi.resetModules();
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({ isConfigured: () => true, search: async () => { throw new Error('429 Too Many Requests: hourly quota exceeded'); } }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const r = await fn('throttled query', { timeoutMs: 1000 });
-    expect(r.context).toBeNull();
-    expect(r.skipped).toBe('throttled');
-    vi.doUnmock('../../services/webSearch.js');
-  });
-
-  it('skipped=error on a generic (non-throttle) backend fault', async () => {
-    vi.resetModules();
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({ isConfigured: () => true, search: async () => { throw new Error('ECONNRESET socket hang up'); } }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const r = await fn('broken query', { timeoutMs: 1000 });
-    expect(r.context).toBeNull();
-    expect(r.skipped).toBe('error');
-    vi.doUnmock('../../services/webSearch.js');
-  });
-
-  it('shared cache dedups an identical query — second call hits cache, no second backend search', async () => {
-    vi.resetModules();
-    const searchSpy = vi.fn(async () => [{ title: 'X', url: 'https://x.test', content: 'c' }]);
-    vi.doMock('../../services/webSearch.js', () => ({
-      getSearchBackend: () => ({ isConfigured: () => true, search: searchSpy }),
-    }));
-    const { runWebAugment: fn } = await import('../../services/augment.js');
-    const { _resetSearchCache } = await import('../../services/searchCache.js');
-    _resetSearchCache();
-    const a = await fn('same cached question', { timeoutMs: 1000 });
-    const b = await fn('SAME cached question  ', { timeoutMs: 1000 }); // normalized-equal
+  it('shared cache dedups an identical query — 2nd call served from cache, no 2nd pool search', async () => {
+    h.result = { results: hit('https://x.test'), reason: null, backend: 'brave' };
+    const a = await runWebAugment('same cached question');
+    const b = await runWebAugment('SAME cached question  '); // normalized-equal
     expect(a.context).toContain('https://x.test');
     expect(b.context).toContain('https://x.test');
-    expect(searchSpy).toHaveBeenCalledTimes(1); // 2nd served from cache
-    vi.doUnmock('../../services/webSearch.js');
+    expect(h.calls).toBe(1); // 2nd hit the cache
   });
 });

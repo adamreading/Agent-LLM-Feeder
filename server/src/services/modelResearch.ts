@@ -1,6 +1,7 @@
 import type pg from 'pg';
 import { all, get, run } from '../db/pgCompat.js';
-import { getSearchBackend, searchConfigured, type SearchResult } from './webSearch.js';
+import { getBackendById, searchConfigured, type SearchResult } from './webSearch.js';
+import { poolSearch } from './searchPool.js';
 import { recordTaskScore, TASK_TYPES } from './taskScores.js';
 import { routedChat } from './routedCompletion.js';
 
@@ -62,24 +63,25 @@ export async function researchCanonicalModel(pool: pg.Pool, canonicalId: number)
   // the primary search term with the display name as extra context.
   const term = (canonical.slug || name).replace(/:free$/, '')
 
-  const backend = getSearchBackend()
-  if (!backend.isConfigured()) throw new Error(`Web-search backend '${backend.id}' is not configured (set its API key in .env).`)
-
-  // ONE combined query per model. A SEARCH-backend rate-limit is tagged
-  // (isSearchError) and rethrown so the runner can stop cleanly rather than
-  // churn through the catalog marking everything "no data" — but a WRITER
+  // ONE combined query per model, via the load-balanced search POOL (spreads
+  // across the free bank, falls to You.com last-resort). A pool-wide THROTTLE is
+  // tagged (isSearchError) and rethrown so the runner stops cleanly rather than
+  // churning through the catalog marking everything "no data" — but a WRITER
   // model 429 (below) is NOT a search error and must only skip that one model.
-  let results: SearchResult[]
-  try {
-    results = await backend.search(
-      `${term} LLM model strengths weaknesses what it is good at benchmarks arena leaderboard`, 6,
-    )
-  } catch (err: any) {
-    throw Object.assign(new Error(`search backend '${backend.id}': ${err?.message ?? err}`), { isSearchError: true })
+  const res = await poolSearch(
+    `${term} LLM model strengths weaknesses what it is good at benchmarks arena leaderboard`, 6,
+  )
+  if (!res.results.length && res.reason === 'throttled') {
+    throw Object.assign(new Error(`search pool throttled`), { isSearchError: true })
   }
-  // Fetch full text of the single most relevant result to deepen the corpus.
+  const results = res.results
+  // Fetch full text of the single most relevant result (via the engine that served
+  // it) to deepen the corpus. Best-effort — snippet-only if fetch is unavailable.
   let fetched = ''
-  if (results[0]) { try { fetched = (await backend.fetch(results[0].url)).content.slice(0, 4000) } catch { /* snippet-only */ } }
+  if (results[0] && res.backend) {
+    const fb = getBackendById(res.backend)
+    if (fb) { try { fetched = (await fb.fetch(results[0].url)).content.slice(0, 4000) } catch { /* snippet-only */ } }
+  }
 
   const corpus = [
     ...results.map(r => `[${r.url}]\n${r.title}\n${r.content}`),

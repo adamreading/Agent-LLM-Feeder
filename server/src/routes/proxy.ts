@@ -552,6 +552,11 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   // live search results as a LABELLED system grounding message before routing.
   // Placed before the token estimate so the injected context is counted. Fully
   // degrade-safe: any no-config/timeout/error leaves the request unaugmented.
+  // Swarm run id (X-Run-Id) — groups all workers/attempts of one swarm run for
+  // per-run spend metering + the hard-cap enforcer, and scopes the You.com
+  // per-job search spend cap. Independent of session_id (per-attempt). Null for
+  // non-swarm traffic. Read here (before augment) so augment can meter per-job.
+  const runId = sanitizeRunId(req.header('x-run-id'));
   let augmented = false;
   let augmentSkipped: string | null = null;
   // Precedence (OB P4b, windows' load-bearing point): the consumer hard-block wins
@@ -565,7 +570,7 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
     ? 'off'
     : (rawAugment != null ? parseAugmentPolicy(rawAugment) : augmentDefault());
   if (augmentPolicy !== 'off' && shouldAugment(augmentPolicy, latestUserText(messages))) {
-    const aug = await runWebAugment(latestUserText(messages));
+    const aug = await runWebAugment(latestUserText(messages), { runId });
     if (aug.context) {
       messages.unshift({ role: 'system', content: aug.context });
       augmented = true;
@@ -600,10 +605,6 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
   const estimatedTotal = estimatedInputTokens + (max_tokens ?? 1000);
 
   const explicitSessionId = session_id ?? user ?? sanitizeSessionId(req.header('x-session-id'));
-  // Swarm run id (X-Run-Id) — groups all workers/attempts of one swarm run for
-  // per-run spend metering + the hard-cap enforcer. Independent of session_id
-  // (which is per-attempt). Null for non-swarm traffic.
-  const runId = sanitizeRunId(req.header('x-run-id'));
   const { taskClass, isAuto } = parseModelField(requestedModel);
 
   // Tier-0 heuristics: derive capability needs directly from the request's

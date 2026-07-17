@@ -14,8 +14,8 @@
 // null and the request proceeds UNAUGMENTED. Augmentation must never block or
 // fail a completion.
 
-import { getSearchBackend } from './webSearch.js';
 import { getCachedSearch, setCachedSearch } from './searchCache.js';
+import { poolSearch, type SearchSkipReason } from './searchPool.js';
 
 export type AugmentPolicy = 'off' | 'auto' | 'force';
 
@@ -24,12 +24,10 @@ export type AugmentPolicy = 'off' | 'auto' | 'force';
 // caller (e.g. a research swarm) can distinguish "the free tier is throttled/
 // exhausted — back off / self-ground" from "search genuinely found nothing" —
 // previously all collapsed to a bare unaugmented response (RINGER, 2026-07-17).
-export type AugmentSkipReason = 'throttled' | 'no-results' | 'no-config' | 'error';
+// The reason is produced by searchPool (which classifies throttle vs error across
+// the whole bank); AugmentSkipReason re-exports it.
+export type AugmentSkipReason = SearchSkipReason;
 export interface AugmentResult { context: string | null; skipped: AugmentSkipReason | null; }
-
-// A backend error that means the tier is rate-limited/exhausted (vs a generic
-// network/parse fault) — lets the caller back off specifically on 'throttled'.
-const THROTTLE_RE = /429|rate.?limit|too many requests|quota|exhaust|throttl|capacity|overloaded|insufficient/i;
 
 export function parseAugmentPolicy(raw: unknown): AugmentPolicy {
   return raw === 'auto' || raw === 'force' ? raw : 'off';
@@ -81,43 +79,28 @@ export function shouldAugment(policy: AugmentPolicy, text: string): boolean {
   return false;
 }
 
-function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error('augment search timeout')), ms)),
-  ]);
-}
-
-// Run the configured search backend and format results as an injectable context
-// block, or null if nothing usable. The block is explicitly LABELLED as external
-// web content (not the user's words) so a model treats it as grounding, and so a
-// human reading the transcript can see the provenance.
-export async function runWebAugment(query: string, opts: { maxResults?: number; timeoutMs?: number } = {}): Promise<AugmentResult> {
+// Run search via the load-balanced POOL and format results as an injectable
+// context block. The block is explicitly LABELLED as external web content (not
+// the user's words) so a model treats it as grounding, and a human reading the
+// transcript sees the provenance. Search selection/spread/failover/spend-caps all
+// live in searchPool.ts; runId scopes the You.com per-job spend cap.
+export async function runWebAugment(query: string, opts: { maxResults?: number; runId?: string | null } = {}): Promise<AugmentResult> {
   const maxResults = opts.maxResults ?? 4;
-  const timeoutMs = opts.timeoutMs ?? 4000;
-  const backend = getSearchBackend();
-  if (!backend.isConfigured()) return { context: null, skipped: 'no-config' };
   const q = query.slice(0, 400);
-  try {
-    // Shared query cache first — a cache HIT costs no backend call, so it can't
-    // throttle and dedups a swarm's repeated/overlapping queries (searchCache.ts).
-    let results = getCachedSearch(q);
-    if (!results) {
-      results = await withTimeout(backend.search(q, maxResults), timeoutMs);
-      setCachedSearch(q, results ?? []); // only non-empty sets actually cache
-    }
-    if (!results || results.length === 0) return { context: null, skipped: 'no-results' };
-    const body = results.slice(0, maxResults).map((r, i) =>
-      `${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${(r.content || '').replace(/\s+/g, ' ').slice(0, 500)}`
-    ).join('\n\n');
-    return {
-      context: `[Feeder web-search context — live external web results retrieved to help answer the user's question. Prefer these over prior knowledge for current facts, and treat them as external sources (not the user's words). Cite the source URLs where relevant.]\n\n${body}`,
-      skipped: null,
-    };
-  } catch (err: any) {
-    // Distinguish a throttle/exhaustion from a generic fault so the caller can
-    // back off specifically. Degrade-safe either way (request proceeds unaugmented).
-    const msg = String(err?.message ?? err);
-    return { context: null, skipped: THROTTLE_RE.test(msg) ? 'throttled' : 'error' };
+  // Shared query cache first — a HIT costs no engine call at all, dedups a swarm's
+  // repeated/overlapping queries (searchCache.ts).
+  let results = getCachedSearch(q);
+  if (!results) {
+    const res = await poolSearch(q, maxResults, { runId: opts.runId });
+    if (!res.results.length) return { context: null, skipped: res.reason };
+    results = res.results;
+    setCachedSearch(q, results); // only non-empty sets actually cache
   }
+  const body = results.slice(0, maxResults).map((r, i) =>
+    `${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${(r.content || '').replace(/\s+/g, ' ').slice(0, 500)}`
+  ).join('\n\n');
+  return {
+    context: `[Feeder web-search context — live external web results retrieved to help answer the user's question. Prefer these over prior knowledge for current facts, and treat them as external sources (not the user's words). Cite the source URLs where relevant.]\n\n${body}`,
+    skipped: null,
+  };
 }
