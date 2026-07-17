@@ -1,6 +1,6 @@
 import type pg from 'pg';
 import { all, get, run } from '../db/pgCompat.js';
-import { getSearchBackend, type SearchResult } from './webSearch.js';
+import { getSearchBackend, searchConfigured, type SearchResult } from './webSearch.js';
 import { recordTaskScore, TASK_TYPES } from './taskScores.js';
 import { routedChat } from './routedCompletion.js';
 
@@ -161,4 +161,46 @@ export async function recordResearch(pool: pg.Pool, canonicalId: number, res: Re
     params.push(canonicalId)
     await run(pool, `UPDATE canonical_models SET ${sets.join(', ')}, updated_at = now() WHERE id = ?`, params)
   }
+}
+
+export interface ResearchSweepResult {
+  researched: string[];
+  skipped: 'none' | 'no_missing' | 'no_search_backend' | 'no_writer' | 'search_rate_limited';
+}
+
+// Research every canonical model that still lacks a summary (new arrivals),
+// bounded to `limit` per pass. Shared by autoOnboard (boot, unbounded) and the
+// daily catalogSync (limit=10 so a burst of new provider ids can't spike token
+// spend — the rest fill in over subsequent days). Reuses researchCanonicalModel
+// + recordResearch; a tagged SEARCH rate-limit stops the pass cleanly (it
+// resumes next run) while a single writer error just skips that model.
+export async function researchMissingCanonicals(
+  pool: pg.Pool,
+  opts: { limit?: number; log?: (m: string) => void } = {}
+): Promise<ResearchSweepResult> {
+  const log = opts.log ?? (() => {});
+  const missing = await all<{ id: number; name: string }>(pool, `
+    SELECT id, name FROM canonical_models WHERE summary IS NULL OR summary = '' ORDER BY name ASC
+    ${opts.limit != null ? `LIMIT ${Math.max(0, Math.floor(opts.limit))}` : ''}
+  `);
+  if (missing.length === 0) { log('no un-researched canonical models'); return { researched: [], skipped: 'no_missing' }; }
+  if (!searchConfigured()) { log(`${missing.length} un-researched models, but no web-search backend configured — skipping research`); return { researched: [], skipped: 'no_search_backend' }; }
+  if (!(await researchWriterAvailable(pool))) { log(`${missing.length} un-researched models, but no writer model available — skipping research`); return { researched: [], skipped: 'no_writer' }; }
+
+  log(`researching ${missing.length} canonical model(s) via auto/research`);
+  const researched: string[] = [];
+  for (const c of missing) {
+    try {
+      const res = await researchCanonicalModel(pool, c.id);
+      if (res.summary || Object.keys(res.tasks).length) {
+        await recordResearch(pool, c.id, res);
+        researched.push(c.name);
+        log(`researched ${c.name}`);
+      }
+    } catch (err: any) {
+      if (err?.isSearchError) { log(`search rate-limited — stopping research pass (resumes next run)`); return { researched, skipped: 'search_rate_limited' }; }
+      log(`research failed for ${c.name}: ${err?.message ?? err}`);
+    }
+  }
+  return { researched, skipped: 'none' };
 }

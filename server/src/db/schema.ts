@@ -67,6 +67,15 @@ export const models = pgTable(
     // defined below in this file — safe in drizzle via the lazy callback.
     canonicalModelId: integer('canonical_model_id').references((): any => canonicalModels.id),
     matchStatus: text('match_status').notNull().default('unmatched'), // 'unmatched' | 'auto_matched' | 'manual_matched' | 'confirmed_new'
+    // Daily catalog-sync bookkeeping (catalogSync.ts, 2026-07-17). last_seen_live
+    // = the last time this (platform, model_id) appeared in the provider's live
+    // GET /models list; null = never observed live (a manual/seed row — NEVER
+    // auto-retired). missing_polls = consecutive successful daily polls in which
+    // a previously-live model was absent; at the retire threshold (3) the row is
+    // soft-retired (enabled=false, disabled_reason='delisted'). A failed/empty
+    // poll leaves both untouched so a provider blip can't retire anything.
+    lastSeenLive: timestamp('last_seen_live', { withTimezone: true }),
+    missingPolls: integer('missing_polls').notNull().default(0),
   },
   (table) => [unique('models_platform_model_id_unique').on(table.platform, table.modelId)]
 );

@@ -4,6 +4,7 @@ import { initDb, closeDb, getPool } from './db/index.js';
 import { startHealthChecker, stopHealthChecker } from './services/health.js';
 import { loadSearchConfigIntoEnv } from './services/searchConfig.js';
 import { autoOnboardNewArrivals } from './services/autoOnboard.js';
+import { startCatalogSyncScheduler, stopCatalogSyncScheduler } from './services/catalogSyncScheduler.js';
 import type { Server } from 'http';
 
 const PORT = process.env.PORT ?? 3001;
@@ -23,6 +24,10 @@ async function main() {
     // background a few seconds after boot so it never delays serving. Idempotent
     // — only genuine new arrivals / gaps trigger work (see autoOnboard.ts).
     setTimeout(() => { void autoOnboardNewArrivals(getPool()); }, 8000);
+    // Daily catalog sync: poll each provider's live /models list, add new
+    // models (research → wiki), soft-retire ones that disappeared upstream.
+    // In-process daily timer (feeder has no cron/supervisor); see catalogSync.ts.
+    startCatalogSyncScheduler(getPool());
   });
 
   // Drain-and-flip cutover support: stop accepting new connections, let
@@ -31,6 +36,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     console.log(`\n[Shutdown] ${signal} received, draining...`);
     stopHealthChecker();
+    stopCatalogSyncScheduler();
     server.close(async () => {
       await closeDb();
       console.log('[Shutdown] Drained and closed cleanly.');

@@ -261,7 +261,7 @@ cd server && npm run research -- --limit 10
 
 Re-runs are idempotent — they only fill gaps (a written summary is never overwritten with null). Note: free web-search tiers cap requests per hour, so a full catalogue populate fills in across re-runs.
 
-It is **not** wired to a persistent schedule by default — a standing job that spends provider/search quota on a timer is an operator decision; the mechanism is built and runnable on demand.
+New models discovered by the **daily catalog sync** (below) are researched automatically on a **capped** basis (≤10 new canonicals/day) so the wiki keeps pace without a token spike; a full bulk populate stays a manual, on-demand run.
 
 ---
 
@@ -271,6 +271,26 @@ It is **not** wired to a persistent schedule by default — a standing job that 
 - **No-key grace period:** if a platform loses its last usable key and it isn't replaced within 10 minutes, that platform's models are auto-disabled until a key returns.
 - **Key self-healing:** a provider key that returns 401/403 is marked `invalid` and auto-disabled after 3 consecutive failures — but the health cron then re-validates disabled `invalid` keys on a 15-minute backoff and **auto-re-enables** any that start passing again, so a *transient* cause (a VPN egress block, a brief network fault) recovers on its own without a manual re-enable. A key a human disabled while it was *healthy* is left alone.
 - A single `disabled_reason` (`no_key` / `unhealthy` / `manual`) ensures the auto-disable mechanisms and a human's manual toggle never fight each other.
+
+---
+
+## Catalog freshness (daily model discovery)
+
+The catalogue keeps itself current without a human re-running discovery scripts. Once a day an in-process job (`server/src/services/catalogSync.ts`, scheduled by `catalogSyncScheduler.ts`) reconciles every provider's **live** model list against the catalogue in six stages:
+
+1. **Discover** — GET `/models` on every enabled provider key (`services/catalogDiscovery.ts`, shared with the manual `discover-models.ts`). **GET-only — no completion tokens are spent here.**
+2. **Add** — an id present upstream but missing locally is inserted `enabled=false, disabled_reason='pending-liveness (daily-sync)'` (kept out of routing and the wiki until proven).
+3. **Retire (soft)** — for a provider that polled cleanly (HTTP 200, non-empty list), an id previously seen live but now absent for **3 consecutive daily polls** is soft-retired (`enabled=false, disabled_reason='delisted'`). A failed or empty poll retires **nothing** (a provider blip can't delist a model), a manually-disabled or otherwise-benched row is never overridden, and a model that reappears upstream is un-retired automatically.
+4. **Canonicalise** — new chat models are linked/grouped and get a wiki entry.
+5. **Enable** — a **bounded** liveness pass (≤15/run, one small real call each) flips working new models to `enabled=true`; paid/dead ones stay disabled with an honest reason.
+6. **Research** — a **bounded** pass (≤10/run) writes wiki summaries for the new canonical models.
+
+Soft-retire only: the row, its researched summary, and its slug/links are preserved, and a delisted model returns to the wiki if it reappears upstream and re-passes liveness. Because a retired model is simply `enabled=false`, the wiki (which lists only served instances) drops it with no extra filtering. The two token-touching stages (5, 6) are both capped; discovery is free.
+
+Scheduling is **in-process** (feeder has no cron/supervisor after a reboot): the last run is persisted to `settings.catalog_sync_last_run`, an hourly tick runs the job when ≥24h have passed, so a restart neither double-runs nor skips, and a day missed while feeder was down catches up on the next boot.
+
+- **`GET /api/catalog/sync-status`** → last run timestamp + the full per-run summary (per-platform poll status, added/retired/enabled/researched counts). Read-only.
+- **`POST /api/catalog/sync`** (localhost-only) → trigger a run now (background; add `?wait=1` to block and return the summary). Optional body `{ researchLimit, enableLimit, retireThreshold }` overrides the per-run caps.
 
 ---
 
