@@ -10,6 +10,34 @@ jobs:
   test:
     name: Test & build
     runs-on: ubuntu-latest
+
+    # Feeder's tests spin up disposable Postgres databases (server/src/__tests__/
+    # testDb.ts creates one per test file from DATABASE_URL and replays the real
+    # drizzle migrations). Without a Postgres service the test step fails on every
+    # push — provide one here so CI is green instead of emailing a failure each run.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: feeder
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # testDb.ts connects here, then to the admin /postgres DB to CREATE/DROP the
+      # per-file test databases (the postgres superuser has createdb).
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/feeder
+      # 32-byte hex key for lib/crypto (encrypted api_keys / search-key rows in
+      # tests). A throwaway CI value, not a real secret.
+      ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+
     steps:
       - uses: actions/checkout@v4
 
