@@ -4,6 +4,14 @@
 // DB. Excludes secrets (api_keys) and live/runtime state (model_health
 // latency, quota_snapshots) which regenerate at runtime. Pairs with
 // import-wiki-seed.ts. Usage: npx tsx src/scripts/export-wiki-seed.ts
+//
+// CURATED, not a raw dump: ships ALL canonical_models (the researched
+// knowledge base — summaries, modality, task-scores, aliases) but only the
+// REAL model instances (enabled, plus paid-only/paid_tier/manual rows that are
+// genuine models simply not free on this box). The my-box noise — never-verified
+// `pending-liveness` rows, `dead:`/`delisted`/`no_key`/`unavailable`/`unreachable`
+// — is dropped; a fresh install's own key-driven catalog discovery + liveness
+// repopulates live instances. See MODEL_KEEP_WHERE below.
 import '../env.js';
 import { initDb, closeDb, getPool } from '../db/index.js';
 import { all } from '../db/pgCompat.js';
@@ -16,6 +24,11 @@ async function main() {
   await initDb();
   const pool = getPool();
 
+  // Keep enabled instances + genuine-but-not-free rows (paid-only/paid_tier/manual);
+  // drop unverified/dead noise (pending-liveness, dead:, delisted, no_key, unavailable,
+  // unreachable, duplicate, non-chat, ...). Canonical knowledge is ALWAYS shipped whole.
+  const MODEL_KEEP_WHERE = `(enabled = true OR disabled_reason ILIKE 'paid%' OR disabled_reason = 'manual')`;
+
   const canonicals = await all<any>(pool, `SELECT id, name, slug, summary, vision, video, audio FROM canonical_models ORDER BY slug`);
   const aliases = await all<{ canonical_model_id: number; alias_key: string }>(pool, `SELECT canonical_model_id, alias_key FROM canonical_model_aliases`);
   const scores = await all<any>(pool, `SELECT canonical_model_id, task_type, score, rank, source FROM task_scores`);
@@ -23,7 +36,7 @@ async function main() {
     SELECT id, platform, model_id, display_name, size_label, cost_tier, context_window,
            intelligence_rank, speed_rank, rpm_limit, rpd_limit, tpm_limit, tpd_limit,
            monthly_token_budget, enabled, disabled_reason, canonical_model_id
-    FROM models ORDER BY platform, model_id`);
+    FROM models WHERE ${MODEL_KEEP_WHERE} ORDER BY platform, model_id`);
   const caps = await all<any>(pool, `SELECT model_db_id, capability, supported, dialect, score, source, evidence FROM model_capabilities`);
 
   const canonById = new Map(canonicals.map((c) => [c.id, c]));
@@ -52,7 +65,7 @@ async function main() {
   }));
 
   const seed = {
-    _note: 'Curated LLM-Feeder wiki seed. Import with `npm run seed:wiki:import` (idempotent, natural-key keyed). Excludes secrets and live latency/quota. Regenerate with `npm run seed:wiki:export`.',
+    _note: 'Curated LLM-Feeder wiki seed (starter knowledge base). Import with `npm run seed:wiki:import` (idempotent, natural-key keyed). Ships ALL researched canonical entries + only REAL model instances (enabled/paid/manual) — my-box pending-liveness/dead/delisted noise is dropped; your own keys + catalog discovery repopulate live instances. Excludes secrets and live latency/quota. Regenerate with `npm run seed:wiki:export`.',
     schema_version: 1,
     canonical_models: seedCanonicals,
     models: seedModels,

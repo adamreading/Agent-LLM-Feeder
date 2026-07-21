@@ -56,10 +56,14 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 # 3. Apply the schema
 cd server && npx drizzle-kit migrate && cd ..
 
-# 3b. (Optional) Import the curated wiki seed — a real starting-point dataset of
-#     ~210 canonical models with researched summaries, task scores, measured
-#     capabilities, context windows, and per-provider free-tier rate limits.
-#     Idempotent, natural-key keyed, no secrets. (Regenerate with seed:wiki:export.)
+# 3b. (Optional) Import the curated wiki seed — a real starting-point knowledge
+#     base of 574 canonical model entries (542 with researched summaries, plus
+#     modality flags, task scores and aliases) and 173 real provider instances
+#     (measured capabilities, context windows, free-tier rate limits). Curated,
+#     not a raw dump: unverified/dead catalog rows are excluded, so your own
+#     keys + startup discovery repopulate the live instances. Idempotent,
+#     natural-key keyed (canonical slug + platform/model_id — never serial ids),
+#     no secrets, safe to re-run. (Regenerate any time with `npm run seed:wiki:export`.)
 cd server && npm run seed:wiki:import && cd ..
 
 # 4. Run the server (serves the API on :3001 and, in prod, the built UI)
