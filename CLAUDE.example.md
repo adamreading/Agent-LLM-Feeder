@@ -29,6 +29,23 @@ treat it as production.
 - No commit without a doc update when one is appropriate. Stale docs trusted over live
   config are how the fleet gets sent chasing ghosts.
 
+### 5. Root-cause at the right layer, FIRST
+- Verify-first (#1) applies to DIAGNOSES too: a verified cause (read the code/state,
+  cite file+line) BEFORE stating a cause OR proposing a fix. Never send anyone chasing
+  an unread hypothesis.
+- Fix the defect at its OWN layer. Anything that makes the user or another component
+  absorb the constraint (reroute / blank a field / switch-back / park) is a WORKAROUND —
+  label it as such, ship it only as an interim stopgap ALONGSIDE the real fix, and keep
+  the item OPEN until the defect is gone or the workaround is explicitly accepted as final.
+
+### 6. No blind mutation on a live/broken system
+- Diagnose READ-ONLY first. No state-mutating recovery command runs until its side
+  effects are named AND it is reversible (backup taken) or read-only.
+- Consequence-gate anything that can suppress/delete state, rotate/consume a credential,
+  or trip an external rate-limit: STOP, state the blast radius, get the go. A broken
+  system is the worst place to experiment blind — recovery attempts that deepen the
+  outage are the failure mode this prevents.
+
 ## Repo facts (verify before relying on any of these — they can go stale)
 
 - **DB:** PostgreSQL `feeder` on localhost:5432 (`postgres`). Router/proxy live in
