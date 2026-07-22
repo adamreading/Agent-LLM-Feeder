@@ -79,6 +79,47 @@ Open the UI, go to **Onboarding**, add one or more provider keys, then use the *
 
 ---
 
+## Which model should I pick?
+
+**Short answer: send `"auto"` (or just omit `model`).** The router reads your prompt, works out what kind of task it is, picks the best free model for it, and fails over automatically if that provider is rate-limited. This is the right choice for almost everything — you only reach for the others when you *know* something the router would otherwise have to guess.
+
+There are three ways to set the `model` field, in order of how much you're deciding yourself:
+
+| `model` value | What it does | Pick it when… |
+|---|---|---|
+| **`"auto"`** *(or omit `model`)* | Feeder **classifies each request** from the prompt and routes by that task's quality scores. | **The default.** You want the best free model for whatever you're asking, judged per message. |
+| **`"auto/<class>"`** | Feeder **skips classification** and routes by the class *you* name — deterministic, and a touch faster (no classifier step). | Every call is the same kind of task (a coding agent, a multi-turn tool-using loop) and you don't want per-message guessing. |
+| **`"platform/model_id"`** | Pins **one exact model** — no routing, **no failover**. | You need a specific model (reproducibility, a known-good, a provider quirk) and accept that a rate-limit means an error, not a fallback. |
+
+### `auto` vs `auto/agentic_chat` — the usual question
+
+Both auto-route across the whole free pool with failover; the **only** difference is *how the task type gets decided*:
+
+- **`auto`** → feeder classifies the prompt **every request** and routes by whatever dimension it infers. Best when you don't know (or don't care) what kind of task each message is.
+- **`auto/agentic_chat`** → you've told feeder up front "this is an agentic, multi-turn, tool-using conversation," so it **always ranks models by their multi-turn scores and never re-guesses.** Ideal for a coding agent or swarm worker where *every* call is agentic — pin it once and every request routes consistently (and skips the classifier).
+
+Rule of thumb: **one-off questions and mixed chat → `auto`. A harness/agent that does the same kind of work on every call → `auto/<class>`.**
+
+### Valid `<class>` values
+
+Each class maps to the benchmark dimension models are ranked on:
+
+| `auto/…` | Ranks models by | For |
+|---|---|---|
+| `coding` | coding | writing / editing code |
+| `reasoning` | reasoning | logic, multi-step problems |
+| `math` | math | arithmetic, proofs |
+| `creative` | creative writing | prose, stories, poetry |
+| `agentic_chat` *(or `chat`, `multi_turn`)* | multi-turn | agents, tool-use, back-and-forth |
+| `long_context` | long queries | very large inputs |
+| `instruction` | instruction-following | strict-format / structured output |
+
+An unrecognised class harmlessly falls back to the general (`overall`) ranking. **Mind the exact form:** it's a **slash and an underscore** — `auto/agentic_chat`, *not* `auto-agentic-chat`. The all-hyphens form is read as a literal model name and returns a `400`.
+
+> The **Chatbot** and **Agent** UI pages use a fixed dropdown — its "AUTO" entry is the bare `"auto"`, and the other entries pin a specific model. `auto/<class>` is an **API feature**: set it in the `model` field of a request to the endpoint (it isn't offered as a dropdown choice).
+
+---
+
 ## Configuration (`.env`)
 
 | Variable | Required | Purpose |
@@ -135,7 +176,7 @@ curl http://localhost:3001/v1/chat/completions \
 
 - **Auth:** the **unified key** (from the Key Vault) as the Bearer token. Provider keys stay encrypted behind it. (A tokenless request from localhost is trusted as fleet.)
 - **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
-  - A **bare `"auto"`** request is classified from the prompt (coding / math / reasoning / creative / trivial) so routing engages the right per-task quality scores. An explicit `"auto/<class>"` is honoured verbatim and skips classification.
+  - A **bare `"auto"`** request is classified from the prompt so routing engages the right per-task quality scores; an explicit **`"auto/<class>"`** skips classification and routes by the class you name. See [**Which model should I pick?**](#which-model-should-i-pick) for when to use each and the valid class values.
 - **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
 - **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified. When web-search grounding was injected, `X-Augmented: web-search` is set.
 
