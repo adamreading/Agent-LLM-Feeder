@@ -34,3 +34,6 @@ scripts/coord/coord.config.json
 scripts/coord/events.jsonl
 scripts/coord/events.lock
 .claude/settings.json.bak
+
+# Fleet-internal daemon (feeder_tick) — never public
+.fleet/
