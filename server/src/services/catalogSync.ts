@@ -160,10 +160,6 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     summary.researched = researchRes.researched.length;
 
     summary.finishedAt = new Date().toISOString();
-    // Persist last-run + summary so the scheduler can pace itself + the status
-    // endpoint can report it.
-    await run(pool, `INSERT INTO settings (key, value) VALUES ('catalog_sync_last_run', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [summary.finishedAt]);
-    await run(pool, `INSERT INTO settings (key, value) VALUES ('catalog_sync_last_summary', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(summary)]);
     log(`done: +${summary.added} added, ${summary.retired} retired, ${summary.enabled} enabled, ${summary.researched} researched`);
     return summary;
   } catch (err: any) {
@@ -173,6 +169,21 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     return summary;
   } finally {
     running = false;
+    // Persist last-run + summary on BOTH paths (success AND failure). Was previously
+    // stamped only on the success path, so a THROWING sync left catalog_sync_last_run
+    // stale → the hourly scheduler tick re-ran the FULL sync every hour instead of
+    // daily (24×, and the token/credit-touching stages re-spent), and the status
+    // endpoint reported the last SUCCESS, hiding the failure. Key the pace + status on
+    // a marker the work CANNOT withhold. finishedAt is set on both the try and catch
+    // paths above, so it is always populated here. Local-pg write (feeder's own DB, up
+    // even when a provider call is what failed); guarded so a rare local hiccup can't
+    // throw out of the finally and re-introduce the stale-timestamp bug.
+    try {
+      await run(pool, `INSERT INTO settings (key, value) VALUES ('catalog_sync_last_run', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [summary.finishedAt]);
+      await run(pool, `INSERT INTO settings (key, value) VALUES ('catalog_sync_last_summary', ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [JSON.stringify(summary)]);
+    } catch (persistErr: any) {
+      log(`WARN: failed to persist catalog_sync_last_run/summary: ${persistErr?.message ?? persistErr}`);
+    }
   }
 }
 

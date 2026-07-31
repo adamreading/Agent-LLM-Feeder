@@ -132,12 +132,27 @@ export function clearHealthState(keyId: number): void {
 }
 
 let intervalId: ReturnType<typeof setInterval> | null = null;
+// Re-entrancy guard. setInterval fires on wall-clock cadence regardless of whether the
+// previous callback's promise has settled, so a pass that outruns CHECK_INTERVAL_MS would
+// be JOINED by the next tick, not delayed by it — stacking concurrent checkAllKeys runs
+// against provider auth endpoints. (catalogSyncScheduler avoids this via runCatalogSync's
+// own `running` flag; this is the same guard for the key-health cron.) Every leaf call is
+// abort-bounded (validateKey uses fetchWithTimeout), so a run always settles and the flag
+// always clears — it can throttle but never permanently muzzle.
+let checkInFlight = false;
 
 export function startHealthChecker(): void {
   if (intervalId) return;
   console.log(`[Health] Starting health checker (every ${CHECK_INTERVAL_MS / 1000}s)`);
   intervalId = setInterval(() => {
-    checkAllKeys().catch(err => console.error('[Health] Check failed:', err));
+    if (checkInFlight) {
+      console.warn('[Health] Previous check still running — skipping this tick');
+      return;
+    }
+    checkInFlight = true;
+    checkAllKeys()
+      .catch(err => console.error('[Health] Check failed:', err))
+      .finally(() => { checkInFlight = false; });
   }, CHECK_INTERVAL_MS);
 }
 
