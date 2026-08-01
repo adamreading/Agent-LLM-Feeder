@@ -189,6 +189,29 @@ export async function setQuotaExhausted(pool: pg.Pool, modelDbId: number, eviden
   }
 }
 
+// A platform (hence its key) is "rate_limited" — i.e. out of tokens / quota-exhausted —
+// when a MAJORITY of its enabled models are currently quota-parked. setQuotaExhausted fires
+// only on a genuine quota/tier-limit error (isQuotaExhaustionError), which is account-wide
+// for a free tier, so a broad park across the platform's models means the account's quota is
+// spent. Surfaced as the key's status (health.ts) so the vault distinguishes "exhausted, will
+// recover" from "invalid key / re-key needed". Auto-clears when the parks expire
+// (QUOTA_BENCH_MS) and completions succeed again — no manual step. Majority (not "any") so one
+// model hitting its own tighter per-model limit doesn't mislabel the whole account.
+export async function isPlatformQuotaExhausted(pool: pg.Pool, platform: string): Promise<boolean> {
+  const row = await get<{ enabled: string; exhausted: string }>(pool, `
+    SELECT
+      count(*) FILTER (WHERE m.enabled = true) AS enabled,
+      count(*) FILTER (WHERE m.enabled = true
+        AND h.quota_exhausted_until IS NOT NULL AND h.quota_exhausted_until > now()) AS exhausted
+    FROM models m
+    LEFT JOIN model_health h ON h.model_db_id = m.id
+    WHERE m.platform = ?
+  `, [platform]);
+  const enabled = Number(row?.enabled ?? 0);
+  const exhausted = Number(row?.exhausted ?? 0);
+  return enabled > 0 && exhausted * 2 >= enabled;
+}
+
 // Daily revival poll — the ONE active call this module makes. For each model
 // benched with disabled_reason='unhealthy' whose health row is stale enough,
 // send one cheap reachability ping; a clean response revives it. A single

@@ -4,7 +4,7 @@ import { all, get, run } from '../db/pgCompat.js';
 import { getProvider } from '../providers/index.js';
 import { decrypt } from '../lib/crypto.js';
 import { checkPlatformKeyGaps } from './platformKeyWatch.js';
-import { recomputeModelHealth, reviveUnhealthyModels } from './modelHealth.js';
+import { recomputeModelHealth, reviveUnhealthyModels, isPlatformQuotaExhausted } from './modelHealth.js';
 import { recheckUnreachableModels } from './livenessRecheck.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 
@@ -31,7 +31,14 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
     const apiKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
     const isValid = await provider.validateKey(apiKey);
 
-    const status: KeyStatus = isValid ? 'healthy' : 'invalid';
+    // Auth passing (isValid) is normally 'healthy' — BUT if the platform's models are broadly
+    // quota-parked (out of tokens), surface a distinct 'rate_limited' status instead, so the
+    // vault shows "exhausted, will recover" rather than a plain healthy/down. It's NOT a
+    // failure (auth is fine) so the key stays enabled and the counter is cleared below; it
+    // auto-reverts to 'healthy' once the quota parks expire and completions succeed again.
+    const status: KeyStatus = isValid
+      ? (await isPlatformQuotaExhausted(pool, row.platform) ? 'rate_limited' : 'healthy')
+      : 'invalid';
 
     await run(pool, "UPDATE api_keys SET status = ?, last_checked_at = now() WHERE id = ?", [status, keyId]);
 
@@ -63,22 +70,26 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 // sweep — so a TRANSIENT cause (VPN egress block, brief network fault) that later
 // clears would never recover without a manual re-enable. (This bit groq 2026-07-15:
 // NordVPN's egress made a perfectly good key return 401 → auto-disabled → stuck.)
-// Re-validate disabled+invalid keys on a slow backoff; re-enable any that now pass,
-// after which checkPlatformKeyGaps (called next) revives their no_key models the
-// same cycle. Only status='invalid' rows are touched, so a human who disabled a
-// HEALTHY key is left alone. Uses the cheap validateKey auth check — no
+// Re-validate auto-disabled keys (status 'invalid' OR 'error') on a slow backoff and
+// re-enable any that now pass, after which checkPlatformKeyGaps (called next) revives their
+// no_key models the same cycle. 'error' (transport: DNS/TLS/timeout — e.g. a VPN egress
+// block) was ADDED 2026-08-01: without it, a key auto-disabled as invalid then flipped to
+// 'error' on later transport-failed re-checks was stranded OUTSIDE this sweep and never
+// recovered even after the cause cleared (this bit groq 2026-07-24 → a manual re-enable
+// 08-01). A human who disabled a HEALTHY key is still left alone — that row is
+// status='healthy', not invalid/error. Uses the cheap validateKey auth check — no
 // token-costing completion, safe on the 5-min cron.
 export async function reviveRecoverableKeys(pool: pg.Pool): Promise<void> {
-  const cands = await all<{ id: number; platform: string }>(pool, `
-    SELECT id, platform FROM api_keys
-    WHERE enabled = false AND status = 'invalid'
+  const cands = await all<{ id: number; platform: string; status: string }>(pool, `
+    SELECT id, platform, status FROM api_keys
+    WHERE enabled = false AND status IN ('invalid', 'error')
       AND (last_checked_at IS NULL OR last_checked_at < now() - interval '15 minutes')
   `);
   for (const k of cands) {
     const status = await checkKeyHealth(k.id); // re-validates + updates status/last_checked_at
-    if (status === 'healthy') {
+    if (status === 'healthy' || status === 'rate_limited') { // auth passed → re-enable
       await run(pool, 'UPDATE api_keys SET enabled = true WHERE id = ?', [k.id]);
-      console.log(`[Health] key ${k.id} (${k.platform}) RECOVERED — was auto-disabled invalid, now valid again; re-enabled (its no_key models revive on the platform-key-gap check)`);
+      console.log(`[Health] key ${k.id} (${k.platform}) RECOVERED — was auto-disabled ${k.status}, now ${status} again; re-enabled (its no_key models revive on the platform-key-gap check)`);
     }
   }
 }
