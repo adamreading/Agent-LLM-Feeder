@@ -43,6 +43,8 @@ export interface CatalogSyncSummary {
   enabled: number;
   researched: number;
   canonicalsCreated: number;
+  reclassifiedPaid: number;    // pending models re-sorted to paid_tier from FREE catalog pricing (no token)
+  reclassifiedNonChat: number; // pending models re-sorted to non-chat from FREE catalog modality (no token)
   note?: string;
 }
 
@@ -68,6 +70,7 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
   const summary: CatalogSyncSummary = {
     startedAt, finishedAt: startedAt, platforms: {}, added: 0, reappeared: 0,
     retired: 0, enabled: 0, researched: 0, canonicalsCreated: 0,
+    reclassifiedPaid: 0, reclassifiedNonChat: 0,
   };
   if (running) { summary.note = 'already running — skipped'; return summary; }
   running = true;
@@ -103,6 +106,36 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
           RETURNING id
         `, [platform, modelId, name, classifyModelKind(modelId, name)]);
         if (row?.id) { newlyAddedIds.push(row.id); summary.added++; }
+      }
+
+      // 2b. CLASSIFY (free, zero-token). Sort pending models using ONLY the metadata
+      //     the free GET /models already returned — no liveness completion. Covers
+      //     both this run's new inserts AND the pre-existing pending backlog (any
+      //     pending row whose id is in this poll). Two moves, both keyed strictly to
+      //     our own 'pending-liveness%' rows so nothing else is touched:
+      //       PAID  — a priced model (openrouter/kilo per-token `pricing`, kilo also
+      //               `isFree`) → paid_tier, so it never becomes a liveness candidate
+      //               (this is the bulk of the backlog: ~660 of ~900 are paid).
+      //       NON-CHAT — a non-text-output model (`output_modalities`) → dropped from
+      //               pending as a backstop for anything the id-heuristic missed.
+      //     A null (unknown) metadatum changes nothing — a metadata-poor provider's
+      //     rows stay exactly as pending-liveness, same as before this stage existed.
+      const meta = d.models ?? [];
+      const paidIds = meta.filter((x) => x.paid === true).map((x) => x.id);
+      const nonTextIds = meta.filter((x) => x.outputText === false).map((x) => x.id);
+      if (paidIds.length) {
+        const rp = await run(pool, `
+          UPDATE models SET enabled = false, disabled_reason = 'paid_tier', cost_tier = 'paid'
+          WHERE platform = ? AND disabled_reason LIKE 'pending-liveness%' AND model_id = ANY(?::text[])
+        `, [platform, paidIds]);
+        summary.reclassifiedPaid += rp.changes;
+      }
+      if (nonTextIds.length) {
+        const rn = await run(pool, `
+          UPDATE models SET disabled_reason = 'non-chat (catalog: non-text output)'
+          WHERE platform = ? AND disabled_reason LIKE 'pending-liveness%' AND model_id = ANY(?::text[])
+        `, [platform, nonTextIds]);
+        summary.reclassifiedNonChat += rn.changes;
       }
 
       // 3a. Reappearance: a delisted model back in the live list re-enters liveness.
@@ -141,8 +174,12 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     //    only touches rows we added this run).
     if (newlyAddedIds.length) {
       await matchModels(pool);
+      // Only free chat models still awaiting liveness earn a wiki canonical. Excluding
+      // the rows step 2b just re-sorted to paid_tier / non-chat means we never spend
+      // stage-6 research (search-credit) on a model we already know is paid or non-chat.
       const unmatchedNew = await all<{ id: number }>(pool, `
-        SELECT id FROM models WHERE id = ANY(?::int[]) AND canonical_model_id IS NULL AND kind = 'chat'
+        SELECT id FROM models WHERE id = ANY(?::int[]) AND canonical_model_id IS NULL
+          AND kind = 'chat' AND disabled_reason LIKE 'pending-liveness%'
       `, [newlyAddedIds]);
       for (const m of unmatchedNew) {
         try { await createCanonicalFromModel(pool, m.id); summary.canonicalsCreated++; }
@@ -160,7 +197,7 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     summary.researched = researchRes.researched.length;
 
     summary.finishedAt = new Date().toISOString();
-    log(`done: +${summary.added} added, ${summary.retired} retired, ${summary.enabled} enabled, ${summary.researched} researched`);
+    log(`done: +${summary.added} added, ${summary.reclassifiedPaid} →paid, ${summary.reclassifiedNonChat} →non-chat, ${summary.retired} retired, ${summary.enabled} enabled, ${summary.researched} researched`);
     return summary;
   } catch (err: any) {
     summary.note = `error: ${err?.message ?? err}`;

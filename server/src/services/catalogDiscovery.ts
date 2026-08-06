@@ -14,9 +14,22 @@ import { decrypt } from '../lib/crypto.js';
 
 interface KeyRow { platform: string; encrypted_key: string; iv: string; auth_tag: string; status: string }
 
+// Per-model metadata harvested FREE from the same GET /models response — no extra
+// call, no tokens. `paid`/`outputText` are tri-state: true / false / null=unknown
+// (the catalog didn't say). Consumers must treat null as "don't know", never as a
+// default, so a metadata-poor provider is left exactly as it was (no false paid/
+// non-chat labelling). openrouter + kilo both expose per-token `pricing` (+ kilo an
+// explicit `isFree`) and `architecture.output_modalities`; most others expose neither.
+export interface DiscoveredModel {
+  id: string;
+  paid: boolean | null;       // true = priced >0 / isFree=false; false = free; null = unknown
+  outputText: boolean | null; // true = emits text; false = non-text (image/audio/embed); null = unknown
+}
+
 export interface PlatformDiscovery {
   status: number;        // HTTP status (0 = network error, -1 decrypt fail, -2 no endpoint mapping)
   ids: string[];         // live model ids the key can see
+  models?: DiscoveredModel[]; // same list enriched with catalog metadata where available
   err?: string;
 }
 export type DiscoveryResult = Record<string, PlatformDiscovery>;
@@ -63,15 +76,52 @@ async function fetchJson(url: string, headers: Record<string, string>): Promise<
   }
 }
 
-export function extractIds(body: any): string[] {
+// Paid iff the catalog says so: kilo's explicit `isFree` wins; else a `pricing`
+// object with a >0 prompt/completion rate; else unknown (null).
+function pricedPaid(m: any): boolean | null {
+  if (typeof m.isFree === 'boolean') return !m.isFree;
+  const p = m.pricing;
+  if (p && (p.prompt !== undefined || p.completion !== undefined)) {
+    return Number(p.prompt ?? 0) > 0 || Number(p.completion ?? 0) > 0;
+  }
+  return null;
+}
+
+// Emits text iff `output_modalities` lists 'text'; unknown if the field is absent.
+function emitsText(m: any): boolean | null {
+  const out = m.architecture?.output_modalities ?? m.output_modalities;
+  if (Array.isArray(out) && out.length) return out.map(String).some((x) => x.toLowerCase() === 'text');
+  return null;
+}
+
+// Rich extractor: same id logic as extractIds (below), plus free catalog metadata.
+export function extractModels(body: any): DiscoveredModel[] {
   if (!body || typeof body !== 'object') return [];
-  // OpenAI shape
-  if (Array.isArray(body.data)) return body.data.map((m: any) => m.id ?? m.name).filter(Boolean);
+  // OpenAI shape — the only one that carries pricing/modality (openrouter, kilo, …)
+  if (Array.isArray(body.data)) {
+    return body.data
+      .map((m: any) => ({ id: m.id ?? m.name, paid: pricedPaid(m), outputText: emitsText(m) }))
+      .filter((m: DiscoveredModel) => m.id);
+  }
   // Google shape
-  if (Array.isArray(body.models)) return body.models.map((m: any) => (m.name ?? m.id ?? '').replace(/^models\//, '')).filter(Boolean);
+  if (Array.isArray(body.models)) {
+    return body.models
+      .map((m: any) => ({ id: (m.name ?? m.id ?? '').replace(/^models\//, ''), paid: null, outputText: null }))
+      .filter((m: DiscoveredModel) => m.id);
+  }
   // GitHub catalog shape (array at top level)
-  if (Array.isArray(body)) return body.map((m: any) => m.id ?? m.name ?? m.original_name).filter(Boolean);
+  if (Array.isArray(body)) {
+    return body
+      .map((m: any) => ({ id: m.id ?? m.name ?? m.original_name, paid: null, outputText: null }))
+      .filter((m: DiscoveredModel) => m.id);
+  }
   return [];
+}
+
+// Back-compat id-only view (scripts/discover-models.ts depends on it) — now derived
+// from extractModels so the id-parsing logic has a single source of truth.
+export function extractIds(body: any): string[] {
+  return extractModels(body).map((m) => m.id);
 }
 
 export async function discoverLiveModels(pool: pg.Pool): Promise<DiscoveryResult> {
@@ -87,7 +137,8 @@ export async function discoverLiveModels(pool: pg.Pool): Promise<DiscoveryResult
 
     if (k.platform === 'google') {
       const r = await fetchJson(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=1000`, {});
-      out.google = { status: r.status, ids: extractIds(r.body), err: r.err };
+      const models = extractModels(r.body);
+      out.google = { status: r.status, ids: models.map((m) => m.id), models, err: r.err };
       continue;
     }
     if (k.platform === 'cloudflare') {
@@ -96,14 +147,18 @@ export async function discoverLiveModels(pool: pg.Pool): Promise<DiscoveryResult
       const token = sep === -1 ? apiKey : apiKey.slice(sep + 1);
       const r = await fetchJson(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/models/search?per_page=1000`, { Authorization: `Bearer ${token}` });
       const ids = Array.isArray(r.body?.result) ? r.body.result.map((m: any) => m.name).filter(Boolean) : [];
-      out.cloudflare = { status: r.status, ids, err: r.err };
+      // Cloudflare's search shape isn't the OpenAI one; it carries no pricing and
+      // its non-chat kinds are already caught by classifyModelKind's id heuristic,
+      // so leave metadata unknown (id-only) — no reclassification off this platform.
+      out.cloudflare = { status: r.status, ids, models: ids.map((id: string) => ({ id, paid: null, outputText: null })), err: r.err };
       continue;
     }
 
     const cfg = OPENAI_COMPAT[k.platform];
     if (!cfg) { out[k.platform] = { status: -2, ids: [], err: 'no endpoint mapping' }; continue; }
     const r = await fetchJson(cfg.url, { Authorization: `Bearer ${apiKey}`, ...(cfg.headers ?? {}) });
-    out[k.platform] = { status: r.status, ids: extractIds(r.body), err: r.err };
+    const models = extractModels(r.body);
+    out[k.platform] = { status: r.status, ids: models.map((m) => m.id), models, err: r.err };
   }
 
   return out;
