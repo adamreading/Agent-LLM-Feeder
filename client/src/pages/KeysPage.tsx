@@ -120,7 +120,7 @@ export default function KeysPage() {
                 <span style={{ ...mono, fontSize: 10, color: s.color, letterSpacing: 1, border: `1px solid ${s.color}`, padding: '2px 6px' }}>{s.label}</span>
                 {k.label && <span style={{ fontSize: 11, color: 'var(--dim)' }}>{k.label}</span>}
                 <div style={{ flex: 1 }} />
-                <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{k.lastCheckedAt ? new Date(k.lastCheckedAt).toLocaleTimeString() : '—'}</span>
+                <span style={{ ...mono, fontSize: 10, color: 'var(--dim)' }}>{k.lastCheckedAt ? new Date(k.lastCheckedAt).toLocaleTimeString('en-GB') : '—'}</span>
                 <button onClick={() => checkKey.mutate(k.id)} className="cy-glow-acc2" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: 1, color: 'var(--acc2)' }}>VERIFY</button>
                 <button onClick={() => deleteKey.mutate(k.id)} className="cy-glow-bad" style={{ all: 'unset', cursor: 'pointer', fontSize: 11, fontWeight: 600, letterSpacing: 1, color: 'var(--bad)' }}>PURGE</button>
               </div>

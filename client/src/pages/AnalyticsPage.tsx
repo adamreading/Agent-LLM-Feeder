@@ -184,7 +184,7 @@ export default function AnalyticsPage() {
                       <tr key={e.id}>
                         <td style={{ ...td, ...mono, fontSize: 11 }}>{e.platform}</td>
                         <td style={{ ...td, fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.error}</td>
-                        <td style={{ ...tdR, fontSize: 11, color: 'var(--dim)', paddingRight: 16 }}>{new Date(e.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                        <td style={{ ...tdR, fontSize: 11, color: 'var(--dim)', paddingRight: 16 }}>{new Date(e.createdAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</td>
                       </tr>
                     ))}
                   </tbody>
