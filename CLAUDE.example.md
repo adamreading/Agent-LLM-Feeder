@@ -124,8 +124,14 @@ treat it as production.
   hard block (OB provenance carve-out) wins over BOTH the field and the env default —
   evaluated first, unconditional. Degrade-safe.
 - **Endpoints:** OpenAI-compatible proxy at `/v1` (chat/completions, models); MCP
-  server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless, read-only) exposing
-  `list_usable_models` / `explain_routing` — both wrap `router.explainRouting()`.
+  server at `/mcp` (`routes/mcp.ts`, Streamable HTTP, stateless) exposing
+  `list_usable_models` / `explain_routing` (read-only, both wrap `router.explainRouting()`)
+  + `web_search(query, max_results?)` — the one NON-read-only tool: real outbound
+  search via `poolSearch` + `searchCache`, so a sandboxed caller gets search
+  capability while every search KEY stays encrypted in feeder's Postgres. Returns
+  `backend` (engine that served it) + `attempted[]` + a `status` that separates
+  `ok`/`no_results` (web WAS consulted) from `throttled`/`not_configured`/`error`
+  (it was NOT). Paid tier metered under one synthetic run id `mcp:web_search`.
   Swarm support (`routes/swarm.ts`): `GET /api/swarm/capacity` (free provider lanes),
   `POST /api/swarm/budget` (declare a run's token ceiling, localhost-only) +
   `GET /api/swarm/budget` (read live spend). Per-request telemetry: `GET /api/requests`.

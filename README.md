@@ -222,12 +222,22 @@ When a caller opts in with `augment: "auto"` (or `"force"`), the feeder runs the
 
 ### MCP (Model Context Protocol)
 
-Fleet agents can query the feeder's **live routing state as MCP tools** instead of guessing which model to ask for. Streamable-HTTP MCP endpoint at `POST /mcp` (stateless; read-only — no provider call, nothing mutated). Tools:
+Fleet agents can query the feeder's **live routing state as MCP tools** instead of guessing which model to ask for, and **search the web without holding a search key**. Streamable-HTTP MCP endpoint at `POST /mcp` (stateless). Tools:
 
 - `list_usable_models(task_class?, limit?)` — the models the feeder would actually route to *right now*, best-first, for a task class (coding/math/reasoning/creative/long_context/multi_turn). Only currently-eligible (enabled, keyed, not cooling).
 - `explain_routing(task_class?)` — the full routing table in order, with each model's task score, health, latency, and status (`eligible` / `disabled` / `no_key` / `cooling`) plus the reason it's unavailable.
+- `web_search(query, max_results?)` — a live web search through the [search pool](#web-search-augment-opt-in), returning `[{ title, url, snippet }]`.
 
-Both wrap the same `explainRouting()` the wiki/analytics use, so a tool result is exactly what the router would do.
+The first two wrap the same `explainRouting()` the wiki/analytics use, so a tool result is exactly what the router would do; they issue no provider call and mutate nothing.
+
+**`web_search` is the exception to "read-only"** — it makes a real outbound call and draws down a real free-tier quota, which is the point: the caller gets search *capability* while every search **key stays encrypted in the feeder's Postgres and never reaches the caller**. That is what makes it usable from a deny-all-egress sandbox that is allowed to reach `:3001` and nothing else. It runs the same `poolSearch` + shared query cache the augment path uses, so an MCP burst is load-balanced across the free bank, honours the same cooldowns and quota bands, and shares the 10-minute cache with swarm traffic rather than self-exhausting the tier alongside it.
+
+Two things the result always makes explicit, so a failed search can never be mistaken for an empty web:
+
+- **`backend`** — the engine that actually served the query, plus **`attempted`**, every engine tried this round. If the usual engine is cooling and the pool falls through to a weaker one, that is visible in the result instead of being silently worse.
+- **`status`** — `ok` and `no_results` mean the web **was** consulted (`no_results` is a real negative: the engine ran and returned nothing). `throttled`, `not_configured` and `error` mean it **was not**, and are returned as MCP tool errors with a `detail` saying so. A cache hit is flagged `cached: true` (no engine called, no quota spent; the originating engine isn't recorded per cache entry).
+
+The paid last-resort tier (You.com) is reached only when the whole free bank is exhausted, and every MCP search shares one synthetic run id (`mcp:web_search`), so the existing per-job `FEEDER_YOU_JOB_CAP_USD` ceiling bounds what the entire MCP surface can spend on paid search between restarts.
 
 ### Swarm capacity
 

@@ -17,6 +17,11 @@ export interface PoolSearchResult {
   results: SearchResult[];
   reason: SearchSkipReason | null; // null on success (results returned)
   backend: string | null;         // which engine served the results
+  // Every engine actually CALLED this round, in order. On the failure paths
+  // `backend` is null, so without this a caller cannot tell "3 engines tried,
+  // all empty" from "nothing was tried at all" — the silent-fallthrough case
+  // (openshell, 2026-08-08). Additive: existing callers ignore it.
+  attempted: string[];
 }
 
 const THROTTLE_RE = /429|rate.?limit|too many requests|quota|exhaust|throttl|capacity|overloaded|insufficient/i;
@@ -120,9 +125,10 @@ function configured(id: string): boolean {
 }
 
 // Try one engine; returns results on success, or null (with reason set on `out`) to try the next.
-async function tryEngine(id: string, query: string, max: number, out: { reason: SearchSkipReason | null }): Promise<SearchResult[] | null> {
+async function tryEngine(id: string, query: string, max: number, out: { reason: SearchSkipReason | null; attempted: string[] }): Promise<SearchResult[] | null> {
   const backend = getBackendById(id);
   if (!backend) return null;
+  out.attempted.push(id);
   const start = Date.now();
   try {
     const results = await withTimeout(backend.search(query, max), ENGINE_TIMEOUT_MS);
@@ -144,7 +150,7 @@ export async function poolSearch(query: string, maxResults = 6, opts: { runId?: 
   const pool = await getSearchPool(getPool());
   const health = await loadHealth();
   const nowMs = Date.now();
-  const out: { reason: SearchSkipReason | null } = { reason: null };
+  const out: { reason: SearchSkipReason | null; attempted: string[] } = { reason: null, attempted: [] };
 
   // FREE tier, quota-aware: drop engines that are cooled or quota-EXHAUSTED, then
   // spread LRU within a headroom BAND — high-headroom engines carry the load
@@ -161,7 +167,7 @@ export async function poolSearch(query: string, maxResults = 6, opts: { runId?: 
   // FREE tier — even LRU spread; skip cooled engines.
   for (const id of freeReady) {
     const r = await tryEngine(id, query, maxResults, out);
-    if (r) return { results: r, reason: null, backend: id };
+    if (r) return { results: r, reason: null, backend: id, attempted: out.attempted };
   }
 
   // If nothing configured in the free tier at all, that's a config gap (unless a
@@ -185,10 +191,10 @@ export async function poolSearch(query: string, maxResults = 6, opts: { runId?: 
       youCallsByJob.set(opts.runId, (youCallsByJob.get(opts.runId) ?? 0) + 1); // count the attempt (conservative)
     }
     const r = await tryEngine(id, query, maxResults, out);
-    if (r) return { results: r, reason: null, backend: id };
+    if (r) return { results: r, reason: null, backend: id, attempted: out.attempted };
   }
 
-  return { results: [], reason: out.reason ?? 'no-results', backend: null };
+  return { results: [], reason: out.reason ?? 'no-results', backend: null, attempted: out.attempted };
 }
 
 /** Per-engine telemetry for the UI: adds paid est-spend + free-tier quota/remaining. */
