@@ -89,7 +89,7 @@ There are three ways to set the `model` field, in order of how much you're decid
 |---|---|---|
 | **`"auto"`** *(or omit `model`)* | Feeder **classifies each request** from the prompt and routes by that task's quality scores. | **The default.** You want the best free model for whatever you're asking, judged per message. |
 | **`"auto/<class>"`** | Feeder **skips classification** and routes by the class *you* name — deterministic, and a touch faster (no classifier step). | Every call is the same kind of task (a coding agent, a multi-turn tool-using loop) and you don't want per-message guessing. |
-| **`"platform/model_id"`** | Pins **one exact model** — no routing, **no failover**. | You need a specific model (reproducibility, a known-good, a provider quirk) and accept that a rate-limit means an error, not a fallback. |
+| **`"platform/model_id"`** | **Prefers** one exact model — moves it to the **front** of the fallback chain; if it's rate-limited/unavailable the router **substitutes** the next eligible model rather than erroring (Adam's rule: "always substitute and show the model substituted"). | You want a specific model *first* (reproducibility, a known-good, a provider quirk) but still want an answer if it's momentarily unavailable. Read `X-Routed-Via` / `X-Fallback-Attempts` to see what actually served. |
 
 ### `auto` vs `auto/agentic_chat` — the usual question
 
@@ -178,7 +178,7 @@ curl http://localhost:3001/v1/chat/completions \
 - **Model:** omit or `"auto"` to let the router choose; or pin `"platform/model_id"` (e.g. `sambanova/gpt-oss-120b`). A bare model id that exists on multiple platforms returns `400 model_ambiguous` — pin the platform.
   - A **bare `"auto"`** request is classified from the prompt so routing engages the right per-task quality scores; an explicit **`"auto/<class>"`** skips classification and routes by the class you name. See [**Which model should I pick?**](#which-model-should-i-pick) for when to use each and the valid class values.
 - **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
-- **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified. When web-search grounding was injected, `X-Augmented: web-search` is set.
+- **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified. **`X-Fallback-Attempts`** carries the number of failover hops **only when it's non-zero** — a clean single-hop call omits the header entirely, so **absent means 0 hops** (a pinned model that fell back once returns `X-Fallback-Attempts: 1` alongside the substitute in `X-Routed-Via`). When web-search grounding was injected, `X-Augmented: web-search` is set.
 
 ### Sampling / generation params
 
