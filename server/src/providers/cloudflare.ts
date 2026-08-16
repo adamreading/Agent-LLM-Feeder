@@ -134,12 +134,23 @@ export class CloudflareProvider extends BaseProvider {
   async validateKey(apiKey: string): Promise<boolean> {
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable. Only confirmed bad/inactive tokens disable.
-    const { token } = this.parseKey(apiKey);
-    const res = await this.fetchWithTimeout(
-      'https://api.cloudflare.com/client/v4/user/tokens/verify',
+    const { accountId, token } = this.parseKey(apiKey);
+    // Account-owned tokens (the "cfat_" prefix Cloudflare's dashboard now issues
+    // for Workers AI) 401 at /user/tokens/verify by design — they only verify
+    // under their own account. Try the account endpoint first and fall back to
+    // the user one, so both token kinds validate. (2026-08-12: an account token
+    // that ran @cf chat completions fine was being marked invalid and
+    // auto-disabled because only /user was checked.)
+    const verify = (url: string) => this.fetchWithTimeout(
+      url,
       { method: 'GET', headers: { 'Authorization': `Bearer ${token}` } },
       10000,
     );
+
+    let res = await verify(`https://api.cloudflare.com/client/v4/accounts/${accountId}/tokens/verify`);
+    if (res.status === 401 || res.status === 403) {
+      res = await verify('https://api.cloudflare.com/client/v4/user/tokens/verify');
+    }
     if (res.status === 401 || res.status === 403) return false;
     if (!res.ok) return true; // unexpected non-2xx that isn't auth — don't disable
     const data = await res.json() as any;
