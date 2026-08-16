@@ -187,8 +187,13 @@ function supportedParamsFor(platform: string): string[] {
     for (const p of BASE_SUPPORTED_PARAMS) params.add(p);
     if (d.extendedSampling) for (const p of EXTENDED_SAMPLING_PARAMS) params.add(p);
   } else {
-    // Custom adapters forward only these on the wire (see google/cohere/cloudflare).
-    for (const p of ['temperature', 'top_p', 'max_tokens']) params.add(p);
+    // Custom adapters (google/cohere/cloudflare) forward the core sampling three
+    // AND tools on the wire (google.ts toGeminiTools :368/:427, cohere.ts :29/:65,
+    // cloudflare.ts :55/:93 — all map options.tools through). Advertise tools so a
+    // client that GATES tool use on supported_parameters (e.g. Hermes) doesn't
+    // wrongly treat these models — incl. the big100 frontier set — as tool-incapable.
+    // Other OpenAI passthrough params these adapters don't forward stay unadvertised.
+    for (const p of ['temperature', 'top_p', 'max_tokens', 'tools', 'tool_choice', 'parallel_tool_calls']) params.add(p);
   }
   if (d.jsonMode) params.add('response_format');
   if (d.reasoning) params.add('reasoning_effort');
