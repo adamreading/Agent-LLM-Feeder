@@ -24,6 +24,17 @@ export const models = pgTable(
     intelligenceRank: integer('intelligence_rank').notNull(),
     speedRank: integer('speed_rank').notNull(),
     sizeLabel: text('size_label').notNull().default(''),
+    // Total parameter count in BILLIONS (nullable = undisclosed/unknown). The real
+    // numeric size — size_label above is a coarse legacy bucket and was blank for ~73%
+    // of the catalogue + mislabelled at the edges (30/32B rows tagged 'Large'). Populated
+    // from name-parse + ringer's loaded-URL research (2026-08-15). Source of truth for the
+    // `big100` band. Column added to prod by direct ALTER, not drizzle-kit migrate — the
+    // prod migration tracker is behind reality (see feeder-drizzle-migration-drift memory).
+    paramsB: integer('params_b'),
+    // Undisclosed-but-frontier main-brain models (Gemini Pro, GPT-4.1/4o, GLM-5.x, MiniMax)
+    // that carry no published param count but belong in the `big100` band. Curated flag
+    // (Adam 2026-08-15: "in — tag as frontier"), excludes flash/lite/mini/nano/turbo variants.
+    frontier: boolean('frontier').notNull().default(false),
     rpmLimit: integer('rpm_limit'),
     rpdLimit: integer('rpd_limit'),
     tpmLimit: integer('tpm_limit'),

@@ -843,6 +843,10 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
         costTierCeiling,
         latencyCeilingMs: latency_ceiling_ms,
         taskClass: effectiveTaskClass,
+        // `auto/big100` size band: restrict the whole eligible/fallback chain to
+        // large models (params_b>=100 or frontier). taskClass 'big100' maps to the
+        // 'overall' arena prior, so ordering stays best-brain-first within the band.
+        bigOnly: effectiveTaskClass === 'big100',
       });
       if (swarmSessionKey && attempt === 0 && isFirstSwarmCall) {
         // First call of a swarm session: reserve platform atomically.

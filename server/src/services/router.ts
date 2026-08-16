@@ -17,6 +17,8 @@ interface ModelRow {
   tpd_limit: number | null;
   context_window: number | null;
   cost_tier: string;
+  params_b: number | null;
+  frontier: boolean;
 }
 
 interface KeyRow {
@@ -96,7 +98,19 @@ export interface RouteOptions {
   /** internal: set on the self-retry that relaxes the latency ceiling as a last
    *  resort (see the NO_ELIGIBLE_MODEL handler) — prevents infinite recursion */
   _relaxedLatency?: boolean;
+  /** `big100` size band (caller sent `auto/big100`): restrict the eligible pool to
+   *  large models only — a real params_b >= BIG100_MIN_PARAMS_B OR the curated
+   *  `frontier` flag (undisclosed-size main-brain models). A HARD structural filter,
+   *  so an all-small pool yields NO_ELIGIBLE_MODEL (caller falls back to its own
+   *  option) rather than a silent small substitute. Scoring stays 'overall'
+   *  (best-brain-first). Added 2026-08-16 for Adam's Codex-outage main-brain band. */
+  bigOnly?: boolean;
 }
+
+/** big100 band floor: a model needs a verified total param count at or above this
+ *  (in billions) to qualify by size; undisclosed-but-frontier models qualify via the
+ *  `frontier` flag instead. */
+export const BIG100_MIN_PARAMS_B = 100;
 
 // L11: typed error contract. NO_ELIGIBLE_MODEL means no candidate matched
 // structural needs (capability/cost-tier/context/latency) regardless of
@@ -475,6 +489,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     costTierCeiling,
     latencyCeilingMs,
     taskClass,
+    bigOnly,
   } = options;
 
   const pool = getPool();
@@ -606,6 +621,14 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // can never serve a chat completion even with an empty needs[] filter.
     const model = await get<ModelRow>(pool, "SELECT * FROM models WHERE id = ? AND enabled = true AND kind = 'chat'", [entry.model_db_id]);
     if (!model) continue;
+
+    // big100 size band (auto/big100): hard structural filter — only a verified
+    // large model (params_b >= BIG100_MIN_PARAMS_B) or a curated frontier model
+    // qualifies. Placed with the other hard filters so a non-big candidate never
+    // counts as structurally eligible: an all-small pool → NO_ELIGIBLE_MODEL (422),
+    // and the caller falls back to its own option instead of getting a silent small
+    // substitute. This is the whole point of the band (Adam's Codex-outage brain).
+    if (bigOnly && !((model.params_b != null && model.params_b >= BIG100_MIN_PARAMS_B) || model.frontier)) continue;
 
     // L8: caller-excluded platform (e.g. the one that just failed upstream).
     if (excludeProviders?.has(model.platform)) continue;
