@@ -89,6 +89,7 @@ There are three ways to set the `model` field, in order of how much you're decid
 |---|---|---|
 | **`"auto"`** *(or omit `model`)* | Feeder **classifies each request** from the prompt and routes by that task's quality scores. | **The default.** You want the best free model for whatever you're asking, judged per message. |
 | **`"auto/<class>"`** | Feeder **skips classification** and routes by the class *you* name — deterministic, and a touch faster (no classifier step). | Every call is the same kind of task (a coding agent, a multi-turn tool-using loop) and you don't want per-message guessing. |
+| **`"auto/big100"`** | A **size band**: routes only to models **≥100B params** (or a curated *frontier* model), best-brain-first — and the **whole fallback chain stays big**, so a substitution is always to another giant, never a small model. Composes with the capability filter (a `tools` request still only lands on a tool-capable big model). | You want a large, capable main brain on the free pool with **no small substitute** — e.g. running an agent when a paid brain is unavailable. |
 | **`"platform/model_id"`** | **Prefers** one exact model — moves it to the **front** of the fallback chain; if it's rate-limited/unavailable the router **substitutes** the next eligible model rather than erroring (Adam's rule: "always substitute and show the model substituted"). | You want a specific model *first* (reproducibility, a known-good, a provider quirk) but still want an answer if it's momentarily unavailable. Read `X-Routed-Via` / `X-Fallback-Attempts` to see what actually served. |
 
 ### `auto` vs `auto/agentic_chat` — the usual question
@@ -116,7 +117,7 @@ Each class maps to the benchmark dimension models are ranked on:
 
 An unrecognised class harmlessly falls back to the general (`overall`) ranking. **Mind the exact form:** it's a **slash and an underscore** — `auto/agentic_chat`, *not* `auto-agentic-chat`. The all-hyphens form is read as a literal model name and returns a `400`.
 
-> The **Chatbot** and **Agent** UI pages use a fixed dropdown — its "AUTO" entry is the bare `"auto"`, and the other entries pin a specific model. `auto/<class>` is an **API feature**: set it in the `model` field of a request to the endpoint (it isn't offered as a dropdown choice).
+> The **Chatbot** and **Agent** UI pages use a fixed dropdown — its "AUTO" entry is the bare `"auto"`, and the other entries pin a specific model. The `auto` / `auto/<class>` / `auto/big100` **bands are also listed in `GET /v1/models`** (as `owned_by: "feeder-router"` pseudo-models, ahead of the real models), so any OpenAI-compatible client — Hermes, a script, the UI — can offer them as selectable choices. Set one in the `model` field of a request.
 
 ---
 
