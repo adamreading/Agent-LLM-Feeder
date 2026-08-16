@@ -196,19 +196,49 @@ function supportedParamsFor(platform: string): string[] {
   return Array.from(params);
 }
 
+// Router band pseudo-models. The `auto/<class>` sentinels are valid `model`-field
+// values but not real catalogue rows, so /v1/models never advertised them and no
+// client (Hermes, feeder's own UI, any OpenAI client) could offer them as a choice —
+// they were reachable only by a hand-written request. Listing them here as pseudo-models
+// makes them selectable everywhere that reads this endpoint (Adam 2026-08-16: the fix for
+// "why can't I pick auto/big100 in Hermes"). Ordered first so they surface at the top of a
+// picker. `auto/big100` is only meaningful once the bigOnly router filter ships — this
+// endpoint change ships on the same branch, so listing and behaviour go live together.
+const ROUTER_BANDS: { id: string; name: string; description: string }[] = [
+  { id: 'auto', name: 'Auto (route best-for-task)', description: 'Feeder classifies each request from the prompt and routes to the best-scoring model for that task.' },
+  { id: 'auto/big100', name: 'Big-100 (>=100B models only)', description: 'Restricts the whole eligible + fallback chain to large models (>=100B params, or a curated frontier model), best-brain-first. Every substitution stays big — never drops to a small model.' },
+  { id: 'auto/coding', name: 'Coding', description: 'Route by measured coding quality.' },
+  { id: 'auto/reasoning', name: 'Reasoning', description: 'Route by measured reasoning quality.' },
+  { id: 'auto/math', name: 'Math', description: 'Route by measured math quality.' },
+  { id: 'auto/creative_writing', name: 'Creative writing', description: 'Route by measured creative-writing quality.' },
+  { id: 'auto/instruction_following', name: 'Instruction following', description: 'Route by measured instruction-following / structured-output quality.' },
+  { id: 'auto/long_query', name: 'Long query', description: 'Route by measured long-context quality.' },
+  { id: 'auto/multi_turn', name: 'Multi-turn / agentic', description: 'Route by measured multi-turn / agentic-chat quality.' },
+];
+
 proxyRouter.get('/models', async (_req: Request, res: Response) => {
   const models = await all<any>(getPool(), 'SELECT platform, model_id, display_name, context_window FROM models WHERE enabled = true ORDER BY intelligence_rank');
   res.json({
     object: 'list',
-    data: models.map(m => ({
-      id: m.model_id,
-      object: 'model',
-      created: 0,
-      owned_by: m.platform,
-      name: m.display_name,
-      context_window: m.context_window,
-      supported_parameters: supportedParamsFor(m.platform),
-    })),
+    data: [
+      ...ROUTER_BANDS.map(b => ({
+        id: b.id,
+        object: 'model',
+        created: 0,
+        owned_by: 'feeder-router',
+        name: b.name,
+        description: b.description,
+      })),
+      ...models.map(m => ({
+        id: m.model_id,
+        object: 'model',
+        created: 0,
+        owned_by: m.platform,
+        name: m.display_name,
+        context_window: m.context_window,
+        supported_parameters: supportedParamsFor(m.platform),
+      })),
+    ],
   });
 });
 
