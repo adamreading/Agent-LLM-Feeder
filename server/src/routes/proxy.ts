@@ -15,7 +15,7 @@ import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../servi
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
-import { benchUnreachableModel, benchPaidModel, setQuotaExhausted } from '../services/modelHealth.js';
+import { benchUnreachableModel, benchPaidModel, setQuotaExhausted, isNetworkError } from '../services/modelHealth.js';
 import { isSwarmConsumer, hasLane, heldPlatformsExcluding, recordLane, withAssignLock } from '../services/swarmLanes.js';
 import { checkBudget, recordSpend } from '../services/swarmBudget.js';
 import { checkProgress, recordProgress } from '../services/swarmProgress.js';
@@ -879,6 +879,12 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
 
   // Retry loop: on 429/rate limit, skip that model+key and try the next one
   const skipKeys = new Set<string>();
+  // One same-route retry per request on a NETWORK-class failure (see the catch
+  // block). Measured 2026-09-06: 375 of 557 "fetch failed" in 14d landed in a
+  // minute that ALSO had successes — sub-minute egress blips a 400ms retry
+  // recovers — vs 182 in dead minutes (a real outage; the retry costs ~400ms +
+  // one fast fail, then normal failover). Bounded to ONE per request.
+  let networkRetryUsed = false;
   let lastError: any = null;
   let lastWasRetryable = false;
 
@@ -1093,6 +1099,17 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       // and the intelligence-first ordering surfaced such models to the front.
       // Skip this model+key and move on; cooldown+penalty so an erroring model
       // sinks out of the lead instead of being retried first every request.
+      // NETWORK-BLIP RETRY: "fetch failed" / DNS / refused is the box's egress,
+      // not this model. Once per request, wait 400ms and let routeOnce re-pick
+      // the SAME route (it is NOT added to skipKeys and gets NO cooldown, so the
+      // ranker sees it unchanged). A second network failure falls through to the
+      // normal failover below.
+      if (!networkRetryUsed && isNetworkError(err.message)) {
+        networkRetryUsed = true;
+        console.log(`[Proxy] network blip on ${route.displayName} (${String(err.message).slice(0, 40)}) — retrying same route once in 400ms (attempt ${attempt + 1}/${maxRetries})`);
+        await new Promise((r) => setTimeout(r, 400));
+        continue;
+      }
       const skipId = `${route.platform}:${route.modelId}:${route.keyId}`;
       skipKeys.add(skipId);
       setCooldown(route.platform, route.modelId, route.keyId, 120_000);
