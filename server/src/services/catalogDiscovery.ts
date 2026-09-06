@@ -58,6 +58,10 @@ const OPENAI_COMPAT: Record<string, { url: string; headers?: Record<string, stri
   pollinations: { url: 'https://text.pollinations.ai/openai/v1/models' },
   llm7: { url: 'https://api.llm7.io/v1/models' },
   opencode: { url: 'https://opencode.ai/zen/v1/models' },
+  vercel: { url: 'https://ai-gateway.vercel.sh/v1/models' },
+  modelscope: { url: 'https://api-inference.modelscope.cn/v1/models' },
+  gmi: { url: 'https://api.gmi-serving.com/v1/models' },
+  hetzner: { url: 'https://inference.hetzner.com/api/v1/models' },
   cohere: { url: 'https://api.cohere.ai/compatibility/v1/models' },
 };
 

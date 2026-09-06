@@ -20,7 +20,13 @@ export type Platform =
   | 'kilo'
   | 'pollinations'
   | 'llm7'
-  | 'opencode';
+  | 'opencode'
+  // Added 2026-09-06 (Adam: free tier must HARD-STOP, never auto-charge; card/ID
+  // requirements flagged on the provider card). See README "Provider free-tier tips".
+  | 'vercel'
+  | 'modelscope'
+  | 'gmi'
+  | 'hetzner';
 
 export interface Model {
   id: number;

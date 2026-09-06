@@ -211,6 +211,61 @@ register(new OpenAICompatProvider({
   baseUrl: 'https://opencode.ai/zen/v1',
 }));
 
+// ── Added 2026-09-06 (Adam's rule: free tier must HARD-STOP when exhausted, never
+// auto-charge on overage; no 90-day / one-time trials; card/ID needs flagged on the
+// provider card). Each verified against the provider's own pricing/FAQ that day —
+// see README "Provider free-tier tips". All OpenAI-compatible, dialect undeclared
+// (aggregator-shaped: capability is vetted per-model by observation, like OpenRouter).
+
+// Vercel AI Gateway — recurring $5/month free credit on a "-free" model subset
+// (minimax/minimax-m3-free, minimax-m2.7-free, ling-3.0-flash-*-free, laguna-s-2.1-free).
+// A CARD MUST BE ON FILE to unlock the free credit; overage HARD-STOPS (429 / 402)
+// unless Auto Top-Up is switched on (off by default — keep it off). Buying credits
+// ends the free tier permanently. Only "-free" ids are ever enabled or probed here
+// (catalogSync MIXED_GATEWAY_FREE_ID) — the other ~364 are paid and a probe would charge.
+register(new OpenAICompatProvider({
+  platform: 'vercel',
+  name: 'Vercel AI Gateway',
+  baseUrl: 'https://ai-gateway.vercel.sh/v1',
+}));
+
+// ModelScope API-Inference (Alibaba) — permanent free: 2,000 req/day total,
+// ≤500/day per model, resets 00:00 UTC+8, hard 429 at the cap, NO payment method
+// exists on the service. Big free lineup (DeepSeek-V4 Pro/Flash, Qwen3-235B,
+// Qwen3.5-397B, GLM-5.2, MiniMax-M3). Signup needs Alibaba Cloud real-name / ID
+// (passport) verification; China-hosted (latency). Unbound account → 401.
+register(new OpenAICompatProvider({
+  platform: 'modelscope',
+  name: 'ModelScope',
+  baseUrl: 'https://api-inference.modelscope.cn/v1',
+}));
+
+// GMI Cloud — $0 endpoints (Llama-3.3-70B-Turbo, DeepSeek-R1-Distill-Llama-70B; the
+// list ROTATES, console-only). No card needed for the free endpoints; credits are
+// prepaid and "Auto Pay" is an opt-in toggle — never add a card / never enable it,
+// then nothing can charge. Free ids have no naming convention ⇒ PROBE-FIRST only
+// (catalogSync ENABLE_PROBE_FIRST): a paid id answers 402 → paid_tier, no spend.
+register(new OpenAICompatProvider({
+  platform: 'gmi',
+  name: 'GMI Cloud',
+  baseUrl: 'https://api.gmi-serving.com/v1',
+}));
+
+// Hetzner Inference (experimental) — free while "experimental" (they email before
+// that changes), no billing exists, hard 429 at 10 req/60s + 4M in / 100k out
+// tokens per 60s per key. Small models only now (Qwen3.6-35B-A3B-FP8, Qwen3.8-27B;
+// the large ones were paused 2026-08-17). Hetzner may demand CARD and/or passport
+// ID verification before issuing a token. NB the base path is /api/v1, not /v1.
+register(new OpenAICompatProvider({
+  platform: 'hetzner',
+  name: 'Hetzner Inference',
+  baseUrl: 'https://inference.hetzner.com/api/v1',
+}));
+
+// Public AI Inference Utility — evaluated 2026-09-06 and HELD: free tier is a prepaid
+// wallet of "starter credits" whose size and renewal are unverified; if one-time,
+// that is a trial (Adam: no trials). Flips to ADD if credits are shown to recur.
+
 // Chutes was evaluated for V11 and dropped: probe with a free-tier key
 // returned 402 on every model — "Quota exceeded and account balance is
 // $0.0, please pay with fiat or send tao". The "free" tier requires a

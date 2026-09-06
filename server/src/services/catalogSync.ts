@@ -58,6 +58,18 @@ export interface CatalogSyncSummary {
 // (enabled) or in our own pending/delisted states.
 const RETIRE_ELIGIBLE = `(enabled = true OR disabled_reason LIKE 'pending-liveness%' OR disabled_reason = 'delisted')`;
 
+// Gateways whose /models mixes paid + free ids WITHOUT pricing metadata 2b can read.
+// Only ids matching the pattern may be enabled-on-discovery or liveness-probed;
+// the rest are paid_tier at discovery. (openrouter/kilo are NOT here — 2b prices
+// them from real metadata; a pattern would mis-file `openrouter/free`-style routers.)
+const MIXED_GATEWAY_FREE_ID: Partial<Record<string, string>> = {
+  opencode: '-free$',   // deepseek-v4-flash-free, nemotron-3-ultra-free, …
+  vercel: '-free$',     // minimax/minimax-m3-free, poolside/laguna-s-2.1-free, … (9 of 373)
+};
+// Platforms where the free set has no id convention AND the list rotates (GMI):
+// never enable-on-discovery; the bounded stage-5 probe decides (402 → paid_tier).
+const ENABLE_PROBE_FIRST = new Set<string>(['gmi']);
+
 let running = false;
 
 function titleCase(id: string): string {
@@ -153,7 +165,27 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       //     7-day low-success passes catch the rest. Cost of a dead model = one
       //     failed attempt (then fallback), once. Set FEEDER_ENABLE_WITHOUT_PROBE=0
       //     to restore the old probe-first path (stage 5 still runs on leftovers).
-      if (process.env.FEEDER_ENABLE_WITHOUT_PROBE !== '0') {
+      //     ⛔ MIXED-CATALOG GATEWAYS (added 2026-09-06 after 2c enabled 60 PAID opencode
+      //     models — claude-opus-5 etc. — because opencode exposes no pricing metadata
+      //     for 2b): where a gateway lists paid + free ids together and 2b can't price
+      //     them, the FREE ids follow a suffix convention. Anything NOT matching is
+      //     marked paid_tier HERE, so it is neither enabled by 2c nor probed by stage 5
+      //     (on Vercel a card is on file — even a liveness probe of a paid id would
+      //     charge). Platforms absent from this map are all-free-tier (or 2b-priced).
+      const freePat = MIXED_GATEWAY_FREE_ID[platform];
+      if (freePat) {
+        // Covers pending rows AND any LIVE row (enabled, no reason) that slipped
+        // through before this gate existed — the sync self-heals the catalog, so a
+        // paid id can't stay routable on a funded gateway account.
+        const rp2 = await run(pool, `
+          UPDATE models SET enabled = false, disabled_reason = 'paid_tier', cost_tier = 'paid'
+          WHERE platform = ? AND kind = 'chat' AND NOT (model_id ~* ?)
+            AND (disabled_reason LIKE 'pending-liveness%' OR (enabled = true AND disabled_reason IS NULL))
+        `, [platform, freePat]);
+        if (rp2.changes > 0) log(`${platform}: ${rp2.changes} non-free id(s) → paid_tier (mixed-gateway gate)`);
+        summary.reclassifiedPaid += rp2.changes;
+      }
+      if (process.env.FEEDER_ENABLE_WITHOUT_PROBE !== '0' && !ENABLE_PROBE_FIRST.has(platform)) {
         const eod = await run(pool, `
           UPDATE models SET enabled = true, disabled_reason = NULL
           WHERE platform = ? AND kind = 'chat' AND disabled_reason LIKE 'pending-liveness%'
