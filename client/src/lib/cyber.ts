@@ -6,7 +6,7 @@ export const platformColors: Record<string, string> = {
   nvidia: '#76b900', mistral: '#f59e0b', openrouter: '#ec4899', github: '#6e7b8b',
   cohere: '#d946ef', cloudflare: '#f38020', zhipu: '#06b6d4', ollama: '#c9c9d6',
   kilo: '#7c3aed', pollinations: '#a855f7', llm7: '#0ea5e9', opencode: '#22c55e',
-  vercel: '#e2e8f0', modelscope: '#624aff', gmi: '#00b4d8', hetzner: '#d50c2d',
+  modelscope: '#624aff', gmi: '#00b4d8', hetzner: '#d50c2d',
 }
 export const platformColor = (p: string) => platformColors[p] ?? '#94a3b8'
 
@@ -17,7 +17,7 @@ export const PLATFORM_NAMES: Record<string, string> = {
   nvidia: 'NVIDIA NIM', mistral: 'Mistral', openrouter: 'OpenRouter', github: 'GitHub Models',
   cohere: 'Cohere', cloudflare: 'Cloudflare Workers AI', zhipu: 'Z.ai / Zhipu', ollama: 'Ollama Cloud',
   kilo: 'Kilo Gateway', pollinations: 'Pollinations', llm7: 'LLM7', opencode: 'OpenCode Zen',
-  vercel: 'Vercel AI Gateway', modelscope: 'ModelScope', gmi: 'GMI Cloud', hetzner: 'Hetzner Inference',
+  modelscope: 'ModelScope', gmi: 'GMI Cloud', hetzner: 'Hetzner Inference',
 }
 export const PLATFORM_IDS = Object.keys(PLATFORM_NAMES)
 export const platformName = (p: string) => PLATFORM_NAMES[p] ?? p

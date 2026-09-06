@@ -23,7 +23,9 @@ export type Platform =
   | 'opencode'
   // Added 2026-09-06 (Adam: free tier must HARD-STOP, never auto-charge; card/ID
   // requirements flagged on the provider card). See README "Provider free-tier tips".
-  | 'vercel'
+  // Vercel AI Gateway was REMOVED 2026-09-06: signup forces a card + the account is
+  // pay-as-you-go, and Vercel's docs never confirm a balance-exhausted free-tier call
+  // REFUSES rather than bills the card — fails Adam's "never auto-charge" rule.
   | 'modelscope'
   | 'gmi'
   | 'hetzner';

@@ -64,7 +64,7 @@ const RETIRE_ELIGIBLE = `(enabled = true OR disabled_reason LIKE 'pending-livene
 // them from real metadata; a pattern would mis-file `openrouter/free`-style routers.)
 const MIXED_GATEWAY_FREE_ID: Partial<Record<string, string>> = {
   opencode: '-free$',   // deepseek-v4-flash-free, nemotron-3-ultra-free, …
-  vercel: '-free$',     // minimax/minimax-m3-free, poolside/laguna-s-2.1-free, … (9 of 373)
+  // (vercel removed 2026-09-06 — the provider was dropped for card-on-file PAYG risk)
 };
 // Platforms where the free set has no id convention AND the list rotates (GMI):
 // never enable-on-discovery; the bounded stage-5 probe decides (402 → paid_tier).

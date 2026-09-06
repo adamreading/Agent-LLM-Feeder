@@ -217,17 +217,13 @@ register(new OpenAICompatProvider({
 // see README "Provider free-tier tips". All OpenAI-compatible, dialect undeclared
 // (aggregator-shaped: capability is vetted per-model by observation, like OpenRouter).
 
-// Vercel AI Gateway — recurring $5/month free credit on a "-free" model subset
-// (minimax/minimax-m3-free, minimax-m2.7-free, ling-3.0-flash-*-free, laguna-s-2.1-free).
-// A CARD MUST BE ON FILE to unlock the free credit; overage HARD-STOPS (429 / 402)
-// unless Auto Top-Up is switched on (off by default — keep it off). Buying credits
-// ends the free tier permanently. Only "-free" ids are ever enabled or probed here
-// (catalogSync MIXED_GATEWAY_FREE_ID) — the other ~364 are paid and a probe would charge.
-register(new OpenAICompatProvider({
-  platform: 'vercel',
-  name: 'Vercel AI Gateway',
-  baseUrl: 'https://ai-gateway.vercel.sh/v1',
-}));
+// Vercel AI Gateway was EVALUATED and REMOVED 2026-09-06 (Adam): its signup forces a
+// card on file and the account is pay-as-you-go. Vercel's pricing doc confirms a free
+// tier + auto-top-up-off-by-default, but NEVER states that a free-credit-exhausted
+// request refuses rather than billing the card, and the free-model set (freeTier=true)
+// could not be shown to equal the "-free" id suffix. Card-on-file + PAYG + unverifiable
+// free-set = fails the "never auto-charge on overage" rule. Do not re-add without a
+// doc/line proving a balance-zero free-tier call returns 402 instead of charging.
 
 // ModelScope API-Inference (Alibaba) — permanent free: 2,000 req/day total,
 // ≤500/day per model, resets 00:00 UTC+8, hard 429 at the cap, NO payment method
