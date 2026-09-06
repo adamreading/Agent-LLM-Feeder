@@ -15,7 +15,7 @@ import { recordRequest, recordTokens, setCooldown, isOnCooldown } from '../servi
 import { harvestQuotaHeaders } from '../services/quotaHarvest.js';
 import { observeCapabilities, recordVisionUnsupported } from '../services/capabilityObserve.js';
 import { markCapabilitySuspect } from '../services/probes/runner.js';
-import { benchUnreachableModel, setQuotaExhausted } from '../services/modelHealth.js';
+import { benchUnreachableModel, benchPaidModel, setQuotaExhausted } from '../services/modelHealth.js';
 import { isSwarmConsumer, hasLane, heldPlatformsExcluding, recordLane, withAssignLock } from '../services/swarmLanes.js';
 import { checkBudget, recordSpend } from '../services/swarmBudget.js';
 import { checkProgress, recordProgress } from '../services/swarmProgress.js';
@@ -410,7 +410,32 @@ function isUnreachableError(err: any): boolean {
   return msg.includes('403') || msg.includes('forbidden')
     || msg.includes('404') || msg.includes('not found')
     || msg.includes('does not exist') || msg.includes('no such model')
-    || msg.includes('not authorized') || msg.includes('unauthorized');
+    || msg.includes('not authorized') || msg.includes('unauthorized')
+    // 2026-09-06: a provider that has GONE (GitHub Models 410 "temporarily
+    // unavailable" for 5+ weeks, NIM 410 Gone, decommissioned slugs) was never
+    // benched because only 403/404 matched — so 20 github models sat ENABLED at
+    // 0% success for 279 requests, each one a wasted attempt + fallback.
+    || msg.includes('410') || msg.includes('gone')
+    || msg.includes('decommission') || msg.includes('deprecated')
+    || msg.includes('no endpoints') || msg.includes('model_not_found');
+}
+
+// A PAYMENT wall — the free tier for this model/account is over (SambaNova 402
+// "payment method required", Cerebras 402, OpenRouter "unavailable for free,
+// paid version available"). Persistent, never transient, and NOT the same
+// bench as 'unreachable': it must also correct cost_tier to 'paid' so the model
+// never routes as free again. Before 2026-09-06 nothing caught this on the hot
+// path — sambanova sat at 0/74 and cerebras 0/68 for 14 days, still enabled.
+function isPaidWallError(err: any): boolean {
+  const msg = (err.message ?? '').toLowerCase();
+  // A 429 / quota / rate-limit is NEVER a payment wall — it's transient or a
+  // daily quota (handled by isQuotaExhaustionError → 6h park). Google's standard
+  // 429 text reads "You exceeded your current quota, please check your plan and
+  // billing" — a bare `billing` match benched gemini-3.5-flash (79% success) as
+  // paid_tier for a quota blip within a minute of this shipping (2026-09-06).
+  // So: exclude the quota class first, and only match explicit paywall phrasings.
+  if (/\b429\b|rate.?limit|too many requests|quota|resource_exhausted/.test(msg)) return false;
+  return /\b402\b|payment (method )?(is )?required|insufficient (balance|credits?|funds)|unavailable for free|paid version (is )?available|requires? (a )?(pro|paid) (plan|subscription)|subscription required|upgrade (to|your) (a )?(paid|pro)/.test(msg);
 }
 
 // Is there ANOTHER key for this platform that could still serve this model —
@@ -1095,7 +1120,13 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       // not-found = the key can't serve it — persistent, not transient). Stops
       // it leading + failing over on every request. Never benches on a 400
       // (that's request-shaped, not model-fatal).
-      if (!retryable && isUnreachableError(err)) {
+      if (isPaidWallError(err)) {
+        // Payment wall — bench as paid_tier (+cost_tier='paid'). Not gated on
+        // `retryable`: a 402 is never transient. Checked BEFORE unreachable so a
+        // "payment required" message can't be misfiled as a plain 4xx.
+        void benchPaidModel(getPool(), route.modelDbId, `${route.displayName}: ${err.message}`);
+        console.log(`[Proxy] AUTO-BENCH (paid wall): ${route.displayName} — ${err.message.slice(0, 60)}`);
+      } else if (!retryable && isUnreachableError(err)) {
         void benchUnreachableModel(getPool(), route.modelDbId, `${route.displayName}: ${err.message}`);
         console.log(`[Proxy] AUTO-BENCH (unreachable): ${route.displayName} — ${err.message.slice(0, 60)}`);
       }

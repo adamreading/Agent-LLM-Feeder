@@ -40,6 +40,22 @@ function isRateLimitOrTimeout(error: string | null): boolean {
   return /429|rate.?limit|too many requests|timeout|aborted|econnreset|etimedout|5\d\d\b|quota|resource_exhausted|unavailable/i.test(error);
 }
 
+// Feeder-side egress failure (undici "fetch failed", DNS, refused). Not a
+// provider or model signal — see the exclusion in recomputeModelHealth.
+export function isNetworkError(error: string | null): boolean {
+  if (!error) return false;
+  return /fetch failed|econnrefused|eai_again|enotfound|socket hang up|network error|getaddrinfo/i.test(error);
+}
+
+// 7-day low-volume bench. The 30-min window above needs LOW_SUCCESS_MIN_ATTEMPTS
+// (8) calls INSIDE one window — a model that gets ~5 tries a DAY and fails every
+// one never accumulates 8 in 30 min, so it stays enabled + failing forever
+// (sambanova 0/74, cerebras 0/68, github 0/279 over 14 days — all still enabled
+// on 2026-09-06). Same rule, longer window, network errors excluded. Zero-token:
+// pure derivation from `requests`. Benched as 'low_success' → daily-revived.
+const LONG_WINDOW_DAYS = 7;
+const LONG_WINDOW_MIN_ATTEMPTS = Number(process.env.FEEDER_LONG_LOW_SUCCESS_MIN_ATTEMPTS ?? 5);
+
 interface RecentRow {
   model_db_id: number;
   platform: string;
@@ -65,9 +81,15 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
     ORDER BY r.created_at ASC
   `, [OBSERVATION_WINDOW_MIN]);
 
-  // Group by model.
+  // Group by model — EXCLUDING feeder's own network failures. "fetch failed" /
+  // ECONNREFUSED / EAI_AGAIN are the WSL box's egress blipping (measured
+  // 2026-09-06: 557 in 14d, bursty, each burst hitting 7-9 platforms at once —
+  // ~46% of ALL failures, and it hit mistral at 96.6% success too). That is not
+  // the model's fault, so it must not drag a good model's success rate, trip a
+  // cooldown, or bench it. Still logged in `requests`; just not scored here.
   const byModel = new Map<number, RecentRow[]>();
   for (const r of rows) {
+    if (r.status !== 'success' && isNetworkError(r.error)) continue;
     const list = byModel.get(r.model_db_id) ?? [];
     list.push(r);
     byModel.set(r.model_db_id, list);
@@ -150,6 +172,43 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
       }
     }
   }
+
+  // Long-window pass (see LONG_WINDOW_DAYS above). Only ENABLED models with a
+  // NULL disabled_reason are touched, so it never fights a manual/no_key/paid bench.
+  try {
+    const stale = await all<{ model_db_id: number; platform: string; model_id: string; n: number; ok: number }>(pool, `
+      SELECT m.id AS model_db_id, m.platform, m.model_id,
+             COUNT(*)::int AS n,
+             COUNT(*) FILTER (WHERE r.status = 'success')::int AS ok
+      FROM requests r
+      JOIN models m ON m.platform = r.platform AND m.model_id = r.model_id
+      WHERE r.is_probe = false
+        AND r.created_at > now() - (? || ' days')::interval
+        AND m.enabled = true AND m.disabled_reason IS NULL
+        AND NOT (r.status <> 'success' AND r.error ~* 'fetch failed|econnrefused|eai_again|enotfound|socket hang up|getaddrinfo')
+      GROUP BY m.id, m.platform, m.model_id
+      HAVING COUNT(*) >= ? AND (COUNT(*) FILTER (WHERE r.status = 'success'))::float / COUNT(*) < ?
+    `, [LONG_WINDOW_DAYS, LONG_WINDOW_MIN_ATTEMPTS, LOW_SUCCESS_THRESHOLD]);
+    for (const s of stale) {
+      const d = await run(pool, `UPDATE models SET enabled = false, disabled_reason = 'low_success' WHERE id = ? AND enabled = true AND disabled_reason IS NULL`, [s.model_db_id]);
+      if (d.changes > 0) console.log(`[ModelHealth] ${s.platform}/${s.model_id}: ${s.ok}/${s.n} success over ${LONG_WINDOW_DAYS}d — benched (disabled_reason=low_success, long-window)`);
+    }
+  } catch (e) {
+    console.error('[ModelHealth] long-window bench failed:', e);
+  }
+}
+
+// Payment-wall bench (proxy hot path, 2026-09-06): the model answered 402 /
+// "payment required" / "unavailable for free" — the free tier is over. Sets
+// disabled_reason='paid_tier' AND cost_tier='paid' so it can never route as
+// free again. Only benches a currently-live row (NULL) or re-stamps an existing
+// paid_tier one; never overrides manual/no_key/unhealthy.
+export async function benchPaidModel(pool: pg.Pool, modelDbId: number, evidence: string): Promise<void> {
+  await run(pool, `
+    UPDATE models SET enabled = false, disabled_reason = 'paid_tier', cost_tier = 'paid'
+    WHERE id = ? AND (disabled_reason IS NULL OR disabled_reason = 'paid_tier')
+  `, [modelDbId]);
+  console.log(`[ModelHealth] model ${modelDbId} benched (disabled_reason=paid_tier): ${evidence.slice(0, 100)}`);
 }
 
 // Bench a model a live request proved UNREACHABLE — a non-retryable 403/404 /

@@ -18,8 +18,13 @@ import { researchMissingCanonicals } from './modelResearch.js';
 //      (a provider blip can't retire a model). Reappearance un-retires.
 //   4. MATCH     — link new rows to canonical models; create a canonical (wiki
 //      entry) for each newly-added *chat* model still unmatched.
+//   2c. ENABLE-ON-DISCOVERY (2026-09-06, default ON) — remaining pending free chat
+//      models on a keyed platform go live with NO probe; failures bench them on
+//      first real use (proxy hot path + modelHealth). FEEDER_ENABLE_WITHOUT_PROBE=0
+//      restores probe-first.
 //   5. ENABLE    — bounded liveness pass flips working new models to enabled=true
-//      (only enabled instances show in the wiki / route). Capped per run.
+//      (only enabled instances show in the wiki / route). Capped per run. With 2c
+//      on, this only sees leftovers (platforms without a key) → ~zero token spend.
 //   6. RESEARCH  — bounded pass writes wiki summaries for new canonicals. Capped.
 //
 // Stages 5 + 6 are the only token-touching stages and are BOTH capped; discovery
@@ -138,6 +143,25 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
         summary.reclassifiedNonChat += rn.changes;
       }
 
+      // 2c. ENABLE-ON-DISCOVERY (Adam, 2026-09-06: "pass all free models into
+      //     live use and fail them on failure — not require a live probe wasting
+      //     tokens"). After 2b has sorted out paid/non-chat, every remaining
+      //     pending free CHAT model on a platform we hold a usable key for goes
+      //     straight to enabled=true. No completion is spent. Demotion is then
+      //     observe-on-use: the proxy hot path benches 402→paid_tier, 403/404/
+      //     410→unreachable on the FIRST real failure, and modelHealth's 30-min +
+      //     7-day low-success passes catch the rest. Cost of a dead model = one
+      //     failed attempt (then fallback), once. Set FEEDER_ENABLE_WITHOUT_PROBE=0
+      //     to restore the old probe-first path (stage 5 still runs on leftovers).
+      if (process.env.FEEDER_ENABLE_WITHOUT_PROBE !== '0') {
+        const eod = await run(pool, `
+          UPDATE models SET enabled = true, disabled_reason = NULL
+          WHERE platform = ? AND kind = 'chat' AND disabled_reason LIKE 'pending-liveness%'
+            AND EXISTS (SELECT 1 FROM api_keys k WHERE k.platform = models.platform AND k.enabled = true AND k.status != 'invalid')
+        `, [platform]);
+        if (eod.changes > 0) { summary.enabled += eod.changes; log(`${platform}: enabled-on-discovery ${eod.changes} free chat model(s), no probe`); }
+      }
+
       // 3a. Reappearance: a delisted model back in the live list re-enters liveness.
       const reappeared = await run(pool, `
         UPDATE models SET disabled_reason = 'pending-liveness (reappeared daily-sync)'
@@ -190,7 +214,7 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
 
     // 5. ENABLE working new models (bounded, token-touching).
     const enableRes = await livenessEnablePending(pool, { limit: enableLimit, log: (m) => log(`enable: ${m}`) });
-    summary.enabled = enableRes.enabled.length;
+    summary.enabled += enableRes.enabled.length; // += : stage 2c already counted enable-on-discovery
 
     // 6. RESEARCH new canonicals → wiki summaries (bounded, token-touching).
     const researchRes = await researchMissingCanonicals(pool, { limit: researchLimit, log: (m) => log(`research: ${m}`) });
