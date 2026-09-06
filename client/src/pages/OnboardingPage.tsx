@@ -8,7 +8,12 @@ const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
 // Provider metadata from the design handoff — name / free-tier label / key
 // prefix / account + key URLs. Wired to the real /api/keys endpoint.
-const PROVIDERS: { id: Platform; name: string; tier: string; prefix: string; accountUrl: string; keyUrl: string }[] = [
+// `note` (optional) is rendered on the card in warning colour — REQUIRED for any
+// provider whose signup needs a card / ID / phone, or whose free tier has a
+// non-obvious edge (Adam, 2026-09-06: "make that clear on the provider card").
+// Inclusion rule for new providers: free tier must HARD-STOP when exhausted —
+// never auto-charge on overage — and no 90-day / one-time trials.
+const PROVIDERS: { id: Platform; name: string; tier: string; prefix: string; accountUrl: string; keyUrl: string; note?: string }[] = [
   { id: 'google', name: 'Google AI Studio', tier: 'GEMINI FREE TIER', prefix: 'AIza…', accountUrl: 'https://ai.google.dev', keyUrl: 'https://aistudio.google.com/api-keys' },
   { id: 'groq', name: 'Groq', tier: 'FREE DEV QUOTA', prefix: 'gsk_…', accountUrl: 'https://console.groq.com', keyUrl: 'https://console.groq.com/keys' },
   { id: 'cerebras', name: 'Cerebras', tier: 'FREE INFERENCE TIER', prefix: 'csk-…', accountUrl: 'https://cloud.cerebras.ai', keyUrl: 'https://cloud.cerebras.ai/platform' },
@@ -93,6 +98,7 @@ export default function OnboardingPage() {
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 600, fontSize: 15, letterSpacing: '.5px' }}>{p.name}</div>
                   <div style={{ ...mono, fontSize: 9.5, color: 'var(--dim)', letterSpacing: '.5px' }}>{p.tier}</div>
+                  {p.note && <div style={{ ...mono, fontSize: 9.5, color: 'var(--warn, #f59e0b)', letterSpacing: '.3px', marginTop: 3 }}>⚠ {p.note}</div>}
                 </div>
                 {isOn && <span style={{ ...mono, fontSize: 9, letterSpacing: 1, color: 'var(--good)', border: '1px solid var(--good)', padding: '3px 6px', boxShadow: '0 0 8px rgba(61,255,160,.25)' }}>◈ LINKED</span>}
               </div>

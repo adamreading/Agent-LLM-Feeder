@@ -54,7 +54,17 @@ export async function reprobeSuspects(pool: pg.Pool, log: Logger = () => {}): Pr
   return suspects.length;
 }
 
-export async function probeNeverProbed(pool: pg.Pool, log: Logger = () => {}): Promise<number> {
+// BOUNDED per call (opts.limit). Unbounded until 2026-09-06: the moment
+// enable-on-discovery flipped ~200 models to enabled=true, the next boot fired
+// 264 real probe completions across 132 models (tools + json_mode each) — the
+// exact probe-burst class Adam banned ("no more probes, they are using up all my
+// tokens"), and the same defect the research cap below in autoOnboard fixed
+// on 2026-07-17. Each probe IS useful (a measured tools row makes a model
+// eligible for tool-armed requests), so cap it, don't remove it; the backlog
+// drains a slice per boot.
+export async function probeNeverProbed(pool: pg.Pool, log: Logger = () => {}, opts: { limit?: number } = {}): Promise<number> {
+  const limit = Math.max(0, Math.floor(opts.limit ?? 20));
+  if (limit === 0) return 0;
   const neverProbed = await all<{ id: number; platform: string; model_id: string }>(pool, `
     SELECT DISTINCT m.id, m.platform, m.model_id
     FROM models m
@@ -79,7 +89,9 @@ export async function probeNeverProbed(pool: pg.Pool, log: Logger = () => {}): P
           AND (h.quota_exhausted_until > now() OR h.cooldown_until > now())
       )
     ORDER BY m.platform, m.model_id
-  `, [PROBE_BACKOFF_HOURS, PROBE_FAIL_BACKOFF_N]);
+    LIMIT ?
+  `, [PROBE_BACKOFF_HOURS, PROBE_FAIL_BACKOFF_N, limit]);
+  if (neverProbed.length === limit) log(`never-probed backlog is larger than this boot's cap (${limit}); the rest drains on later boots`);
   for (const m of neverProbed) {
     const ctx = await contextFor(pool, m.platform, m.id);
     if (!ctx) continue;

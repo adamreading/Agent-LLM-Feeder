@@ -22,7 +22,12 @@ export async function autoOnboardNewArrivals(pool: pg.Pool): Promise<void> {
     // 1. Probe suspect (regressed) + never-probed keyed models. Bounded to
     //    models we actually hold a key for (can't probe what we can't call).
     const suspects = await reprobeSuspects(pool, log);
-    const probed = await probeNeverProbed(pool, log);
+    //    Capability probes are ALSO bounded per boot (FEEDER_ONBOARD_PROBE_LIMIT,
+    //    default 20 models = ≤40 small completions). Added 2026-09-06 after
+    //    enable-on-discovery made the never-probed set ~200 models and one boot
+    //    fired 264 probe completions. Same shape as the research cap below.
+    const probeLimit = Number(process.env.FEEDER_ONBOARD_PROBE_LIMIT ?? 20);
+    const probed = await probeNeverProbed(pool, log, { limit: probeLimit });
     if (suspects === 0 && probed === 0) log('no new/suspect models to probe');
 
     // 2. Research canonical models that have no summary yet (new arrivals).
