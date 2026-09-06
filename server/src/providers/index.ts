@@ -232,11 +232,15 @@ register(new OpenAICompatProvider({
 // UK user; no cost (key was never able to infer). Note the trap for any future add: its
 // key-health check (GET /models) PASSES while inference 401s, so it looks healthy.
 
-// GMI Cloud — $0 endpoints (Llama-3.3-70B-Turbo, DeepSeek-R1-Distill-Llama-70B; the
-// list ROTATES, console-only). No card needed for the free endpoints; credits are
-// prepaid and "Auto Pay" is an opt-in toggle — never add a card / never enable it,
-// then nothing can charge. Free ids have no naming convention ⇒ PROBE-FIRST only
-// (catalogSync ENABLE_PROBE_FIRST): a paid id answers 402 → paid_tier, no spend.
+// GMI Cloud — VERIFIED 2026-09-06 on Adam's key (id 24, $0 balance, no card): two
+// models serve free RELIABLY — MiniMaxAI/MiniMax-M3 and MiniMaxAI/MiniMax-M2.7 (200 on
+// 4/4 real calls) — while every genuinely-paid model 402s "Insufficient balance"
+// (hard-stop, NO charge while no card is on file). ⚠️ Its /models pricing CANNOT be
+// trusted: it lists a model twice at two prices and the free ones show a non-zero
+// price yet still serve. So GMI is probe-first (catalogSync ENABLE_PROBE_FIRST +
+// PRICING_UNRELIABLE): the stage-5 liveness probe is the only classifier — 200 →
+// enabled, 402 → paid_tier — and it self-tracks GMI's rotating free set. Never add a
+// card / never enable GMI Auto Pay, or the 402 wall becomes an auto-charge.
 register(new OpenAICompatProvider({
   platform: 'gmi',
   name: 'GMI Cloud',

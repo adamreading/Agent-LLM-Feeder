@@ -66,9 +66,17 @@ const MIXED_GATEWAY_FREE_ID: Partial<Record<string, string>> = {
   opencode: '-free$',   // deepseek-v4-flash-free, nemotron-3-ultra-free, …
   // (vercel removed 2026-09-06 — the provider was dropped for card-on-file PAYG risk)
 };
-// Platforms where the free set has no id convention AND the list rotates (GMI):
-// never enable-on-discovery; the bounded stage-5 probe decides (402 → paid_tier).
+// Platforms where the free set can only be learned by a REAL inference probe, never
+// from /models: no enable-on-discovery, and stage-5 liveness (402 "insufficient
+// balance" → paid_tier, 200 → enabled) is the only truth. GMI is here because its
+// /models pricing LIES (measured 2026-09-06): it lists a model TWICE at two different
+// prices (83 rows / 81 unique ids) and the displayed price for MiniMax-M3 flipped
+// $0 → priced within 3 min, yet the model served 200 on 4/4 real calls. So pricing
+// can't classify it — only the probe can.
 const ENABLE_PROBE_FIRST = new Set<string>(['gmi']);
+// …and for the SAME reason, 2b's pricing-based paid-marking must be skipped for these
+// platforms, or it marks the genuinely-free models paid before the probe ever runs.
+const PRICING_UNRELIABLE = new Set<string>(['gmi']);
 
 let running = false;
 
@@ -138,7 +146,9 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       //     A null (unknown) metadatum changes nothing — a metadata-poor provider's
       //     rows stay exactly as pending-liveness, same as before this stage existed.
       const meta = d.models ?? [];
-      const paidIds = meta.filter((x) => x.paid === true).map((x) => x.id);
+      // Skip pricing-based paid-marking where the provider's /models pricing is
+      // untrustworthy (see PRICING_UNRELIABLE) — the liveness probe classifies instead.
+      const paidIds = PRICING_UNRELIABLE.has(platform) ? [] : meta.filter((x) => x.paid === true).map((x) => x.id);
       const nonTextIds = meta.filter((x) => x.outputText === false).map((x) => x.id);
       if (paidIds.length) {
         const rp = await run(pool, `
