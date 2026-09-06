@@ -1086,6 +1086,14 @@ proxyRouter.post('/chat/completions', async (req: Request, res: Response) => {
       }
     } catch (err: any) {
       const latency = Math.round(performance.now() - attemptStart);
+      // undici's bare "fetch failed" hides the cause. Surface the errno so the
+      // request log can tell DNS (EAI_AGAIN/ENOTFOUND) from TCP (ECONNREFUSED/
+      // ETIMEDOUT/UND_ERR_CONNECT_TIMEOUT) from TLS — 557 of these in 14d were
+      // undiagnosable because only "fetch failed" was stored (2026-09-06).
+      const causeCode = (err?.cause as any)?.code ?? (err?.cause as any)?.name;
+      if (typeof err?.message === 'string' && /^fetch failed$/i.test(err.message) && causeCode) {
+        try { err.message = `fetch failed (${causeCode})`; } catch { /* read-only message on a frozen error — keep original */ }
+      }
       logRequest(route.platform, route.modelId, 'error', estimatedInputTokens, 0, latency, err.message, explicitSessionId, effectiveTaskClass, consumer, needs, effectiveClassifyReason, augmented, runId, augmentSkipped);
 
       lastError = err;

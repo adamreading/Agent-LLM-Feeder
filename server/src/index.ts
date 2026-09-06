@@ -1,4 +1,11 @@
 import './env.js';
+import dns from 'node:dns';
+// This WSL2 box has NO IPv6 egress (measured 2026-09-06: `curl -6` → no route) but
+// the static resolvers return AAAA records first and Node's default order is
+// `verbatim`, so every fresh provider connection tried a dead v6 path before
+// Happy-Eyeballs fell back (~250ms tax + a flake surface during egress blips).
+// Prefer v4 outright. Harmless on a host that does have v6 (v6 is still tried).
+dns.setDefaultResultOrder('ipv4first');
 import { createApp } from './app.js';
 import { initDb, closeDb, getPool } from './db/index.js';
 import { startHealthChecker, stopHealthChecker } from './services/health.js';
