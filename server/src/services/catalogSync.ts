@@ -73,7 +73,13 @@ const MIXED_GATEWAY_FREE_ID: Partial<Record<string, string>> = {
 // prices (83 rows / 81 unique ids) and the displayed price for MiniMax-M3 flipped
 // $0 → priced within 3 min, yet the model served 200 on 4/4 real calls. So pricing
 // can't classify it — only the probe can.
-const ENABLE_PROBE_FIRST = new Set<string>(['gmi']);
+const ENABLE_PROBE_FIRST = new Set<string>(['gmi', 'hetzner']);
+// hetzner (added 2026-09-06): the token is valid and GET /models 200s, but the free
+// EXPERIMENT frequently 503s "ServiceUnavailable — failed to find endpoint candidates"
+// (no serving capacity). Probe-first means the liveness probe leaves a 503 model
+// PENDING (503 → transient in livenessEnable, not enabled, not benched) and enables it
+// only once it actually serves 200 — so feeder never routes at a dead experiment, and
+// picks the 2 Qwen models up automatically the moment Hetzner has capacity.
 // …and for the SAME reason, 2b's pricing-based paid-marking must be skipped for these
 // platforms, or it marks the genuinely-free models paid before the probe ever runs.
 const PRICING_UNRELIABLE = new Set<string>(['gmi']);
