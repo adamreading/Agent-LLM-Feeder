@@ -26,7 +26,9 @@ export type Platform =
   // Vercel AI Gateway was REMOVED 2026-09-06: signup forces a card + the account is
   // pay-as-you-go, and Vercel's docs never confirm a balance-exhausted free-tier call
   // REFUSES rather than bills the card — fails Adam's "never auto-charge" rule.
-  | 'modelscope'
+  // ModelScope was REMOVED 2026-09-06 too: API-Inference 401s "bind your Alibaba Cloud
+  // account", and that binding only accepts a China-region account — a hard wall for a
+  // UK user (measured: an international Alibaba Cloud account will not bind).
   | 'gmi'
   | 'hetzner';
 

@@ -31,8 +31,6 @@ const PROVIDERS: { id: Platform; name: string; tier: string; prefix: string; acc
   { id: 'llm7', name: 'LLM7', tier: 'COMMUNITY FREE', prefix: 'llm7-…', accountUrl: 'https://llm7.io', keyUrl: 'https://llm7.io' },
   { id: 'opencode', name: 'OpenCode Zen', tier: '5 FREE ROUTES', prefix: 'sk-…', accountUrl: 'https://opencode.ai/zen', keyUrl: 'https://opencode.ai/zen' },
   // ── added 2026-09-06 — verified that day against each provider's own pricing/FAQ ──
-  { id: 'modelscope', name: 'ModelScope', tier: '2,000 REQ/DAY · PERMANENT · DeepSeek-V4 / Qwen3.5-397B / GLM-5.2 / MiniMax-M3', prefix: 'ms-…', accountUrl: 'https://modelscope.cn', keyUrl: 'https://modelscope.cn/my/myaccesstoken',
-    note: 'Alibaba Cloud real-name / ID (passport) verification required to bind the account. No card exists on the service — hard 429 at the daily cap, can never charge. China-hosted: expect higher latency.' },
   { id: 'gmi', name: 'GMI Cloud', tier: '$0 ENDPOINTS · 70B CLASS (Llama-3.3-70B, R1-Distill-70B)', prefix: '…', accountUrl: 'https://console.gmicloud.ai', keyUrl: 'https://console.gmicloud.ai',
     note: 'Do NOT add a card and keep "Auto Pay" OFF — with no card nothing can charge. The $0 model list rotates (check the console). Probe-first: paid models answer 402 and are benched, not enabled.' },
   { id: 'hetzner', name: 'Hetzner Inference', tier: 'FREE WHILE EXPERIMENTAL · 10 REQ/MIN · Qwen3.6-35B / Qwen3.8-27B', prefix: '…', accountUrl: 'https://console.hetzner.cloud', keyUrl: 'https://docs.hetzner.com/general/company-and-policy/experiments/inference/',

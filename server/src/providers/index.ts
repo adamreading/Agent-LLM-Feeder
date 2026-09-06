@@ -225,16 +225,12 @@ register(new OpenAICompatProvider({
 // free-set = fails the "never auto-charge on overage" rule. Do not re-add without a
 // doc/line proving a balance-zero free-tier call returns 402 instead of charging.
 
-// ModelScope API-Inference (Alibaba) — permanent free: 2,000 req/day total,
-// ≤500/day per model, resets 00:00 UTC+8, hard 429 at the cap, NO payment method
-// exists on the service. Big free lineup (DeepSeek-V4 Pro/Flash, Qwen3-235B,
-// Qwen3.5-397B, GLM-5.2, MiniMax-M3). Signup needs Alibaba Cloud real-name / ID
-// (passport) verification; China-hosted (latency). Unbound account → 401.
-register(new OpenAICompatProvider({
-  platform: 'modelscope',
-  name: 'ModelScope',
-  baseUrl: 'https://api-inference.modelscope.cn/v1',
-}));
+// ModelScope API-Inference was EVALUATED and REMOVED 2026-09-06 (Adam): the key lists
+// 50 models fine (GET /v1/models 200) but every completion 401s "Please bind your
+// Alibaba Cloud account before use," and that binding only accepts a China-region
+// Alibaba Cloud account — an international one will not bind (measured). Unusable for a
+// UK user; no cost (key was never able to infer). Note the trap for any future add: its
+// key-health check (GET /models) PASSES while inference 401s, so it looks healthy.
 
 // GMI Cloud — $0 endpoints (Llama-3.3-70B-Turbo, DeepSeek-R1-Distill-Llama-70B; the
 // list ROTATES, console-only). No card needed for the free endpoints; credits are
