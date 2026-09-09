@@ -84,7 +84,16 @@ function pricedPaid(m: any): boolean | null {
   if (typeof m.isFree === 'boolean') return !m.isFree;
   const p = m.pricing;
   if (p && (p.prompt !== undefined || p.completion !== undefined)) {
-    return Number(p.prompt ?? 0) > 0 || Number(p.completion ?? 0) > 0;
+    const pp = Number(p.prompt ?? 0), cc = Number(p.completion ?? 0);
+    // FREE only if BOTH rates are exactly 0. Any non-zero value is paid — including
+    // OpenRouter's "-1" sentinel for a VARIABLE-priced meta/router model
+    // (openrouter/auto, auto-beta, fusion, bodybuilder, pareto-code): it charges
+    // whatever the model it routes to costs, so it is NOT free. The old `> 0` check
+    // treated -1 as free, so enable-on-discovery lit those routers and fed them PAID
+    // traffic through OpenRouter (measured 2026-09-09: 865 auto-beta calls, ~6¢, key
+    // capped at $0.10). An unparseable rate (NaN) is treated as paid, conservatively.
+    if (Number.isNaN(pp) || Number.isNaN(cc)) return true;
+    return pp !== 0 || cc !== 0;
   }
   return null;
 }

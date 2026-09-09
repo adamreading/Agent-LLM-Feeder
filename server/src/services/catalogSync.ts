@@ -157,9 +157,14 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       const paidIds = PRICING_UNRELIABLE.has(platform) ? [] : meta.filter((x) => x.paid === true).map((x) => x.id);
       const nonTextIds = meta.filter((x) => x.outputText === false).map((x) => x.id);
       if (paidIds.length) {
+        // Covers pending rows AND any LIVE free-tier row (enabled, no reason) that a
+        // prior sync wrongly enabled — so a model the provider's own catalog prices
+        // (incl. the -1 variable-price routers) can't stay routable as free. A
+        // manual/no_key/unhealthy row is never touched (its disabled_reason ≠ NULL).
         const rp = await run(pool, `
           UPDATE models SET enabled = false, disabled_reason = 'paid_tier', cost_tier = 'paid'
-          WHERE platform = ? AND disabled_reason LIKE 'pending-liveness%' AND model_id = ANY(?::text[])
+          WHERE platform = ? AND model_id = ANY(?::text[])
+            AND (disabled_reason LIKE 'pending-liveness%' OR (enabled = true AND disabled_reason IS NULL))
         `, [platform, paidIds]);
         summary.reclassifiedPaid += rp.changes;
       }
