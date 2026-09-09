@@ -36,6 +36,8 @@ interface FallbackRow {
   enabled: boolean;
   intelligence_rank: number;
   size_label: string;
+  platform: string;
+  model_id: string;
 }
 
 export interface RouteResult {
@@ -300,6 +302,16 @@ const COVERAGE_FULL_AGE_MS = 24 * 60 * 60 * 1000; // untouched ≥24h → full s
 // vote from swinging routing; bounded well under the task-quality lift (20) so
 // it nudges like the intelligence prior / 429-penalty, never bosses.
 const FEEDBACK_WEIGHT = Number(process.env.FEEDBACK_ROUTING_WEIGHT ?? 6);
+
+// Free-tier promotion (Adam, 2026-09-09: "promote openrouter free … i want them
+// used"). Primary mechanism is the RESERVED SLOT below (OR_FREE_EVERY), NOT this
+// flat boost — measured 2026-09-09 that a flat score-boost is all-or-nothing (at
+// 5 it took 100% of traffic and crowded out best-at-task; at 2 it did nothing),
+// the exact failure mode this repo's routing notes warned about ("reserve the slot
+// OUTSIDE the score"). So OR_FREE_BOOST defaults to 0 (inert) and stays only as an
+// optional extra nudge; the slot does the real, controllable promotion. When set,
+// the boost scales with health so it never lifts a failing free model.
+const OR_FREE_BOOST = Number(process.env.FEEDER_OR_FREE_BOOST ?? 0);
 const FEEDBACK_SMOOTHING = 2;
 // Only feedback from the last N days counts (Adam, 2026-07-14): a model that was
 // bad last month but has since improved shouldn't carry stale down-votes forever
@@ -337,6 +349,14 @@ function exploreEpsilon(): number {
 // in the walk, so this can never serve an ineligible model — and it's gated to
 // loose/no-latency-ceiling requests so it never slows an interactive chat turn.
 const TAIL_EXPLORE_EVERY = 20;
+// Reserved slot for OpenRouter :free promotion (Adam, 2026-09-09). Every
+// OR_FREE_EVERY non-sticky, loose-latency request, give the most-overdue HEALTHY
+// OR-free model the first shot — a controlled ~1/N share (default 4 ≈ 25%) that
+// never crowds out the best-at-task model on the other N-1 turns. This is the
+// reserved-slot mechanism this repo's routing notes prescribe over a flat score
+// boost. 0 disables. It still passes every capability/quota filter in the walk,
+// so it can never serve an ineligible model.
+const OR_FREE_EVERY = Number(process.env.FEEDER_OR_FREE_EVERY ?? 4);
 let routeRequestCounter = 0;
 
 // Map a caller's task_class (free-form, from `auto/<task_class>`) to an lmarena
@@ -414,6 +434,7 @@ function candidateScore(
   sizeQualityFactor: number,
   dataAgeMs: number | null,
   feedbackAdj: number,
+  promoteFree = false,
 ): number {
   // COMPRESSED intelligence prior: normalize the raw rank (~1..RANK_REF) into a
   // small 0..BRAINS_WEIGHT nudge so "overall smarts" tie-breaks rather than
@@ -442,6 +463,14 @@ function candidateScore(
   const coverageWeight = latencyCeilingMs != null ? COVERAGE_WEIGHT_TIGHT : COVERAGE_WEIGHT_LOOSE;
   const staleFrac = dataAgeMs == null ? 1 : Math.min(1, dataAgeMs / COVERAGE_FULL_AGE_MS);
   score -= coverageWeight * staleFrac;
+
+  // Free-tier promotion (see OR_FREE_BOOST). Health-scaled: full lift for a
+  // healthy or never-seen free model, ~0 for a penalized one, so we surface the
+  // good free models without routing to failing ones.
+  if (promoteFree && OR_FREE_BOOST > 0) {
+    const hf = health ? Math.max(0, Math.min(1, health.health_score)) : 1;
+    score -= OR_FREE_BOOST * hf;
+  }
 
   if (!health) return score; // no health data → intelligence prior + task quality + coverage only
 
@@ -501,7 +530,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   // manual on/off; ordering is the algorithm's job (intelligence + task quality
   // + health + latency + exploration), not a hand-maintained priority list.
   const fallbackChain = await all<FallbackRow>(pool, `
-    SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label
+    SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label, m.platform, m.model_id
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
     WHERE m.kind = 'chat'
@@ -565,6 +594,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
       taskScoreMap.get(entry.model_db_id), sizeFactor(entry.size_label),
       dataAgeMap.has(entry.model_db_id) ? dataAgeMap.get(entry.model_db_id)! : null,
       feedbackMap.get(entry.model_db_id) ?? 0,
+      entry.platform === 'openrouter' && entry.model_id.endsWith(':free'),
     ),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
@@ -587,6 +617,23 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
         let pick = enabled[0];
         let pickAge = -1;
         for (const e of enabled) {
+          const age = dataAgeMap.has(e.model_db_id) ? dataAgeMap.get(e.model_db_id)! : Infinity;
+          if (age > pickAge) { pickAge = age; pick = e; }
+        }
+        const idx = sortedChain.indexOf(pick);
+        if (idx > 0) { sortedChain.splice(idx, 1); sortedChain.unshift(pick); }
+      }
+    } else if (OR_FREE_EVERY > 0 && routeRequestCounter % OR_FREE_EVERY === 0 && latencyCeilingMs == null) {
+      // Reserved OR-free slot (see OR_FREE_EVERY). Prefer the most-overdue HEALTHY
+      // OpenRouter :free model so the strong free ones (minimax-m3, nemotron-ultra-
+      // 550b) get a steady share and accrue quality data, without a score-boost
+      // cliff. Skips penalized/inactive free models — promote the good, not the broken.
+      const cands = sortedChain.filter(e => e.enabled
+        && e.platform === 'openrouter' && e.model_id.endsWith(':free')
+        && !['penalized', 'inactive'].includes(healthMap.get(e.model_db_id)?.status ?? 'healthy'));
+      if (cands.length) {
+        let pick = cands[0], pickAge = -1;
+        for (const e of cands) {
           const age = dataAgeMap.has(e.model_db_id) ? dataAgeMap.get(e.model_db_id)! : Infinity;
           if (age > pickAge) { pickAge = age; pick = e; }
         }
@@ -949,7 +996,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
       (health?.cooldown_until && new Date(health.cooldown_until).getTime() > now) ||
       (health?.quota_exhausted_until && new Date(health.quota_exhausted_until).getTime() > now)
     );
-    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0);
+    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0, m.platform === 'openrouter' && String(m.model_id ?? '').endsWith(':free'));
     const status: RoutingExplainRow['status'] =
       (!m.model_enabled || !m.fc_enabled) ? 'disabled'
         : keyCount === 0 ? 'no_key'
