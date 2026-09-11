@@ -11,6 +11,7 @@ import '../env.js';
 import { initDb, closeDb, getPool } from '../db/index.js';
 import { discoverLiveModels } from '../services/catalogDiscovery.js';
 import { writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 async function main() {
   await initDb();
@@ -22,9 +23,12 @@ async function main() {
     console.log(`[${platform}] HTTP ${d.status} — ${d.ids.length} models${d.err ? ' ERR:' + d.err : ''}`);
   }
 
-  const path = '/tmp/claude-1000/-home-ajo-Agent-LLM-Feeder/2fbd53c3-4337-4fed-bc4e-4a9d2a10ee4e/scratchpad/live-models.json';
-  writeFileSync(path, JSON.stringify(out, null, 2));
-  console.log(`\nWrote ${path}`);
+  // Stable, overridable output path (was a hardcoded per-session scratchpad dir
+  // that no longer exists → ENOENT). Defaults to ./discovered-models.json in the
+  // cwd (server/ when run via `npm run discover`), gitignored.
+  const outPath = process.env.DISCOVER_OUT ?? path.resolve(process.cwd(), 'discovered-models.json');
+  writeFileSync(outPath, JSON.stringify(out, null, 2));
+  console.log(`\nWrote ${outPath}`);
   await closeDb();
 }
 

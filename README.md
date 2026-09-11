@@ -354,6 +354,19 @@ Scheduling is **in-process** (feeder has no cron/supervisor after a reboot): the
 - **`GET /api/catalog/sync-status`** → last run timestamp + the full per-run summary (per-platform poll status, added/retired/enabled/researched counts). Read-only.
 - **`POST /api/catalog/sync`** (localhost-only) → trigger a run now (background; add `?wait=1` to block and return the summary). Optional body `{ researchLimit, enableLimit, retireThreshold }` overrides the per-run caps.
 
+**Terminal shortcuts** (run from `server/`):
+
+```bash
+npm run sync       # refresh the usable-model list now: hits the RUNNING server's
+                   # /api/catalog/sync (discover → classify → enable → retire → research),
+                   # then prints the summary. Needs feeder up; won't double-run the scheduler.
+npm run discover   # read-only, ZERO tokens: GET /models on every provider key and print
+                   # each provider's model count, then dump the full id lists to
+                   # server/discovered-models.json (override path with DISCOVER_OUT=…).
+```
+
+`npm run discover` is the answer to "what does each provider actually offer right now" — it changes nothing. `npm run sync` is the answer to "make feeder's usable list current" — it's the same pipeline the daily scheduler runs. Availability in `GET /v1/models` is driven purely by `models.enabled = true`; a model needs **no** wiki/canonical entry to be routable, and the wiki's RESEARCH button only fills in summaries/scores — it never enables a model.
+
 ### Provider free-tier tips
 
 - **OpenRouter — the $10 trick for 20× the free-model quota.** OpenRouter's `:free` models are limited to **20 requests/minute** and, by default, **50 requests/day account-wide** across *all* free models combined — a cap a single busy day of routing can blow. Once the account has **purchased $10 of credits lifetime** (it's all-time *purchased*, not current balance — spending it down doesn't lose the tier), the daily free-model cap rises to **1000/day**; the 20 rpm is unchanged. Extra keys or accounts don't help (OpenRouter governs capacity globally), so the top-up is the only lever. Verify your tier from the key's own endpoints with no token spend: `GET https://openrouter.ai/api/v1/credits` (`total_credits` ≥ 10 ⇒ 1000/day) and `GET https://openrouter.ai/api/v1/auth/key` (`usage`, `limit`, `is_free_tier`). Note the key can also carry a **per-key spend limit** set in the OpenRouter dashboard — irrelevant for `:free` models (they cost $0) but it caps any *paid* OpenRouter model routed through feeder. Source: [openrouter.ai/docs/api_reference/limits](https://openrouter.ai/docs/api_reference/limits). (Feeder's account was topped up to the $10 tier on 2026-09-06.)

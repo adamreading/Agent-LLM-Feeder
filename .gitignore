@@ -26,6 +26,10 @@ tmp/
 CLAUDE.md
 TEAM-ONBOARDING.md
 
+# Provider model-list dumps from `npm run discover` (local only)
+server/discovered-models.json
+server/live-models.json
+
 # Python bytecode (scripts/ tooling)
 __pycache__/
 *.pyc
