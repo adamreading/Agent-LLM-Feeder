@@ -236,15 +236,64 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       `, [platform, liveIds]);
 
       // 3d. Soft-retire ids that have now missed the threshold consecutively.
+      //     Rows ALREADY delisted are excluded so `retired` counts NEW retirements —
+      //     it used to re-stamp every delisted row and report "156 retired" on every
+      //     run (2026-09-11), which read like a mass loss of models when nothing
+      //     routable had changed. (3c still bumps their miss counter; RETIRE_ELIGIBLE
+      //     keeps 'delisted' so a reappearance can un-retire them.)
       const retired = await run(pool, `
         UPDATE models SET enabled = false, disabled_reason = 'delisted'
         WHERE platform = ? AND last_seen_live IS NOT NULL
           AND NOT (model_id = ANY(?::text[])) AND missing_polls >= ? AND ${RETIRE_ELIGIBLE}
+          AND disabled_reason IS DISTINCT FROM 'delisted'
       `, [platform, liveIds, retireThreshold]);
       summary.retired += retired.changes;
     }
 
     log(`discovery: +${summary.added} new, ${summary.reappeared} reappeared, ${summary.retired} retired`);
+
+    // 3e. FALLBACK ROWS (2026-09-11). routeRequest's chain is fallback_config JOIN
+    //     models, and fallback_config rows were only ever created at BOOT
+    //     (db/index.ts addMissingFallbackEntries, inside the migrations) — so a
+    //     model this sync ADDED and 2c ENABLED was invisible to the router until
+    //     the next restart (measured 2026-09-11: 2 enabled by the sync, 0 in the
+    //     chain). Idempotent: only rows with no fc entry; appended after the
+    //     current max priority (ordering is score-driven anyway, see router.ts).
+    const fcAdded = await run(pool, `
+      INSERT INTO fallback_config (model_db_id, priority, enabled)
+      SELECT m.id,
+             (SELECT COALESCE(MAX(priority), 0) FROM fallback_config) + ROW_NUMBER() OVER (ORDER BY m.intelligence_rank, m.id),
+             true
+      FROM models m LEFT JOIN fallback_config f ON f.model_db_id = m.id
+      WHERE f.id IS NULL
+    `);
+    if (fcAdded.changes > 0) log(`fallback rows: +${fcAdded.changes} model(s) now visible to the router`);
+
+    // 3f. KIND RE-CLASSIFY (zero-token, 2026-09-11). classifyModelKind only ever ran
+    //     at INSERT, so a heuristic fix never reached existing rows. Google's Lyria
+    //     MUSIC models sat as kind='chat' on google + openrouter (with a 0.80
+    //     creative_writing score from research) and a Discord room got sticky-
+    //     locked to one for 7h — 147 "successful" chat completions from a music
+    //     generator (2026-09-10). Re-run the heuristic over every chat row: a flip
+    //     to non-chat sets kind (structural exclusion from the chain) and disables
+    //     the row. Conservative by construction — the heuristic flips only on clear
+    //     non-chat signals — and a row already disabled for another reason keeps it.
+    const chatRows = await all<{ id: number; model_id: string; display_name: string | null }>(pool,
+      `SELECT id, model_id, display_name FROM models WHERE kind = 'chat'`);
+    let kindFlips = 0;
+    for (const r of chatRows) {
+      const k = classifyModelKind(r.model_id, r.display_name ?? '');
+      if (k === 'chat') continue;
+      await run(pool, `
+        UPDATE models SET kind = ?, enabled = false,
+          disabled_reason = CASE WHEN enabled = true OR disabled_reason IS NULL OR disabled_reason LIKE 'pending-liveness%'
+                                 THEN ? ELSE disabled_reason END
+        WHERE id = ?
+      `, [k, `non-chat (id heuristic: ${k})`, r.id]);
+      kindFlips++;
+      log(`kind: ${r.model_id} → ${k} (was chat)`);
+    }
+    summary.reclassifiedNonChat += kindFlips;
 
     // 4. MATCH new rows to canonicals; create a wiki entry for each new CHAT
     //    model still unmatched (leaves the existing manual review queue alone —

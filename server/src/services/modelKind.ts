@@ -14,6 +14,12 @@ export function classifyModelKind(modelId: string, displayName = ''): string {
   if (/rerank/.test(s)) return 'rerank';
   if (/(^|[-/])(embed|embedding|bge|e5|gte|nomic-embed|text-embedding)|\bembed(ding)?\b/.test(s)) return 'embedding';
   if (/\btts\b|whisper|text.?to.?speech|audio-transcri|speech-to-text/.test(s)) return 'tts';
+  // Music / audio generation (Google Lyria, MusicGen, AudioGen, Suno). Added
+  // 2026-09-11: Lyria was kind='chat' on google + openrouter — OpenRouter lists
+  // it with output_modalities ["text","audio"] and pricing 0/0, so the catalog-
+  // metadata backstop (2b) passed it too — and a creative-task room got routed
+  // to a music generator 147 times.
+  if (/lyria|music-?gen|audio-?gen|\bsuno\b/.test(s)) return 'audio_gen';
   if (/imagen|image-generation|dall-?e|stable-diffusion|\bflux\b|\bveo\b|\bsora\b|text-to-image/.test(s)) return 'image_gen';
   if (/llama-?guard|prompt-?guard|omni-moderation|(^|[-/])moderation/.test(s)) return 'moderation';
   return 'chat';

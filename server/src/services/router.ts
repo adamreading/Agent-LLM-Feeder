@@ -357,6 +357,12 @@ const TAIL_EXPLORE_EVERY = 20;
 // boost. 0 disables. It still passes every capability/quota filter in the walk,
 // so it can never serve an ineligible model.
 const OR_FREE_EVERY = Number(process.env.FEEDER_OR_FREE_EVERY ?? 4);
+// Quality floor for the OR-free slot (2026-09-11). "Most overdue" alone fronted
+// 0.00–0.10-scored models (dots-3-note, ling-3.0-flash-fin) on 1 in 4 requests —
+// spread, but not what Adam asked for ("they have some GREAT models, I want them
+// used"). A candidate with a KNOWN task score below the floor is skipped; an
+// UNSCORED (new) model still gets its one exploratory shot so real data accrues.
+const OR_FREE_MIN_SCORE = Number(process.env.FEEDER_OR_FREE_MIN_SCORE ?? 0.5);
 let routeRequestCounter = 0;
 
 // Map a caller's task_class (free-form, from `auto/<task_class>`) to an lmarena
@@ -529,11 +535,24 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
   // being appended BELOW older weaker ones). fc.enabled is still honored as a
   // manual on/off; ordering is the algorithm's job (intelligence + task quality
   // + health + latency + exploration), not a hand-maintained priority list.
+  //
+  // m.enabled = true is LOAD-BEARING for exploration (fixed 2026-09-11). The walk
+  // below re-fetches each candidate WHERE enabled = true anyway, so a disabled row
+  // in the chain could never be SERVED — but every exploration mechanism (tail
+  // slot, OR-free slot, ε-greedy) filtered on `e.enabled`, which is fc.enabled
+  // (the manual flag, true on every auto-added row), NOT models.enabled. With
+  // ~1,140 disabled-never-routed rows in the chain, "most overdue" was ALWAYS a
+  // delisted/unreachable model (age = ∞, and it stays ∞ because the walk skips it
+  // before any request is logged): the slots fired on schedule and picked a dead
+  // model every single time, silently falling through to the normal top pick.
+  // Measured: 0 OR-free routes in 16 non-sticky requests; a direct harness showed
+  // the OR slot choosing a `delisted` model with 26 "candidates" of which 9 were
+  // disabled. Restricting the chain to live rows fixes all three at once.
   const fallbackChain = await all<FallbackRow>(pool, `
     SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label, m.platform, m.model_id
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
-    WHERE m.kind = 'chat'
+    WHERE m.kind = 'chat' AND m.enabled = true
     ORDER BY m.intelligence_rank ASC
   `);
 
@@ -630,7 +649,8 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
       // cliff. Skips penalized/inactive free models — promote the good, not the broken.
       const cands = sortedChain.filter(e => e.enabled
         && e.platform === 'openrouter' && e.model_id.endsWith(':free')
-        && !['penalized', 'inactive'].includes(healthMap.get(e.model_db_id)?.status ?? 'healthy'));
+        && !['penalized', 'inactive'].includes(healthMap.get(e.model_db_id)?.status ?? 'healthy')
+        && ((taskScoreMap.get(e.model_db_id) ?? Infinity) >= OR_FREE_MIN_SCORE));
       if (cands.length) {
         let pick = cands[0], pickAge = -1;
         for (const e of cands) {

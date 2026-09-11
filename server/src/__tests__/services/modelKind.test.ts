@@ -10,6 +10,8 @@ describe('classifyModelKind', () => {
     expect(classifyModelKind('whisper-large-v3')).toBe('tts');
     expect(classifyModelKind('google/imagen-3.0')).toBe('image_gen');
     expect(classifyModelKind('black-forest-labs/flux.1-schnell')).toBe('image_gen');
+    expect(classifyModelKind('google/lyria-3-pro-preview')).toBe('audio_gen');
+    expect(classifyModelKind('lyria-realtime-exp')).toBe('audio_gen');
     expect(classifyModelKind('meta/llama-guard-4-12b')).toBe('moderation');
   });
 

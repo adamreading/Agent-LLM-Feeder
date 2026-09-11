@@ -115,8 +115,17 @@ async function resolveTrustTier(req: Request): Promise<{ tier: TrustTier; author
 // explicit session_id/user field (stable across a caller's own conversation
 // tracking); fall back to a hash of the first user message when neither is
 // present (today's behavior, unchanged for callers that don't send one).
-const stickySessionMap = new Map<string, { modelDbId: number; lastUsed: number }>();
-const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min session TTL
+const stickySessionMap = new Map<string, { modelDbId: number; lastUsed: number; since: number }>();
+const STICKY_TTL_MS = 30 * 60 * 1000; // 30 min IDLE TTL (sliding — refreshed on every turn)
+// Absolute lifetime cap (Adam, 2026-09-11). The idle TTL is sliding, so a session
+// that never goes 30 min quiet never re-routes — and the sticky branch bypasses
+// EVERY spread mechanism (tail slot, OR-free slot, ε-greedy). Measured: a Discord
+// room bot with one room-wide session_id sent 558 requests in 24h to ONE model
+// (91% of all feeder traffic), welded to whatever a failover had handed it. After
+// this many ms since the session was first pinned, the next turn re-routes fresh
+// (and re-pins). Conversation quality is preserved for anything shorter than the
+// cap; env FEEDER_STICKY_MAX_AGE_MS, default 2h, 0 = no cap (old behaviour).
+const STICKY_MAX_AGE_MS = Number(process.env.FEEDER_STICKY_MAX_AGE_MS ?? 2 * 60 * 60 * 1000);
 
 function getSessionKey(messages: ChatMessage[], explicitSessionId?: string): string {
   if (explicitSessionId) return `session:${explicitSessionId}`;
@@ -139,7 +148,9 @@ function getStickyModel(messages: ChatMessage[], explicitSessionId?: string): nu
   const entry = stickySessionMap.get(key);
   if (!entry) return undefined;
 
-  if (Date.now() - entry.lastUsed > STICKY_TTL_MS) {
+  const now = Date.now();
+  if (now - entry.lastUsed > STICKY_TTL_MS
+      || (STICKY_MAX_AGE_MS > 0 && now - entry.since > STICKY_MAX_AGE_MS)) {
     stickySessionMap.delete(key);
     return undefined;
   }
@@ -149,7 +160,11 @@ function getStickyModel(messages: ChatMessage[], explicitSessionId?: string): nu
 function setStickyModel(messages: ChatMessage[], modelDbId: number, explicitSessionId?: string) {
   const key = getSessionKey(messages, explicitSessionId);
   if (!key) return;
-  stickySessionMap.set(key, { modelDbId, lastUsed: Date.now() });
+  const now = Date.now();
+  // Preserve `since` across refreshes so the absolute cap measures the pin's age,
+  // not the last turn; a fresh pin (new session, or re-pin after expiry) resets it.
+  const prev = stickySessionMap.get(key);
+  stickySessionMap.set(key, { modelDbId, lastUsed: now, since: prev && prev.modelDbId === modelDbId ? prev.since : now });
 
   // Cleanup old entries
   if (stickySessionMap.size > 500) {
