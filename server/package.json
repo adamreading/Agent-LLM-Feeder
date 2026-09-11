@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "sync": "tsx src/scripts/sync-catalog.ts",
     "discover": "tsx src/scripts/discover-models.ts",
+    "leaderboard": "tsx src/scripts/sync-leaderboard.ts",
     "research": "tsx src/scripts/run-model-research.ts",
     "seed:wiki:export": "tsx src/scripts/export-wiki-seed.ts",
     "seed:wiki:import": "tsx src/scripts/import-wiki-seed.ts"

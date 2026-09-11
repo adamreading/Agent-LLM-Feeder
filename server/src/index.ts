@@ -12,6 +12,7 @@ import { startHealthChecker, stopHealthChecker } from './services/health.js';
 import { loadSearchConfigIntoEnv } from './services/searchConfig.js';
 import { autoOnboardNewArrivals } from './services/autoOnboard.js';
 import { startCatalogSyncScheduler, stopCatalogSyncScheduler } from './services/catalogSyncScheduler.js';
+import { startLeaderboardSyncScheduler, stopLeaderboardSyncScheduler } from './services/leaderboardSyncScheduler.js';
 import type { Server } from 'http';
 
 const PORT = process.env.PORT ?? 3001;
@@ -35,6 +36,9 @@ async function main() {
     // models (research → wiki), soft-retire ones that disappeared upstream.
     // In-process daily timer (feeder has no cron/supervisor); see catalogSync.ts.
     startCatalogSyncScheduler(getPool());
+    // Weekly zero-token quality-prior import (arena.ai + Artificial Analysis);
+    // see leaderboardSync.ts. First due-check ~60s after boot.
+    startLeaderboardSyncScheduler(getPool());
   });
 
   // Drain-and-flip cutover support: stop accepting new connections, let
@@ -44,6 +48,7 @@ async function main() {
     console.log(`\n[Shutdown] ${signal} received, draining...`);
     stopHealthChecker();
     stopCatalogSyncScheduler();
+    stopLeaderboardSyncScheduler();
     server.close(async () => {
       await closeDb();
       console.log('[Shutdown] Drained and closed cleanly.');

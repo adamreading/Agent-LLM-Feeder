@@ -406,22 +406,49 @@ const REALTIME_QUALITY_BLEND = 0.4;
 // 'realtime_quality' row — nondeterministic and it discarded one signal.
 // Now: the benchmark/measured/declared rows form the PRIOR (arena leaderboard);
 // realtime_quality is real-usage evidence that blends over the prior.
+// Confidence multiplier on TASK_QUALITY_WEIGHT when the ONLY prior is the
+// web-research writer's estimate (source='research_estimate', formerly
+// mislabelled 'benchmark'). Measured 2026-09-12: those estimates correlate
+// NEGATIVELY with live success (-0.27, n=54) and put transcription/OCR models
+// at coding=1.00 — so alone they earn a quarter of the lift. A leaderboard
+// prior (leaderboard_arena / leaderboard_aa) gets full weight; real-usage
+// evidence (realtime_quality) restores most of it. 0 = ignore research entirely.
+const RESEARCH_PRIOR_CONFIDENCE = Number(process.env.FEEDER_RESEARCH_PRIOR_CONFIDENCE ?? 0.25);
+const REALTIME_ONLY_CONFIDENCE = 0.6;
+
+export interface TaskPrior {
+  score: number;        // 0..1 blended quality for the request's task_type
+  confidence: number;   // multiplier applied to TASK_QUALITY_WEIGHT (1 = full)
+  basis: 'leaderboard' | 'research' | 'realtime' | 'leaderboard+realtime' | 'research+realtime';
+}
+
 function blendTaskScores(
   rows: Array<{ model_db_id: number; score: number; source: string }>,
-): Map<number, number> {
-  const byModel = new Map<number, { prior: number | null; realtime: number | null }>();
+): Map<number, TaskPrior> {
+  const byModel = new Map<number, { leaderboard: number[]; research: number | null; realtime: number | null }>();
   for (const r of rows) {
-    const entry = byModel.get(r.model_db_id) ?? { prior: null, realtime: null };
-    if (r.source === 'realtime_quality') entry.realtime = Number(r.score);
-    else entry.prior = Number(r.score); // benchmark / measured / declared
+    const entry = byModel.get(r.model_db_id) ?? { leaderboard: [], research: null, realtime: null };
+    const s = Number(r.score);
+    if (r.source === 'realtime_quality') entry.realtime = s;
+    else if (r.source.startsWith('leaderboard')) entry.leaderboard.push(s); // arena / AA — averaged when both
+    else entry.research = s; // research_estimate (+ legacy benchmark / measured / declared)
     byModel.set(r.model_db_id, entry);
   }
-  const out = new Map<number, number>();
-  for (const [modelDbId, { prior, realtime }] of byModel) {
-    let blended: number | null = null;
-    if (prior != null && realtime != null) blended = prior * (1 - REALTIME_QUALITY_BLEND) + realtime * REALTIME_QUALITY_BLEND;
-    else blended = prior ?? realtime; // whichever exists
-    if (blended != null) out.set(modelDbId, blended);
+  const out = new Map<number, TaskPrior>();
+  for (const [modelDbId, { leaderboard, research, realtime }] of byModel) {
+    const lb = leaderboard.length ? leaderboard.reduce((a, b) => a + b, 0) / leaderboard.length : null;
+    const prior = lb ?? research;
+    let score: number | null, confidence: number, basis: TaskPrior['basis'];
+    if (prior != null && realtime != null) {
+      score = prior * (1 - REALTIME_QUALITY_BLEND) + realtime * REALTIME_QUALITY_BLEND;
+      confidence = lb != null ? 1 : Math.max(RESEARCH_PRIOR_CONFIDENCE, REALTIME_ONLY_CONFIDENCE);
+      basis = lb != null ? 'leaderboard+realtime' : 'research+realtime';
+    } else if (prior != null) {
+      score = prior; confidence = lb != null ? 1 : RESEARCH_PRIOR_CONFIDENCE; basis = lb != null ? 'leaderboard' : 'research';
+    } else if (realtime != null) {
+      score = realtime; confidence = REALTIME_ONLY_CONFIDENCE; basis = 'realtime';
+    } else continue;
+    out.set(modelDbId, { score, confidence, basis });
   }
   return out;
 }
@@ -441,6 +468,7 @@ function candidateScore(
   dataAgeMs: number | null,
   feedbackAdj: number,
   promoteFree = false,
+  priorConfidence = 1,
 ): number {
   // COMPRESSED intelligence prior: normalize the raw rank (~1..RANK_REF) into a
   // small 0..BRAINS_WEIGHT nudge so "overall smarts" tie-breaks rather than
@@ -459,7 +487,9 @@ function candidateScore(
   // (TASK_QUALITY_WEIGHT=20 >> brains/health/penalty), so the best-at-this-task
   // model leads unless it's genuinely broken right now. Applies whether or not
   // health data exists, so quality steers even a cold pool.
-  if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT * sizeQualityFactor;
+  // priorConfidence (see blendTaskScores): 1 for a leaderboard-backed prior, a
+  // fraction when the only evidence is the research writer's estimate.
+  if (taskScore != null) score -= Math.max(0, Math.min(1, taskScore)) * TASK_QUALITY_WEIGHT * sizeQualityFactor * priorConfidence;
 
   // Data-collection fairness: pull under-observed models up so we accrue live
   // data across the whole catalog. Never-seen (dataAgeMs == null) = maximal
@@ -610,10 +640,11 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     ...entry,
     effectivePriority: candidateScore(
       entry.intelligence_rank, entry.model_db_id, healthMap.get(entry.model_db_id), latencyCeilingMs,
-      taskScoreMap.get(entry.model_db_id), sizeFactor(entry.size_label),
+      taskScoreMap.get(entry.model_db_id)?.score, sizeFactor(entry.size_label),
       dataAgeMap.has(entry.model_db_id) ? dataAgeMap.get(entry.model_db_id)! : null,
       feedbackMap.get(entry.model_db_id) ?? 0,
       entry.platform === 'openrouter' && entry.model_id.endsWith(':free'),
+      taskScoreMap.get(entry.model_db_id)?.confidence ?? 1,
     ),
   })).sort((a, b) => a.effectivePriority - b.effectivePriority);
 
@@ -650,7 +681,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
       const cands = sortedChain.filter(e => e.enabled
         && e.platform === 'openrouter' && e.model_id.endsWith(':free')
         && !['penalized', 'inactive'].includes(healthMap.get(e.model_db_id)?.status ?? 'healthy')
-        && ((taskScoreMap.get(e.model_db_id) ?? Infinity) >= OR_FREE_MIN_SCORE));
+        && ((taskScoreMap.get(e.model_db_id)?.score ?? Infinity) >= OR_FREE_MIN_SCORE));
       if (cands.length) {
         let pick = cands[0], pickAge = -1;
         for (const e of cands) {
@@ -935,7 +966,9 @@ export interface RoutingExplainRow {
   modelId: string;
   displayName: string;
   intelligenceRank: number;
-  taskScore: number | null;      // 0-1 blended (benchmark prior + realtime_quality) score for the (task) type shown
+  taskScore: number | null;      // 0-1 blended (leaderboard/research prior + realtime_quality) score for the (task) type shown
+  taskPrior: TaskPrior['basis'] | null;  // what the score rests on (leaderboard = full weight; research = weak estimate)
+  taskConfidence: number | null; // multiplier applied to TASK_QUALITY_WEIGHT for this row
   penalty: number;               // live in-memory 429 penalty
   healthScore: number | null;    // 0-1
   latencyMs: number | null;      // recent median
@@ -1007,7 +1040,8 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
   const now = Date.now();
   const rows: RoutingExplainRow[] = models.map(m => {
     const health = healthMap.get(m.id);
-    const taskScore = taskScoreMap.has(m.id) ? taskScoreMap.get(m.id)! : null;
+    const prior = taskScoreMap.get(m.id);
+    const taskScore = prior?.score ?? null;
     const dataAgeMs = dataAgeMap.has(m.id) ? dataAgeMap.get(m.id)! : null;
     const keyCount = Number(m.key_count);
     // 'cooling' covers both the transient circuit-breaker cooldown and quota
@@ -1016,7 +1050,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
       (health?.cooldown_until && new Date(health.cooldown_until).getTime() > now) ||
       (health?.quota_exhausted_until && new Date(health.quota_exhausted_until).getTime() > now)
     );
-    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0, m.platform === 'openrouter' && String(m.model_id ?? '').endsWith(':free'));
+    const effectiveScore = candidateScore(m.intelligence_rank, m.id, health, undefined, taskScore ?? undefined, sizeFactor(m.size_label), dataAgeMs, feedbackMap.get(m.id) ?? 0, m.platform === 'openrouter' && String(m.model_id ?? '').endsWith(':free'), prior?.confidence ?? 1);
     const status: RoutingExplainRow['status'] =
       (!m.model_enabled || !m.fc_enabled) ? 'disabled'
         : keyCount === 0 ? 'no_key'
@@ -1024,7 +1058,7 @@ export async function explainRouting(taskClass?: string | null): Promise<{ taskT
             : 'eligible';
     return {
       modelDbId: m.id, platform: m.platform, modelId: m.model_id, displayName: m.display_name,
-      intelligenceRank: m.intelligence_rank, taskScore, penalty: getPenalty(m.id),
+      intelligenceRank: m.intelligence_rank, taskScore, taskPrior: prior?.basis ?? null, taskConfidence: prior?.confidence ?? null, penalty: getPenalty(m.id),
       healthScore: health ? Math.max(0, Math.min(1, health.health_score)) : null,
       latencyMs: health?.recent_latency_ms ?? null,
       sizeLabel: m.size_label, dataAgeMs, disabledReason: m.disabled_reason,

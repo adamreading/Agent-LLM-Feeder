@@ -40,6 +40,7 @@ export async function initDb(connectionString?: string): Promise<pg.Pool> {
   await migrateModelsV13(pool);
   await migrateModelsV14(pool);
   await migrateModelsV15(pool);
+  await migrateTaskScoreSourcesV16(pool);
   await initEncryptionKey(pool);
   await ensureUnifiedKey(pool);
   // Canonical-model matching (Adam's directive, 2026-07-08): idempotent, runs
@@ -875,6 +876,22 @@ async function migrateModelsV15(pool: pg.Pool) {
       supported = EXCLUDED.supported,
       measured_at = NOW()
   `, [modelDbId]);
+}
+
+// 2026-09-12: every task_scores row labelled source='benchmark' was in fact the
+// web-research WRITER MODEL's 0-100 guess from search snippets (modelResearch.ts
+// was the only writer of that label) — not a measured benchmark. Relabel to
+// 'research_estimate' so the router can weight it as the weak prior it is
+// (RESEARCH_PRIOR_CONFIDENCE) behind the zero-token leaderboard import
+// (leaderboardSync.ts, sources 'leaderboard_arena' / 'leaderboard_aa').
+// Idempotent; guarded against the (canonical, task, source) unique key.
+async function migrateTaskScoreSourcesV16(pool: pg.Pool) {
+  await run(pool, `
+    UPDATE task_scores t SET source = 'research_estimate'
+    WHERE t.source = 'benchmark'
+      AND NOT EXISTS (SELECT 1 FROM task_scores x WHERE x.canonical_model_id = t.canonical_model_id
+                        AND x.task_type = t.task_type AND x.source = 'research_estimate')
+  `);
 }
 
 async function ensureUnifiedKey(pool: pg.Pool) {

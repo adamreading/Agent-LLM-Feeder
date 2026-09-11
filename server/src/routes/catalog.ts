@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { getPool } from '../db/index.js';
 import { runCatalogSync, getLastSyncStatus } from '../services/catalogSync.js';
+import { runLeaderboardSync, getLastLeaderboardStatus } from '../services/leaderboardSync.js';
 
 // Catalog-sync control surface. GET status is public (read-only, no secrets);
 // POST trigger is LOCALHOST-ONLY (the operator's own machine) — it spends tokens
@@ -40,4 +41,23 @@ catalogRouter.post('/sync', async (req, res) => {
   }
   void runCatalogSync(getPool(), opts);
   res.status(202).json({ started: true, message: 'catalog sync started — poll GET /api/catalog/sync-status for the result' });
+});
+
+// Leaderboard import (zero-token quality priors — arena.ai + Artificial Analysis).
+// GET status is public; POST is localhost-only like /sync (it mutates task_scores).
+catalogRouter.get('/leaderboard-status', async (_req, res) => {
+  res.json(await getLastLeaderboardStatus(getPool()));
+});
+
+catalogRouter.post('/leaderboard', async (req, res) => {
+  if (!isLocalReq(req)) {
+    res.status(403).json({ error: { message: 'POST /api/catalog/leaderboard is localhost-only', type: 'forbidden' } });
+    return;
+  }
+  if (req.query.wait === '1' || req.query.wait === 'true') {
+    res.json(await runLeaderboardSync(getPool()));
+    return;
+  }
+  void runLeaderboardSync(getPool());
+  res.status(202).json({ started: true, message: 'leaderboard import started — poll GET /api/catalog/leaderboard-status for the result' });
 });

@@ -147,8 +147,12 @@ export async function recordResearch(pool: pg.Pool, canonicalId: number, res: Re
   if (res.summary) {
     await run(pool, `UPDATE canonical_models SET summary = ?, updated_at = now() WHERE id = ?`, [res.summary, canonicalId])
   }
+  // source='research_estimate' (was 'benchmark' until 2026-09-12): these are the
+  // writer model's 0-100 guesses from search snippets, NOT measured benchmarks.
+  // The router now treats them as a WEAK fallback prior (RESEARCH_PRIOR_CONFIDENCE)
+  // behind the zero-token leaderboard import (services/leaderboardSync.ts).
   for (const [taskType, score] of Object.entries(res.tasks)) {
-    await recordTaskScore(pool, canonicalId, { taskType, score: score / 100, source: 'benchmark', evidence })
+    await recordTaskScore(pool, canonicalId, { taskType, score: score / 100, source: 'research_estimate', evidence })
   }
   // Modality flags: web-DECLARED capability discovery (Adam's "fast vision
   // discovery without burning tokens"). Only overwrite a column when research

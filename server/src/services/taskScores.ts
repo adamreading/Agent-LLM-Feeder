@@ -24,7 +24,10 @@ export interface TaskScoreInput {
   taskType: string;
   score: number; // 0-1 normalized within the category
   rank?: number | null;
-  source?: 'benchmark' | 'measured' | 'declared';
+  // 'leaderboard_arena' / 'leaderboard_aa' = zero-token external leaderboards (leaderboardSync.ts, full routing weight);
+  // 'research_estimate' = the web-research writer's guess (weak prior); 'benchmark' is the legacy label for the same
+  // (relabelled at boot by migrateTaskScoreSourcesV16); 'measured' / 'declared' as before; realtime_quality is written by modelPerf.
+  source?: 'benchmark' | 'measured' | 'declared' | 'research_estimate' | 'leaderboard_arena' | 'leaderboard_aa';
   evidence?: string | null;
 }
 
