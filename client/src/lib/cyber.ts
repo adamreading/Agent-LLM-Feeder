@@ -229,6 +229,34 @@ export const scoreBasis = (m: CanonModel, taskType = 'overall'): ScoreBasis | nu
   return null
 }
 
+// Confidence in a task's blended score, mirroring the server router
+// (FEEDER_RESEARCH_PRIOR_CONFIDENCE): a real leaderboard is trusted fully, the
+// web-research estimate a quarter, realtime-only in between. Used to RANK the
+// wiki so a leaderboard-80 model sits above an estimate-93 one (the bar still
+// shows the raw score, badged ≈EST).
+const RESEARCH_PRIOR_CONFIDENCE = 0.25
+const REALTIME_ONLY_CONFIDENCE = 0.6
+export const scoreConfidence = (m: CanonModel, taskType = 'overall'): number => {
+  let rows = m.taskScores.filter(s => s.task_type === taskType)
+  if (!rows.length) rows = m.taskScores
+  if (rows.some(s => s.source.startsWith('leaderboard'))) return 1
+  if (rows.some(s => s.source === 'research_estimate' || s.source === 'benchmark')) return RESEARCH_PRIOR_CONFIDENCE
+  if (rows.some(s => s.source === 'realtime_quality')) return REALTIME_ONLY_CONFIDENCE
+  return 1
+}
+// The wiki ordering key: display rating × how much we trust its source. Null
+// (no scores) sorts last. This is what stops an inflated research estimate
+// outranking a real leaderboard score.
+export const wikiSortScore = (m: CanonModel): number | null => {
+  const rs = researchScore(m)
+  return rs == null ? null : rs * scoreConfidence(m)
+}
+// LMArena overall leaderboard position, when this model matched the board.
+export const arenaRank = (m: CanonModel): number | null => {
+  const r = m.taskScores.find(s => s.task_type === 'overall' && s.source === 'leaderboard_arena')?.rank
+  return r ?? null
+}
+
 // True when real-usage quality has started reshaping this model's rating — the
 // wiki badges it so a reader sees the score is live-evolving, not just arena.
 export const hasRealtimeQuality = (m: CanonModel): boolean =>

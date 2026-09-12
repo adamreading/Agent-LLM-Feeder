@@ -5,7 +5,7 @@ import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, makerFromName, prettyCtx,
   bestIntel, maxCtx, wikiCaps, hasModality, researchScore, hasRealtimeQuality,
-  scoreBasis, bestParams, prettyParams,
+  scoreBasis, bestParams, prettyParams, wikiSortScore, arenaRank,
 } from '@/lib/cyber'
 
 const FILTERS = [
@@ -102,8 +102,10 @@ export default function ModelWikiPage() {
     // Dynamic, research-driven order: models with research scores rank first
     // (highest score = top), un-researched fall to the bottom ordered by the
     // static intelligence_rank as a fallback tiebreak.
+    // Confidence-weighted: a real leaderboard score outranks an inflated research
+    // estimate (the raw score still shows on the card, badged ≈EST).
     let list = [...models].sort((a, b) => {
-      const ra = researchScore(a), rb = researchScore(b)
+      const ra = wikiSortScore(a), rb = wikiSortScore(b)
       if (ra != null && rb != null) return rb - ra
       if (ra != null) return -1
       if (rb != null) return 1
@@ -163,7 +165,7 @@ export default function ModelWikiPage() {
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(350px,1fr))', gap: 14 }}>
           {filtered.map(m => {
-            const intel = bestIntel(m)
+            const rank = arenaRank(m)
             const caps = wikiCaps(m).slice(0, 6)
             const research = researchScore(m)          // overall, else task mean
             const basis = scoreBasis(m)                // leaderboard | estimate | realtime | null
@@ -183,10 +185,12 @@ export default function ModelWikiPage() {
                       {makerFromName(m.name).toUpperCase()} · {params != null ? prettyParams(params) : (m.instances[0]?.size_label || '—').toUpperCase()} · CTX {prettyCtx(maxCtx(m))}
                     </div>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ ...label, fontSize: 10, color: 'var(--dim)' }}>INTEL</div>
-                    <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--acc2)', textShadow: '0 0 10px var(--acc2)' }}>{intel != null ? `#${intel}` : '—'}</div>
-                  </div>
+                  {rank != null && (
+                    <div style={{ textAlign: 'right' }} title="LMArena overall leaderboard position">
+                      <div style={{ ...label, fontSize: 10, color: 'var(--dim)' }}>ARENA</div>
+                      <div style={{ fontWeight: 700, fontSize: 18, color: 'var(--acc2)', textShadow: '0 0 10px var(--acc2)' }}>#{rank}</div>
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', minHeight: 18 }}>

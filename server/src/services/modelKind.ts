@@ -13,14 +13,22 @@ export function classifyModelKind(modelId: string, displayName = ''): string {
   if (/gliner|\bpii\b|entity.?extract(ion|or)?|\bner\b/.test(s)) return 'ner';
   if (/rerank/.test(s)) return 'rerank';
   if (/(^|[-/])(embed|embedding|bge|e5|gte|nomic-embed|text-embedding)|\bembed(ding)?\b/.test(s)) return 'embedding';
-  if (/\btts\b|whisper|text.?to.?speech|audio-transcri|speech-to-text/.test(s)) return 'tts';
+  // OCR (document → text): a specialty endpoint, not chat. Mistral OCR etc.
+  if (/\bocr\b/.test(s)) return 'ocr';
+  // TTS (text → speech) BEFORE stt so a "tts" id wins.
+  if (/\btts\b|text.?to.?speech|-tts(\b|-)/.test(s)) return 'tts';
+  // STT / voice (speech → text, or realtime voice): whisper/transcribe/native-audio.
+  // Split out from tts 2026-09-12 (whisper is transcription, not synthesis) and
+  // widened to catch the transcribe/native-audio models that were leaking into
+  // chat routing + the wiki (gemini-*-transcribe, cohere-transcribe, *-native-audio).
+  if (/whisper|transcrib|speech.?to.?text|\bstt\b|native-audio|dictation/.test(s)) return 'stt';
   // Music / audio generation (Google Lyria, MusicGen, AudioGen, Suno). Added
-  // 2026-09-11: Lyria was kind='chat' on google + openrouter — OpenRouter lists
-  // it with output_modalities ["text","audio"] and pricing 0/0, so the catalog-
-  // metadata backstop (2b) passed it too — and a creative-task room got routed
-  // to a music generator 147 times.
+  // 2026-09-11 after Lyria (music) was routed to for 147 creative chat calls.
   if (/lyria|music-?gen|audio-?gen|\bsuno\b/.test(s)) return 'audio_gen';
-  if (/imagen|image-generation|dall-?e|stable-diffusion|\bflux\b|\bveo\b|\bsora\b|text-to-image/.test(s)) return 'image_gen';
+  // Image generation. The "-image" family (gemini-*-image, gpt-image, firefly,
+  // nano-banana) OUTPUTS images — added 2026-09-12; the old list missed the
+  // "-image" suffix so ~9 gemini image models sat enabled as chat.
+  if (/imagen|image-generation|(^|[-/])image(\b|-)|[-/]image$|flash-image|pro-image|lite-image|firefly|nano-banana|gpt-image|dall-?e|stable-diffusion|\bsdxl\b|\bflux\b|\bveo\b|\bsora\b|text-to-image/.test(s)) return 'image_gen';
   if (/llama-?guard|prompt-?guard|omni-moderation|(^|[-/])moderation/.test(s)) return 'moderation';
   return 'chat';
 }
