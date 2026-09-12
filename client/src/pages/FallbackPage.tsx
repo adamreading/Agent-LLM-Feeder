@@ -8,6 +8,8 @@ const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 interface ExplainRow {
   modelDbId: number; platform: string; modelId: string; displayName: string
   intelligenceRank: number; taskScore: number | null; penalty: number
+  taskPrior: 'leaderboard' | 'research' | 'realtime' | 'leaderboard+realtime' | 'research+realtime' | null
+  taskConfidence: number | null
   healthScore: number | null; latencyMs: number | null; effectiveScore: number
   keyCount: number; cooling: boolean; costTier: string
   disabledReason: string | null
@@ -99,7 +101,8 @@ function TokenUsageBar({ data }: { data: TokenUsageData }) {
 function Breakdown({ r }: { r: ExplainRow }) {
   const brains = Math.min(Math.max(r.intelligenceRank, 1), RANK_REF) / RANK_REF * BRAINS_WEIGHT
   const sf = sizeFactorOf(r.sizeLabel)
-  const taskLift = r.taskScore != null ? Math.max(0, Math.min(1, r.taskScore)) * TASK_WEIGHT * sf : 0
+  const conf = r.taskConfidence ?? 1
+  const taskLift = r.taskScore != null ? Math.max(0, Math.min(1, r.taskScore)) * TASK_WEIGHT * sf * conf : 0
   const healthPen = r.healthScore != null ? (1 - r.healthScore) * HEALTH_WEIGHT : 0
   const latPen = r.latencyMs != null ? Math.min(r.latencyMs / LAT_DIV, LAT_CAP) : 0
   const staleFrac = r.dataAgeMs == null ? 1 : Math.min(1, r.dataAgeMs / COVERAGE_FULL_AGE_MS)
@@ -112,7 +115,7 @@ function Breakdown({ r }: { r: ExplainRow }) {
   return (
     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '8px 14px 12px 46px', background: 'var(--bg2)', borderBottom: '1px solid var(--line)' }}>
       {part(`brains (#${r.intelligenceRank})`, brains, '+')}
-      {r.taskScore != null && part(`task ${Math.round(r.taskScore * 100)} × size ${sf.toFixed(2)}`, taskLift, '−')}
+      {r.taskScore != null && part(`task ${Math.round(r.taskScore * 100)} × size ${sf.toFixed(2)}${conf !== 1 ? ` × ${conf.toFixed(2)} (${r.taskPrior === 'research' ? 'est' : r.taskPrior ?? 'est'})` : ''}`, taskLift, '−')}
       {part(r.dataAgeMs == null ? 'coverage (never used)' : 'coverage', coverage, '−')}
       {r.healthScore != null && part(`health (${Math.round(r.healthScore * 100)}%)`, healthPen, '+')}
       {r.latencyMs != null && part(`latency (${r.latencyMs}ms)`, latPen, '+')}

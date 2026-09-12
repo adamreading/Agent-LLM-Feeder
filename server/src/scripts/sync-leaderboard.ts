@@ -25,6 +25,7 @@ async function main() {
   if (s?.note) console.log(`note: ${s.note}\n`);
   console.log(`LMArena (arena.ai):        ${s.arena.pages}/8 pages, ${s.arena.ratings} ratings → ${s.arena.written} scores over ${s.arena.matchedCanonicals} models${s.arena.err ? '  ERR: ' + s.arena.err : ''}`);
   console.log(`Artificial Analysis:       ${s.aa.skipped ? 'skipped — ' + s.aa.skipped : `${s.aa.models} models → ${s.aa.written} scores over ${s.aa.matchedCanonicals} models`}${s.aa.err ? '  ERR: ' + s.aa.err : ''}`);
+  if (s.params) console.log(`Params backfill:           +${s.params.fromName} from name, +${s.params.fromHf} from HF (${s.params.hfTried} looked up), ${s.params.stillMissing} still missing${s.params.err ? '  ERR: ' + s.params.err : ''}`);
   if (s.unmatchedSample?.length) console.log(`Unmatched board names (sample): ${s.unmatchedSample.join(', ')}`);
   console.log(`\nDone (${s.startedAt} → ${s.finishedAt}). Routing uses these as the quality prior; research-estimate scores now count at reduced confidence.`);
 }

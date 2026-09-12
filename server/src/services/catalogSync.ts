@@ -5,6 +5,7 @@ import { classifyModelKind } from './modelKind.js';
 import { matchModels, createCanonicalFromModel } from './modelCanon.js';
 import { livenessEnablePending } from './livenessEnable.js';
 import { researchMissingCanonicals } from './modelResearch.js';
+import { parseParamsB } from './paramsBackfill.js';
 
 // Daily catalog sync (Adam, 2026-07-17): the automated equivalent of manually
 // running discover-models.ts + hand-writing a catalog migration. Once a day it
@@ -130,12 +131,16 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       for (const modelId of liveIds) {
         if (existingSet.has(modelId)) continue;
         const name = titleCase(modelId);
+        // params_b from the size token in the id when present (zero-token, deterministic);
+        // the weekly leaderboard run's HF sweep fills the tokenless ones. Feeds sizeFactor
+        // + the big100 band so a newly-listed large model is correctly sized same-day.
+        const paramsB = parseParamsB(modelId, name);
         const row = await get<{ id: number }>(pool, `
-          INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, cost_tier, disabled_reason, match_status, kind, last_seen_live, missing_polls)
-          VALUES (?, ?, ?, 500, 500, false, 'free', 'pending-liveness (daily-sync)', 'unmatched', ?, now(), 0)
+          INSERT INTO models (platform, model_id, display_name, intelligence_rank, speed_rank, enabled, cost_tier, disabled_reason, match_status, kind, params_b, last_seen_live, missing_polls)
+          VALUES (?, ?, ?, 500, 500, false, 'free', 'pending-liveness (daily-sync)', 'unmatched', ?, ?, now(), 0)
           ON CONFLICT (platform, model_id) DO NOTHING
           RETURNING id
-        `, [platform, modelId, name, classifyModelKind(modelId, name)]);
+        `, [platform, modelId, name, classifyModelKind(modelId, name), paramsB]);
         if (row?.id) { newlyAddedIds.push(row.id); summary.added++; }
       }
 

@@ -31,12 +31,13 @@ canonRouter.get('/', async (_req, res) => {
     const instances = await all<{
       id: number; platform: string; model_id: string; display_name: string; enabled: boolean;
       disabled_reason: string | null; context_window: number | null; size_label: string; cost_tier: string;
+      params_b: number | null;
       intelligence_rank: number; speed_rank: number;
       rpm_limit: number | null; rpd_limit: number | null; tpm_limit: number | null; monthly_token_budget: string;
       recent_latency_ms: number | null; health_score: number | null; health_status: string | null;
     }>(pool, `
       SELECT m.id, m.platform, m.model_id, m.display_name, m.enabled, m.disabled_reason,
-             m.context_window, m.size_label, m.cost_tier,
+             m.context_window, m.size_label, m.cost_tier, m.params_b,
              m.intelligence_rank, m.speed_rank,
              m.rpm_limit, m.rpd_limit, m.tpm_limit, m.monthly_token_budget,
              h.recent_latency_ms, h.health_score, h.status AS health_status

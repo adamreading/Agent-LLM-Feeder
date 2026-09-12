@@ -2,6 +2,7 @@ import type pg from 'pg';
 import { all, get, run } from '../db/pgCompat.js';
 import { normalizeModelId } from './modelCanon.js';
 import { recordTaskScore } from './taskScores.js';
+import { backfillParams, type ParamsBackfillSummary } from './paramsBackfill.js';
 
 // ZERO-TOKEN external quality priors for routing (Adam, 2026-09-12: "find an
 // efficient, free way … avoid blowing all the free tokens on researching every
@@ -47,6 +48,7 @@ export interface LeaderboardSyncSummary {
   finishedAt: string;
   arena: { pages: number; ratings: number; matchedCanonicals: number; written: number; err?: string };
   aa: { models: number; matchedCanonicals: number; written: number; skipped?: string; err?: string };
+  params: ParamsBackfillSummary & { err?: string };
   unmatchedSample: string[];   // board names that matched nothing (first 25) — for alias tuning
   note?: string;
 }
@@ -195,6 +197,7 @@ export async function runLeaderboardSync(pool: pg.Pool, opts: { log?: (m: string
     startedAt, finishedAt: startedAt,
     arena: { pages: 0, ratings: 0, matchedCanonicals: 0, written: 0 },
     aa: { models: 0, matchedCanonicals: 0, written: 0 },
+    params: { fromName: 0, fromHf: 0, hfTried: 0, stillMissing: 0 },
     unmatchedSample: [],
   };
   if (running) { summary.note = 'already running — skipped'; return summary; }
@@ -280,6 +283,14 @@ export async function runLeaderboardSync(pool: pg.Pool, opts: { log?: (m: string
         log(`aa: ${rows.length} models, ${matchedAa.size} matched canonicals, ${summary.aa.written} scores`);
       } catch (e: any) { summary.aa.err = e?.message ?? String(e); log(`aa: ${summary.aa.err}`); }
     }
+
+    // ── 3. Params backfill (zero model-token: id-token parse + bounded HF) ────
+    // enabledOnly: the bounded HF budget targets ROUTABLE models (enabled chat),
+    // not the ~1,000 delisted/non-chat rows that would otherwise soak it up. The
+    // free id-token parse still runs over everything.
+    try {
+      summary.params = { ...await backfillParams(pool, { hfLimit: Number(process.env.FEEDER_PARAMS_HF_LIMIT ?? 60), enabledOnly: true, log: (m) => log(m) }) };
+    } catch (e: any) { summary.params.err = e?.message ?? String(e); log(`params: ${summary.params.err}`); }
 
     summary.unmatchedSample = [...unmatched].slice(0, 25);
     summary.finishedAt = new Date().toISOString();

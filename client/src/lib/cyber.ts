@@ -107,6 +107,7 @@ export interface CanonInstance {
   context_window: number | null
   size_label: string
   cost_tier: string
+  params_b: number | null
   intelligence_rank: number
   speed_rank: number
   rpm_limit: number | null
@@ -198,21 +199,47 @@ export const canonSizeFactor = (m: CanonModel): number =>
 // the same evolving number routing uses.
 const REALTIME_QUALITY_BLEND = 0.4
 
-// Blend the benchmark prior + realtime_quality for one task_type (mirrors
-// blendTaskScores on the server). Returns null if neither source has a row.
+// Blend priors + realtime_quality for one task_type (mirrors blendTaskScores on
+// the server, 2026-09-12): a LEADERBOARD prior (arena/AA, averaged) wins over the
+// web-research ESTIMATE; realtime_quality blends over whichever exists. Returns
+// null if nothing has a row.
 export const blendedTaskScore = (m: CanonModel, taskType: string): number | null => {
   const rows = m.taskScores.filter(s => s.task_type === taskType)
   if (!rows.length) return null
-  const realtime = rows.find(s => s.source === 'realtime_quality')?.score
-  const prior = rows.find(s => s.source !== 'realtime_quality')?.score
+  const lbs = rows.filter(s => s.source.startsWith('leaderboard')).map(s => s.score)
+  const lb = lbs.length ? lbs.reduce((a, b) => a + b, 0) / lbs.length : null
+  const research = rows.find(s => s.source === 'research_estimate' || s.source === 'benchmark')?.score ?? null
+  const realtime = rows.find(s => s.source === 'realtime_quality')?.score ?? null
+  const prior = lb ?? research
   if (prior != null && realtime != null) return prior * (1 - REALTIME_QUALITY_BLEND) + realtime * REALTIME_QUALITY_BLEND
   return prior ?? realtime ?? null
+}
+
+// What a model's displayed rating rests on, for the provenance badge: a real
+// LEADERBOARD (arena/AA, full routing weight) vs the web-research ESTIMATE
+// (quarter weight) vs REALTIME real-usage only. null = no scores.
+export type ScoreBasis = 'leaderboard' | 'estimate' | 'realtime'
+export const scoreBasis = (m: CanonModel, taskType = 'overall'): ScoreBasis | null => {
+  let rows = m.taskScores.filter(s => s.task_type === taskType)
+  if (!rows.length) rows = m.taskScores // fall back to any task if 'overall' absent
+  if (!rows.length) return null
+  if (rows.some(s => s.source.startsWith('leaderboard'))) return 'leaderboard'
+  if (rows.some(s => s.source === 'research_estimate' || s.source === 'benchmark')) return 'estimate'
+  if (rows.some(s => s.source === 'realtime_quality')) return 'realtime'
+  return null
 }
 
 // True when real-usage quality has started reshaping this model's rating — the
 // wiki badges it so a reader sees the score is live-evolving, not just arena.
 export const hasRealtimeQuality = (m: CanonModel): boolean =>
   m.taskScores.some(s => s.source === 'realtime_quality')
+
+// Largest known param count (billions) across a model's instances, or null.
+export const bestParams = (m: CanonModel): number | null => {
+  const ps = m.instances.map(i => i.params_b).filter((n): n is number => n != null && n > 0)
+  return ps.length ? Math.max(...ps) : null
+}
+export const prettyParams = (b: number | null): string => b == null ? '' : b >= 1000 ? `${(b / 1000).toFixed(b % 1000 === 0 ? 0 : 1)}T` : `${b}B`
 
 // Research-driven ranking score (0-1). Prefer the true arena 'overall' ELO
 // (blended with real-usage quality); otherwise the mean of the per-task

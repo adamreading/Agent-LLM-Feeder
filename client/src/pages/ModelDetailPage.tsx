@@ -4,7 +4,10 @@ import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, TASK_LABELS, makerFromName, prettyCtx, prettyLatency,
   latencyColor, bestIntel, bestSpeed, maxCtx, fastestLatency,
+  blendedTaskScore, scoreBasis, bestParams, prettyParams,
 } from '@/lib/cyber'
+
+const BASIS_LABEL: Record<string, string> = { leaderboard: 'LMARENA / AA', estimate: 'RESEARCH EST', realtime: 'REAL USE' }
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
 
@@ -44,6 +47,7 @@ export default function ModelDetailPage() {
   }
 
   const stats = [
+    ...(bestParams(m) != null ? [{ k: 'PARAMS', v: prettyParams(bestParams(m)) }] : []),
     { k: 'INTEL RANK', v: bestIntel(m) != null ? `#${bestIntel(m)}` : '—' },
     { k: 'SPEED RANK', v: bestSpeed(m) != null ? `#${bestSpeed(m)}` : '—' },
     { k: 'CONTEXT', v: prettyCtx(maxCtx(m)) },
@@ -62,7 +66,13 @@ export default function ModelDetailPage() {
     .map(c => c.capability)
     .filter(c => !c.startsWith('best_use_') && c !== 'reachable' && !BASE_MATRIX_CAPS.includes(c))
   const matrixCaps = [...BASE_MATRIX_CAPS, ...[...new Set(extraCaps)]]
-  const tasks = m.taskScores.filter(s => s.task_type !== 'overall')
+  // One blended row per task_type (a task can now carry arena + AA + research +
+  // realtime rows; render the blended value, not one row per source).
+  const taskTypes = [...new Set(m.taskScores.filter(s => s.task_type !== 'overall').map(s => s.task_type))]
+  const tasks = taskTypes
+    .map(t => ({ task_type: t, score: blendedTaskScore(m, t), basis: scoreBasis(m, t) }))
+    .filter((t): t is { task_type: string; score: number; basis: ReturnType<typeof scoreBasis> } => t.score != null)
+    .sort((a, b) => b.score - a.score)
 
   return (
     <main style={{ maxWidth: 1180, margin: '0 auto', padding: '28px 28px 80px', animation: 'flickin .35s ease' }}>
@@ -107,11 +117,11 @@ export default function ModelDetailPage() {
           </div>
 
           <div style={{ marginTop: 16, fontWeight: 700, fontSize: 14, letterSpacing: 2, marginBottom: 10 }}>
-            TASK SCORES <span style={{ ...mono, fontSize: 9, color: 'var(--dim)', fontWeight: 400 }}>SRC: LMARENA</span>
+            TASK SCORES <span style={{ ...mono, fontSize: 9, color: 'var(--dim)', fontWeight: 400 }}>SRC: {BASIS_LABEL[scoreBasis(m) ?? ''] ?? 'PENDING'}</span>
           </div>
           {tasks.length === 0 ? (
             <div style={{ border: '1px dashed var(--line)', padding: 14, ...mono, fontSize: 10.5, color: 'var(--dim)', lineHeight: 1.6 }}>
-              ▸ PROBE PENDING — per-task arena scores populate once the weekly lmarena ingest runs.
+              ▸ PENDING — per-task scores populate once the weekly leaderboard ingest (LMArena / Artificial Analysis) matches this model.
             </div>
           ) : tasks.map(t => {
             const pct = Math.round(t.score * 100)
@@ -122,6 +132,7 @@ export default function ModelDetailPage() {
                 <div style={{ flex: 1, height: 8, background: 'var(--bg2)', border: '1px solid var(--line)' }}>
                   <div style={{ height: '100%', width: `${pct}%`, background: barColor, boxShadow: `0 0 6px ${barColor}` }} />
                 </div>
+                {t.basis === 'estimate' && <span title="Web-research estimate — a weak prior until a leaderboard covers this task" style={{ ...mono, fontSize: 8, color: 'var(--warn, #e0a030)', fontWeight: 700 }}>≈</span>}
                 <span style={{ width: 34, textAlign: 'right', ...mono, fontSize: 10, color: 'var(--ink)' }}>{pct}</span>
               </div>
             )

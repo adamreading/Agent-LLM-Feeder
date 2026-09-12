@@ -4,7 +4,8 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/api'
 import {
   type CanonModel, capLabel, makerFromName, prettyCtx,
-  bestIntel, maxCtx, wikiCaps, hasModality, overallScore, researchScore, hasRealtimeQuality,
+  bestIntel, maxCtx, wikiCaps, hasModality, researchScore, hasRealtimeQuality,
+  scoreBasis, bestParams, prettyParams,
 } from '@/lib/cyber'
 
 const FILTERS = [
@@ -164,9 +165,10 @@ export default function ModelWikiPage() {
           {filtered.map(m => {
             const intel = bestIntel(m)
             const caps = wikiCaps(m).slice(0, 6)
-            const overall = overallScore(m)
             const research = researchScore(m)          // overall, else task mean
-            const barLabel = overall != null ? 'ARENA SCORE' : (research != null ? 'RESEARCH SCORE' : 'ARENA SCORE')
+            const basis = scoreBasis(m)                // leaderboard | estimate | realtime | null
+            const barLabel = basis === 'leaderboard' ? 'LEADERBOARD' : basis === 'estimate' ? 'ESTIMATE' : basis === 'realtime' ? 'LIVE RATING' : 'SCORE'
+            const params = bestParams(m)
             const platforms = [...new Set(m.instances.map(i => i.platform))]
             const hostLine = `${m.instances.length} FREE HOST${m.instances.length === 1 ? '' : 'S'} · ${platforms.slice(0, 3).map(p => p.toUpperCase()).join(' / ')}`
             return (
@@ -178,7 +180,7 @@ export default function ModelWikiPage() {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 17, letterSpacing: '.5px' }}>{m.name.toUpperCase()}</div>
                     <div style={{ ...label, fontSize: 10, color: 'var(--dim)', letterSpacing: '.5px', marginTop: 2 }}>
-                      {makerFromName(m.name).toUpperCase()} · {(m.instances[0]?.size_label ?? '—').toUpperCase()} · CTX {prettyCtx(maxCtx(m))}
+                      {makerFromName(m.name).toUpperCase()} · {params != null ? prettyParams(params) : (m.instances[0]?.size_label || '—').toUpperCase()} · CTX {prettyCtx(maxCtx(m))}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>
@@ -198,7 +200,7 @@ export default function ModelWikiPage() {
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', ...label, fontSize: 9.5, color: 'var(--dim)', marginBottom: 4 }}>
-                    <span>{barLabel}{hasRealtimeQuality(m) && <span title="Rating is evolving from real-usage quality" style={{ marginLeft: 6, color: 'var(--acc2)', fontSize: 8.5, fontWeight: 700 }}>◆ LIVE</span>}</span>
+                    <span title={basis === 'leaderboard' ? 'From an external leaderboard (LMArena / Artificial Analysis) — full routing weight' : basis === 'estimate' ? 'Web-research estimate only — a weak prior (quarter routing weight) until a leaderboard covers it' : basis === 'realtime' ? 'From real-usage quality only' : ''}>{barLabel}{basis === 'estimate' && <span style={{ marginLeft: 6, color: 'var(--warn, #e0a030)', fontSize: 8.5, fontWeight: 700 }}>≈ EST</span>}{hasRealtimeQuality(m) && <span title="Rating is evolving from real-usage quality" style={{ marginLeft: 6, color: 'var(--acc2)', fontSize: 8.5, fontWeight: 700 }}>◆ LIVE</span>}</span>
                     <span style={{ color: 'var(--ink)' }}>{research != null ? Math.round(research * 100) : 'PENDING'}</span>
                   </div>
                   <div style={{ height: 6, background: 'var(--bg2)', border: '1px solid var(--line)' }}>
