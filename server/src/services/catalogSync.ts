@@ -90,6 +90,12 @@ const PRICING_UNRELIABLE = new Set<string>(['gmi']);
 // A free model of such a kind on such a platform is enabled and routable via
 // that modality's endpoint ONLY (never chat). image_gen on cloudflare is first
 // (2026-09-12). Add a platform here only once its adapter is implemented.
+// NB Google is deliberately NOT here even though a generateImage adapter exists
+// (providers/google.ts): measured 2026-09-12 that Google AI Studio's image
+// models carry `generate_content_free_tier_requests limit: 0` (429 forever on a
+// free key) and Imagen 404s on the free API — i.e. Google image gen is not free,
+// so enabling it would violate the free-only rule and never work. Add 'google'
+// here only if Adam puts a billed Google key in and wants paid image gen.
 const SPECIALIST_ADAPTERS: Record<string, string[]> = { image_gen: ['cloudflare'] };
 
 let running = false;
@@ -286,24 +292,27 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     //     MUSIC models sat as kind='chat' on google + openrouter (with a 0.80
     //     creative_writing score from research) and a Discord room got sticky-
     //     locked to one for 7h — 147 "successful" chat completions from a music
-    //     generator (2026-09-10). Re-run the heuristic over every chat row: a flip
-    //     to non-chat sets kind (structural exclusion from the chain) and disables
-    //     the row. Conservative by construction — the heuristic flips only on clear
-    //     non-chat signals — and a row already disabled for another reason keeps it.
-    const chatRows = await all<{ id: number; model_id: string; display_name: string | null }>(pool,
-      `SELECT id, model_id, display_name FROM models WHERE kind = 'chat'`);
+    //     generator (2026-09-10). Re-run the heuristic over EVERY row (2026-09-12:
+    //     was chat-only, so a heuristic change couldn't re-sort an existing
+    //     non-chat row — e.g. sd-v1.5-inpainting stayed image_gen and broke the
+    //     text-to-image pool). A row is flipped when the heuristic now returns a
+    //     DIFFERENT non-chat kind (never auto-promoted to chat — chat is the
+    //     default and promoting could wrongly route a specialist to chat), and
+    //     disabled with a reason. Conservative: flips only on clear non-chat signals.
+    const allRowsForKind = await all<{ id: number; model_id: string; display_name: string | null; kind: string }>(pool,
+      `SELECT id, model_id, display_name, kind FROM models`);
     let kindFlips = 0;
-    for (const r of chatRows) {
+    for (const r of allRowsForKind) {
       const k = classifyModelKind(r.model_id, r.display_name ?? '');
-      if (k === 'chat') continue;
+      if (k === 'chat' || k === r.kind) continue;
       await run(pool, `
         UPDATE models SET kind = ?, enabled = false,
-          disabled_reason = CASE WHEN enabled = true OR disabled_reason IS NULL OR disabled_reason LIKE 'pending-liveness%'
+          disabled_reason = CASE WHEN enabled = true OR disabled_reason IS NULL OR disabled_reason LIKE 'pending-liveness%' OR disabled_reason LIKE 'non-chat%'
                                  THEN ? ELSE disabled_reason END
         WHERE id = ?
       `, [k, `non-chat (id heuristic: ${k})`, r.id]);
       kindFlips++;
-      log(`kind: ${r.model_id} → ${k} (was chat)`);
+      log(`kind: ${r.model_id} → ${k} (was ${r.kind})`);
     }
     summary.reclassifiedNonChat += kindFlips;
 
@@ -315,10 +324,16 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
     //     method). Skips paid/no-key/manual rows (their reason isn't non-chat/
     //     pending). Needs a fallback_config row (3e created any missing ones).
     for (const [k, plats] of Object.entries(SPECIALIST_ADAPTERS)) {
+      // Re-enable includes health-benched rows (unhealthy/low_success): for a
+      // specialist model those benchings are usually a daily-quota exhaustion
+      // (e.g. Cloudflare's neuron cap), which quota-parking handles at route
+      // time — so a transient quota hit shouldn't keep the model out of the
+      // pool. Paid/no_key/manual/delisted/unreachable are still respected.
       const se = await run(pool, `
         UPDATE models SET enabled = true, disabled_reason = NULL
         WHERE kind = ? AND cost_tier = 'free' AND platform = ANY(?::text[])
-          AND (disabled_reason IS NULL OR disabled_reason LIKE 'non-chat%' OR disabled_reason LIKE 'pending-liveness%')
+          AND (disabled_reason IS NULL OR disabled_reason LIKE 'non-chat%' OR disabled_reason LIKE 'pending-liveness%'
+               OR disabled_reason IN ('unhealthy', 'low_success'))
           AND EXISTS (SELECT 1 FROM api_keys key WHERE key.platform = models.platform AND key.enabled = true AND key.status != 'invalid')
       `, [k, plats]);
       if (se.changes > 0) { summary.enabled += se.changes; log(`enabled ${se.changes} free ${k} model(s) on ${plats.join('/')} (specialist)`); }

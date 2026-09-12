@@ -25,6 +25,11 @@ export function classifyModelKind(modelId: string, displayName = ''): string {
   // Music / audio generation (Google Lyria, MusicGen, AudioGen, Suno). Added
   // 2026-09-11 after Lyria (music) was routed to for 147 creative chat calls.
   if (/lyria|music-?gen|audio-?gen|\bsuno\b/.test(s)) return 'audio_gen';
+  // Image EDITING / img2img / inpainting need an INPUT image (+ mask), not a
+  // text prompt — a separate kind so text-to-image routing never picks them
+  // (2026-09-12: cloudflare's sd-v1.5-inpainting 400'd a plain-prompt request).
+  // Not currently served by any endpoint; parked out of the image_gen pool.
+  if (/inpaint|img2img|image-to-image|image2image/.test(s)) return 'image_edit';
   // Image generation. The "-image" family (gemini-*-image, gpt-image, firefly,
   // nano-banana) OUTPUTS images — added 2026-09-12; the old list missed the
   // "-image" suffix so ~9 gemini image models sat enabled as chat.

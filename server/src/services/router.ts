@@ -593,8 +593,10 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
 
   // Preload the arena task score for THIS request's task (one query, keyed by
   // model_db_id via the model's canonical grouping). taskType defaults to
-  // 'overall' so plain requests still get the general quality prior.
-  const taskType = taskTypeFor(taskClass);
+  // 'overall' so plain requests still get the general quality prior. A
+  // specialist kind with no explicit task uses the kind as the score dimension
+  // (e.g. image_gen → 'image'), so an image-quality prior applies when present.
+  const taskType = taskClass ? taskTypeFor(taskClass) : (kind !== 'chat' ? (kind === 'image_gen' ? 'image' : kind) : 'overall');
   const taskScoreRows = await all<{ model_db_id: number; score: number; source: string }>(pool, `
     SELECT m.id AS model_db_id, ts.score, ts.source
     FROM models m

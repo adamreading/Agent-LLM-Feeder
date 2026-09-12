@@ -14,6 +14,8 @@ describe('classifyModelKind', () => {
     expect(classifyModelKind('lyria-realtime-exp')).toBe('audio_gen');
     // specialist kinds that were leaking into chat (2026-09-12)
     expect(classifyModelKind('gemini-3.1-flash-image')).toBe('image_gen');
+    expect(classifyModelKind('@cf/runwayml/stable-diffusion-v1-5-inpainting')).toBe('image_edit');
+    expect(classifyModelKind('@cf/runwayml/stable-diffusion-v1-5-img2img')).toBe('image_edit');
     expect(classifyModelKind('gemini-3-pro-image-preview')).toBe('image_gen');
     expect(classifyModelKind('mistral-ocr-4-1')).toBe('ocr');
     expect(classifyModelKind('cohere-transcribe-03-2026')).toBe('stt');

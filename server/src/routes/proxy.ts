@@ -324,6 +324,12 @@ proxyRouter.post('/images/generations', async (req: Request, res: Response) => {
       lastErr = e?.message ?? String(e);
       logRequest(route.platform, route.modelId, 'error', 0, 0, Math.round(performance.now() - t0), lastErr, undefined, 'image', consumer, null, 'auto image', false, null, null);
       skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+      // A daily/quota exhaustion (e.g. Cloudflare's 10k-neuron/day cap, or a
+      // Google RPD limit) parks the model so the router skips it for hours
+      // instead of re-failing every request — same treatment as chat 429s.
+      if (/\b429\b|quota|daily free allocation|rate.?limit|exhausted|RESOURCE_EXHAUSTED/i.test(lastErr)) {
+        setQuotaExhausted(getPool(), route.modelDbId, `image: ${lastErr.slice(0, 120)}`).catch(() => {});
+      }
     }
   }
   void started;

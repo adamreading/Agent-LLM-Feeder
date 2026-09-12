@@ -40,6 +40,17 @@ function isRateLimitOrTimeout(error: string | null): boolean {
   return /429|rate.?limit|too many requests|timeout|aborted|econnreset|etimedout|5\d\d\b|quota|resource_exhausted|unavailable/i.test(error);
 }
 
+// A DAILY / account-wide quota exhaustion (not a transient per-minute 429):
+// Cloudflare's "daily free allocation" neuron cap, Google's "free_tier ... limit:
+// 0" / RESOURCE_EXHAUSTED daily. It resets on its own and is handled by
+// quota-PARKING (setQuotaExhausted), so — like a network error — it must NOT
+// bench the model as unhealthy/low_success (measured 2026-09-12: image models
+// benched unhealthy purely from hitting Cloudflare's 10k-neuron/day cap).
+export function isDailyQuotaError(error: string | null): boolean {
+  if (!error) return false;
+  return /daily free allocation|free_tier|resource_exhausted|daily (limit|quota)|per day|requests per day|rpd\b/i.test(error);
+}
+
 // Feeder-side egress failure (undici "fetch failed", DNS, refused). Not a
 // provider or model signal — see the exclusion in recomputeModelHealth.
 export function isNetworkError(error: string | null): boolean {
@@ -89,7 +100,7 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
   // cooldown, or bench it. Still logged in `requests`; just not scored here.
   const byModel = new Map<number, RecentRow[]>();
   for (const r of rows) {
-    if (r.status !== 'success' && isNetworkError(r.error)) continue;
+    if (r.status !== 'success' && (isNetworkError(r.error) || isDailyQuotaError(r.error))) continue;
     const list = byModel.get(r.model_db_id) ?? [];
     list.push(r);
     byModel.set(r.model_db_id, list);
@@ -185,7 +196,7 @@ export async function recomputeModelHealth(pool: pg.Pool): Promise<void> {
       WHERE r.is_probe = false
         AND r.created_at > now() - (? || ' days')::interval
         AND m.enabled = true AND m.disabled_reason IS NULL
-        AND NOT (r.status <> 'success' AND r.error ~* 'fetch failed|econnrefused|eai_again|enotfound|socket hang up|getaddrinfo')
+        AND NOT (r.status <> 'success' AND r.error ~* 'fetch failed|econnrefused|eai_again|enotfound|socket hang up|getaddrinfo|daily free allocation|free_tier|resource_exhausted|daily (limit|quota)|requests per day')
       GROUP BY m.id, m.platform, m.model_id
       HAVING COUNT(*) >= ? AND (COUNT(*) FILTER (WHERE r.status = 'success'))::float / COUNT(*) < ?
     `, [LONG_WINDOW_DAYS, LONG_WINDOW_MIN_ATTEMPTS, LOW_SUCCESS_THRESHOLD]);

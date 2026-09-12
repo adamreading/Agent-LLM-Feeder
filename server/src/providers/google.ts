@@ -8,7 +8,7 @@ import type {
   ChatToolDefinition,
   TokenUsage,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions, type DialectConfig } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig, type ImageGenOptions, type ImageResult } from './base.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -562,5 +562,41 @@ export class GoogleProvider extends BaseProvider {
       10000,
     );
     return res.status !== 401 && res.status !== 403;
+  }
+
+  // Image generation. Google has TWO shapes: Imagen models use `:predict`
+  // ({instances:[{prompt}]} → {predictions:[{bytesBase64Encoded}]}), the Gemini
+  // "*-image" models use `:generateContent` with responseModalities:['IMAGE']
+  // (→ candidates[].content.parts[].inlineData.data). Both return base64.
+  async generateImage(apiKey: string, modelId: string, options: ImageGenOptions): Promise<ImageResult> {
+    const isImagen = /imagen/i.test(modelId);
+    if (isImagen) {
+      const url = `${API_BASE}/models/${modelId}:predict?key=${apiKey}`;
+      const res = await this.fetchWithTimeout(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ instances: [{ prompt: options.prompt }], parameters: { sampleCount: Math.min(options.n ?? 1, 4) } }),
+      }, 60000);
+      if (!res.ok) throw new Error(`Google Imagen error ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+      const data = await res.json() as any;
+      const preds = Array.isArray(data?.predictions) ? data.predictions : [];
+      const images = preds.map((p: any) => ({ b64_json: p?.bytesBase64Encoded })).filter((i: any) => i.b64_json);
+      if (!images.length) throw new Error('Google Imagen returned no image');
+      return { images };
+    }
+    // Gemini image model (generateContent with an IMAGE response modality).
+    const url = `${API_BASE}/models/${modelId}:generateContent?key=${apiKey}`;
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: options.prompt }] }],
+        generationConfig: { responseModalities: ['IMAGE'] },
+      }),
+    }, 60000);
+    if (!res.ok) throw new Error(`Google image error ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    const data = await res.json() as any;
+    const parts = data?.candidates?.[0]?.content?.parts ?? [];
+    const images = parts.map((p: any) => ({ b64_json: p?.inlineData?.data ?? p?.inline_data?.data })).filter((i: any) => i.b64_json);
+    if (!images.length) throw new Error(`Google image returned no image data${data?.promptFeedback?.blockReason ? ` (blocked: ${data.promptFeedback.blockReason})` : ''}`);
+    return { images };
   }
 }
