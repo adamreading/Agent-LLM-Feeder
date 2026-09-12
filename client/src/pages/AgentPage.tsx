@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
-import { platformColor } from '@/lib/cyber'
+import { platformColor, base64ToImageUrl, downloadUrl } from '@/lib/cyber'
 import { ChatMarkdown } from '@/components/Markdown'
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
@@ -19,7 +19,7 @@ interface FallbackEntry { modelDbId: number; platform: string; modelId: string; 
 interface SearchConfig { backend: string; providers: { id: string; keyed: boolean; keySet: boolean }[] }
 interface SelectedFile { path: string; name: string; kind: 'image' | 'text' }
 interface ReplyMeta { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
-interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean; images?: string[] }
+interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean; images?: { url: string; ext: string }[] }
 interface ApiModel { modelId: string; displayName: string; platform: string; kind: string; enabled: boolean; keyCount: number }
 interface OutputFile { name: string; size: number; mtime: number }
 
@@ -143,6 +143,7 @@ export default function AgentPage() {
   const runAgent = async () => {
     const text = message.trim()
     if (!text || loading) return
+    reply?.images?.forEach(im => { try { if (im.url.startsWith('blob:')) URL.revokeObjectURL(im.url) } catch { /* noop */ } })
     setLoading(true); setError(null); setReply(null); setFeedback(null); setFeedbackNote(null); setSaveMsg(null)
 
     // Image mode: generate from the prompt (attachments are ignored here).
@@ -153,7 +154,7 @@ export default function AgentPage() {
         const latency = Date.now() - start
         if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error?.message ?? `HTTP ${res.status}`)
         const data = await res.json()
-        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url).filter(Boolean)
+        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? base64ToImageUrl(d.b64_json) : (d.url ? { url: d.url, ext: 'png' } : null)).filter(Boolean) as { url: string; ext: string }[]
         const rv = res.headers.get('X-Routed-Via')
         const via = rv ? { platform: rv.split('/')[0], model: rv.split('/').slice(1).join('/') } : undefined
         setReply({ content: '', images: imgs, meta: { platform: via?.platform, model: via?.model, latency, taskClass: 'image' } })
@@ -355,10 +356,14 @@ export default function AgentPage() {
             {reply?.skipped && <p style={{ margin: '0 0 10px', ...mono, fontSize: 10, color: 'var(--warn)' }}>▸ skipped: {reply.skipped.join(' · ')}</p>}
             {reply?.images && reply.images.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: reply.content ? 10 : 0 }}>
-                {reply.images.map((src, k) => (
-                  <a key={k} href={src} target="_blank" rel="noreferrer" title="open full size">
-                    <img src={src} alt="generated" style={{ maxWidth: '100%', maxHeight: 512, border: '1px solid var(--line)', display: 'block' }} />
-                  </a>
+                {reply.images.map((im, k) => (
+                  <div key={k} style={{ position: 'relative', display: 'inline-block' }}>
+                    <a href={im.url} target="_blank" rel="noreferrer" title="open full size">
+                      <img src={im.url} alt="generated" style={{ maxWidth: '100%', maxHeight: 512, border: '1px solid var(--line)', display: 'block' }} />
+                    </a>
+                    <button onClick={() => downloadUrl(im.url, `feeder-image-${Date.now()}.${im.ext}`)} title="Download image"
+                      style={{ all: 'unset', cursor: 'pointer', position: 'absolute', top: 8, right: 8, ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '5px 9px', color: '#000', background: 'var(--acc2)', border: '1px solid var(--acc2)' }}>↓ SAVE</button>
+                  </div>
                 ))}
               </div>
             )}

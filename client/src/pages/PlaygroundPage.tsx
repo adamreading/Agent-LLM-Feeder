@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/api'
-import { platformColor } from '@/lib/cyber'
+import { platformColor, base64ToImageUrl, downloadUrl } from '@/lib/cyber'
 import { ChatMarkdown } from '@/components/Markdown'
 
 const mono = { fontFamily: "'JetBrains Mono',monospace" } as const
@@ -18,7 +18,7 @@ interface FallbackEntry {
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
-  images?: string[] // data URLs (image mode) — kept in-memory only, not persisted
+  images?: { url: string; ext: string }[] // blob object URLs (image mode) — in-memory only, not persisted
   meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean; feedback?: 'up' | 'down' }
 }
 
@@ -104,7 +104,7 @@ export default function PlaygroundPage() {
           return
         }
         const data = await res.json()
-        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url).filter(Boolean)
+        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? base64ToImageUrl(d.b64_json) : (d.url ? { url: d.url, ext: 'png' } : null)).filter(Boolean) as { url: string; ext: string }[]
         const via = routedVia ? { platform: routedVia.split('/')[0], model: routedVia.split('/').slice(1).join('/') } : undefined
         setMessages([...newMessages, { role: 'assistant', content: imgs.length ? '' : 'No image returned.', images: imgs, meta: { platform: via?.platform, model: via?.model, latency, taskClass: 'image' } }])
       } catch (err: any) {
@@ -164,7 +164,10 @@ export default function PlaygroundPage() {
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }
-  const handleClear = () => { clearChatSession(); setMessages([]); inputRef.current?.focus() }
+  const handleClear = () => {
+    messages.forEach(m => m.images?.forEach(im => { try { if (im.url.startsWith('blob:')) URL.revokeObjectURL(im.url) } catch { /* noop */ } }))
+    clearChatSession(); setMessages([]); inputRef.current?.focus()
+  }
 
   const activeLabel = selectedModel === 'auto' ? 'AUTO // ROUTER PICKS' : (availableModels.find(m => m.modelId === selectedModel)?.displayName ?? selectedModel)
 
@@ -228,10 +231,14 @@ export default function PlaygroundPage() {
                   }}>
                     {msg.images && msg.images.length > 0 && (
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: msg.content ? 8 : 0 }}>
-                        {msg.images.map((src, k) => (
-                          <a key={k} href={src} target="_blank" rel="noreferrer" title="open full size">
-                            <img src={src} alt="generated" style={{ maxWidth: '100%', maxHeight: 384, border: '1px solid var(--line)', display: 'block' }} />
-                          </a>
+                        {msg.images.map((im, k) => (
+                          <div key={k} style={{ position: 'relative', display: 'inline-block' }}>
+                            <a href={im.url} target="_blank" rel="noreferrer" title="open full size">
+                              <img src={im.url} alt="generated" style={{ maxWidth: '100%', maxHeight: 384, border: '1px solid var(--line)', display: 'block' }} />
+                            </a>
+                            <button onClick={() => downloadUrl(im.url, `feeder-image-${Date.now()}.${im.ext}`)} title="Download image"
+                              style={{ all: 'unset', cursor: 'pointer', position: 'absolute', top: 6, right: 6, ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '4px 8px', color: '#000', background: 'var(--acc2)', border: '1px solid var(--acc2)' }}>↓ SAVE</button>
+                          </div>
                         ))}
                       </div>
                     )}

@@ -287,3 +287,34 @@ export const researchScore = (m: CanonModel): number | null => {
   // ranks sensibly, never zeroed.
   return base * (0.5 + 0.5 * canonSizeFactor(m))
 }
+
+// Turn an image's base64 (from POST /v1/images/generations) into a Blob object
+// URL. Two reasons this beats a `data:image/...;base64,` URL (2026-09-12):
+//  1. The provider's REAL format varies — Cloudflare flux returns JPEG, SDXL
+//     returns PNG. A JPEG served under a hardcoded `image/png` data URL renders
+//     with horizontal banding in some browsers; sniffing the magic bytes and
+//     giving the Blob the correct MIME fixes it.
+//  2. Browsers BLOCK top-level navigation to a `data:` URL (so "open in new
+//     tab" / download of a data URL silently fails), but a blob: object URL is
+//     allowed — so the same URL works for <img>, open, and download.
+// Caller owns the URL's lifetime — revoke with URL.revokeObjectURL when done.
+export function base64ToImageUrl(b64: string): { url: string; ext: string } {
+  const bin = atob(b64)
+  const n = bin.length
+  const bytes = new Uint8Array(n)
+  for (let i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i)
+  let mime = 'image/png', ext = 'png'
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) { mime = 'image/jpeg'; ext = 'jpg' }
+  else if (bytes[0] === 0x89 && bytes[1] === 0x50) { mime = 'image/png'; ext = 'png' }
+  else if (bytes[0] === 0x47 && bytes[1] === 0x49) { mime = 'image/gif'; ext = 'gif' }
+  else if (bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[8] === 0x57 && bytes[9] === 0x45) { mime = 'image/webp'; ext = 'webp' }
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }))
+  return { url, ext }
+}
+
+// Programmatic download of a same-origin/blob URL (an <a download> click).
+export function downloadUrl(url: string, filename: string) {
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+}
