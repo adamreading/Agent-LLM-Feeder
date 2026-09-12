@@ -18,8 +18,11 @@ interface FallbackEntry {
 interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  images?: string[] // data URLs (image mode) — kept in-memory only, not persisted
   meta?: { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean; feedback?: 'up' | 'down' }
 }
+
+interface ApiModel { modelId: string; displayName: string; platform: string; kind: string; enabled: boolean; keyCount: number }
 
 interface SearchConfig { backend: string; providers: { id: string; keyed: boolean; keySet: boolean }[] }
 
@@ -42,7 +45,12 @@ function loadChatSession(): ChatMessage[] {
     return parsed.filter((m: any) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
   } catch { return [] }
 }
-function saveChatSession(m: ChatMessage[]) { if (typeof window !== 'undefined') sessionStorage.setItem(CHAT_SESSION_KEY, JSON.stringify(m)) }
+function saveChatSession(m: ChatMessage[]) {
+  // Strip base64 images before persisting — a few PNGs blow the sessionStorage
+  // quota. They stay in the in-memory view for the session; a reload drops them.
+  if (typeof window === 'undefined') return
+  try { sessionStorage.setItem(CHAT_SESSION_KEY, JSON.stringify(m.map(({ images, ...rest }) => rest))) } catch { /* quota */ }
+}
 function clearChatSession() { if (typeof window !== 'undefined') sessionStorage.removeItem(CHAT_SESSION_KEY) }
 
 export default function PlaygroundPage() {
@@ -50,6 +58,7 @@ export default function PlaygroundPage() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [selectedModel, setSelectedModel] = useState<string>('auto')
+  const [mode, setMode] = useState<'chat' | 'image'>('chat')
   const [webSearch, setWebSearch] = useState<boolean>(() => loadWebSearchPref())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -57,7 +66,10 @@ export default function PlaygroundPage() {
   const { data: keyData } = useQuery<{ apiKey: string }>({ queryKey: ['unified-key'], queryFn: () => apiFetch('/api/settings/api-key') })
   const { data: fallbackEntries = [] } = useQuery<FallbackEntry[]>({ queryKey: ['fallback-order'], queryFn: async () => (await apiFetch<{ rows: FallbackEntry[] }>('/api/fallback/order')).rows })
   const { data: searchCfg } = useQuery<SearchConfig>({ queryKey: ['search-config'], queryFn: () => apiFetch('/api/settings/search') })
-  const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
+  const { data: apiModels = [] } = useQuery<ApiModel[]>({ queryKey: ['api-models'], queryFn: () => apiFetch('/api/models') })
+  const chatModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
+  const imageModels = apiModels.filter(m => m.kind === 'image_gen' && m.enabled && m.keyCount > 0)
+  const availableModels = mode === 'image' ? imageModels.map(m => ({ modelDbId: m.modelId as any, modelId: m.modelId, platform: m.platform, displayName: m.displayName })) : chatModels
   // Show the web-search toggle only when the onboarded provider can actually run:
   // keyless backends (ddg/ollama) are always ready; keyed backends (tavily) need
   // their key set. Prevents a dead "WEB" affordance that silently does nothing.
@@ -75,9 +87,35 @@ export default function PlaygroundPage() {
     setInput('')
     setLoading(true)
     inputRef.current?.focus()
+    const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
+
+    // ── Image mode: POST /v1/images/generations, render the returned PNG(s) ──
+    if (mode === 'image') {
+      try {
+        const start = Date.now()
+        const res = await fetch(`${base}/v1/images/generations`, { method: 'POST', headers, body: JSON.stringify({ model: selectedModel, prompt: text }) })
+        const latency = Date.now() - start
+        const routedVia = res.headers.get('X-Routed-Via')
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }))
+          setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.error?.message ?? 'image generation failed'}` }])
+          return
+        }
+        const data = await res.json()
+        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url).filter(Boolean)
+        const via = routedVia ? { platform: routedVia.split('/')[0], model: routedVia.split('/').slice(1).join('/') } : undefined
+        setMessages([...newMessages, { role: 'assistant', content: imgs.length ? '' : 'No image returned.', images: imgs, meta: { platform: via?.platform, model: via?.model, latency, taskClass: 'image' } }])
+      } catch (err: any) {
+        setMessages([...newMessages, { role: 'assistant', content: `Error: ${err.message}` }])
+      } finally {
+        setLoading(false)
+        setTimeout(() => inputRef.current?.focus(), 0)
+      }
+      return
+    }
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (keyData?.apiKey) headers['Authorization'] = `Bearer ${keyData.apiKey}`
       // Always send an explicit model — 'auto' routes through the SAME classifier
       // + router as every other caller (a pinned id bypasses classification).
       const body: any = { model: selectedModel, messages: newMessages.map(m => ({ role: m.role, content: m.content })) }
@@ -85,7 +123,6 @@ export default function PlaygroundPage() {
       // on every message while the toggle is on — the feeder injects the results
       // as grounding before routing. Default off = the provenance-safe carve-out.
       if (webSearch && searchAvailable) body.augment = 'force'
-      const base = import.meta.env.BASE_URL.replace(/\/$/, '')
       const start = Date.now()
       const res = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers, body: JSON.stringify(body) })
       const latency = Date.now() - start
@@ -139,11 +176,21 @@ export default function PlaygroundPage() {
           <h1 style={{ margin: 0, fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>CHATBOT</h1>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', border: '1px solid var(--line)' }}>
+            {(['chat', 'image'] as const).map(md => (
+              <button key={md} onClick={() => { if (md !== mode) { setMode(md); setSelectedModel('auto') } }}
+                title={md === 'image' ? 'Generate images from a prompt (free image models)' : 'Chat / agent responses'}
+                style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '8px 12px',
+                  color: mode === md ? '#000' : 'var(--dim)', background: mode === md ? (md === 'image' ? 'var(--acc2)' : 'var(--acc)') : 'transparent' }}
+              >{md === 'image' ? '▦ IMAGE' : '▸ CHAT'}</button>
+            ))}
+          </div>
           <select className="cy-input cy-mono" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ background: 'var(--panel)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', minWidth: 240 }}>
-            <option value="auto">AUTO // ROUTER PICKS</option>
-            {availableModels.map(m => <option key={m.modelDbId} value={m.modelId}>{m.displayName} — {m.platform}</option>)}
+            <option value="auto">{mode === 'image' ? 'AUTO // BEST IMAGE MODEL' : 'AUTO // ROUTER PICKS'}</option>
+            {availableModels.map(m => <option key={m.modelId} value={m.modelId}>{m.displayName} — {m.platform}</option>)}
+            {mode === 'image' && availableModels.length === 0 && <option value="auto" disabled>no image models enabled</option>}
           </select>
-          {searchAvailable && (
+          {mode === 'chat' && searchAvailable && (
             <button
               onClick={() => setWebSearch(v => { const n = !v; saveWebSearchPref(n); return n })}
               title={`Web search via ${searchCfg?.backend ?? 'provider'} — ${webSearch ? 'ON' : 'OFF'}`}
@@ -179,9 +226,18 @@ export default function PlaygroundPage() {
                     background: msg.role === 'user' ? 'color-mix(in oklab, var(--acc) 14%, transparent)' : 'var(--bg2)',
                     color: 'var(--ink)',
                   }}>
-                    {msg.role === 'assistant'
+                    {msg.images && msg.images.length > 0 && (
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: msg.content ? 8 : 0 }}>
+                        {msg.images.map((src, k) => (
+                          <a key={k} href={src} target="_blank" rel="noreferrer" title="open full size">
+                            <img src={src} alt="generated" style={{ maxWidth: '100%', maxHeight: 384, border: '1px solid var(--line)', display: 'block' }} />
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    {msg.content && (msg.role === 'assistant'
                       ? <ChatMarkdown content={msg.content} />
-                      : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
+                      : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>)}
                     {msg.meta && (
                       <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap', ...mono, fontSize: 10, color: 'var(--dim)' }}>
                         {msg.meta.platform && <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><span style={{ width: 6, height: 6, borderRadius: '50%', background: platformColor(msg.meta.platform) }} />{msg.meta.platform}</span>}
@@ -216,13 +272,13 @@ export default function PlaygroundPage() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="▸ transmit…"
+              placeholder={mode === 'image' ? '▦ describe an image…' : '▸ transmit…'}
               rows={1}
               className="cy-input"
               style={{ flex: 1, resize: 'none', background: 'var(--bg)', border: '1px solid var(--line)', color: 'var(--ink)', padding: '10px 12px', fontSize: 13, minHeight: 40, maxHeight: 160, fontFamily: "'Chakra Petch',sans-serif" }}
               onInput={e => { const el = e.target as HTMLTextAreaElement; el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 160) + 'px' }}
             />
-            <button onClick={handleSend} disabled={loading || !input.trim()} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: '11px 20px', background: 'var(--acc)', color: '#000', border: '1px solid var(--acc)', opacity: loading || !input.trim() ? 0.5 : 1 }}>{loading ? 'SENDING' : 'SEND'}</button>
+            <button onClick={handleSend} disabled={loading || !input.trim()} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: '11px 20px', background: 'var(--acc)', color: '#000', border: '1px solid var(--acc)', opacity: loading || !input.trim() ? 0.5 : 1 }}>{loading ? (mode === 'image' ? 'DRAWING' : 'SENDING') : (mode === 'image' ? 'GENERATE' : 'SEND')}</button>
           </div>
         </div>
       </div>

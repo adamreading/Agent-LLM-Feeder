@@ -31,6 +31,7 @@ modelsRouter.get('/', async (_req: Request, res: Response) => {
     platform: m.platform,
     modelId: m.model_id,
     displayName: m.display_name,
+    kind: m.kind,
     intelligenceRank: m.intelligence_rank,
     speedRank: m.speed_rank,
     sizeLabel: m.size_label,

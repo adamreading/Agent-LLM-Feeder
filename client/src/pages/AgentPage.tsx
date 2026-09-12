@@ -19,7 +19,8 @@ interface FallbackEntry { modelDbId: number; platform: string; modelId: string; 
 interface SearchConfig { backend: string; providers: { id: string; keyed: boolean; keySet: boolean }[] }
 interface SelectedFile { path: string; name: string; kind: 'image' | 'text' }
 interface ReplyMeta { platform?: string; model?: string; latency?: number; fallbackAttempts?: number; taskClass?: string; augmented?: boolean }
-interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean }
+interface Reply { content: string; meta?: ReplyMeta; skipped?: string[]; hadImage?: boolean; images?: string[] }
+interface ApiModel { modelId: string; displayName: string; platform: string; kind: string; enabled: boolean; keyCount: number }
 interface OutputFile { name: string; size: number; mtime: number }
 
 const fmtBytes = (n: number) => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`
@@ -35,6 +36,7 @@ export default function AgentPage() {
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<SelectedFile[]>([])
   const [selectedModel, setSelectedModel] = useState('auto')
+  const [mode, setMode] = useState<'chat' | 'image'>('chat')
   const [webSearch, setWebSearch] = useState(() => typeof window !== 'undefined' && window.localStorage.getItem(WEBSEARCH_PREF_KEY) === '1')
   const [message, setMessage] = useState('')
   const [reply, setReply] = useState<Reply | null>(null)
@@ -50,8 +52,13 @@ export default function AgentPage() {
   const { data: status } = useQuery<AgentStatus>({ queryKey: ['agent', 'status'], queryFn: () => apiFetch('/api/agent/status') })
   const { data: fallbackEntries = [] } = useQuery<FallbackEntry[]>({ queryKey: ['fallback-order'], queryFn: async () => (await apiFetch<{ rows: FallbackEntry[] }>('/api/fallback/order')).rows })
   const { data: searchCfg } = useQuery<SearchConfig>({ queryKey: ['search-config'], queryFn: () => apiFetch('/api/settings/search') })
+  const { data: apiModels = [] } = useQuery<ApiModel[]>({ queryKey: ['api-models'], queryFn: () => apiFetch('/api/models') })
 
-  const availableModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
+  const chatModels = fallbackEntries.filter(e => e.keyCount > 0 && e.status !== 'disabled')
+  const imageModels = apiModels.filter(m => m.kind === 'image_gen' && m.enabled && m.keyCount > 0)
+  const availableModels: FallbackEntry[] = mode === 'image'
+    ? imageModels.map(m => ({ modelDbId: -1, platform: m.platform, modelId: m.modelId, displayName: m.displayName, keyCount: m.keyCount, status: 'eligible' }))
+    : chatModels
   const activeSearch = searchCfg?.providers.find(p => p.id === searchCfg.backend)
   const searchAvailable = !!activeSearch && (!activeSearch.keyed || activeSearch.keySet)
   const apiKey = keyData?.apiKey
@@ -137,6 +144,24 @@ export default function AgentPage() {
     const text = message.trim()
     if (!text || loading) return
     setLoading(true); setError(null); setReply(null); setFeedback(null); setFeedbackNote(null); setSaveMsg(null)
+
+    // Image mode: generate from the prompt (attachments are ignored here).
+    if (mode === 'image') {
+      try {
+        const start = Date.now()
+        const res = await fetch(`${base}/v1/images/generations`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders }, body: JSON.stringify({ model: selectedModel, prompt: text }) })
+        const latency = Date.now() - start
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error?.message ?? `HTTP ${res.status}`)
+        const data = await res.json()
+        const imgs = (data.data ?? []).map((d: any) => d.b64_json ? `data:image/png;base64,${d.b64_json}` : d.url).filter(Boolean)
+        const rv = res.headers.get('X-Routed-Via')
+        const via = rv ? { platform: rv.split('/')[0], model: rv.split('/').slice(1).join('/') } : undefined
+        setReply({ content: '', images: imgs, meta: { platform: via?.platform, model: via?.model, latency, taskClass: 'image' } })
+      } catch (err: any) {
+        setError(err.message ?? 'Image generation failed')
+      } finally { setLoading(false) }
+      return
+    }
     try {
       // 1. Pull file contents (text) / base64 (image) from the host.
       let files: ReadFile[] = []
@@ -200,11 +225,21 @@ export default function AgentPage() {
           <h1 style={{ margin: 0, fontSize: 40, fontWeight: 700, letterSpacing: 1, textShadow: '0 0 24px var(--glow)' }}>AGENT</h1>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', border: '1px solid var(--line)' }}>
+            {(['chat', 'image'] as const).map(md => (
+              <button key={md} onClick={() => { if (md !== mode) { setMode(md); setSelectedModel('auto') } }}
+                title={md === 'image' ? 'Generate images from a prompt (free image models; file attachments are ignored)' : 'Agent responses over your files'}
+                style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '8px 12px',
+                  color: mode === md ? '#000' : 'var(--dim)', background: mode === md ? (md === 'image' ? 'var(--acc2)' : 'var(--acc)') : 'transparent' }}
+              >{md === 'image' ? '▦ IMAGE' : '▸ AGENT'}</button>
+            ))}
+          </div>
           <select className="cy-input cy-mono" value={selectedModel} onChange={e => setSelectedModel(e.target.value)} style={{ background: 'var(--panel)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 12, padding: '8px 10px', minWidth: 220 }}>
-            <option value="auto">AUTO // ROUTER PICKS</option>
-            {availableModels.map(m => <option key={m.modelDbId} value={m.modelId}>{m.displayName} — {m.platform}</option>)}
+            <option value="auto">{mode === 'image' ? 'AUTO // BEST IMAGE MODEL' : 'AUTO // ROUTER PICKS'}</option>
+            {availableModels.map(m => <option key={m.modelId} value={m.modelId}>{m.displayName} — {m.platform}</option>)}
+            {mode === 'image' && availableModels.length === 0 && <option value="auto" disabled>no image models enabled</option>}
           </select>
-          {searchAvailable && (
+          {mode === 'chat' && searchAvailable && (
             <button onClick={toggleWeb} title={`Web search via ${searchCfg?.backend ?? 'provider'} — ${webSearch ? 'ON' : 'OFF'}`} className="cy-hover-acc"
               style={{ all: 'unset', cursor: 'pointer', ...mono, fontSize: 11, fontWeight: 700, letterSpacing: 1, padding: '8px 12px',
                 border: `1px solid ${webSearch ? 'var(--acc2)' : 'var(--line)'}`, color: webSearch ? 'var(--acc2)' : 'var(--dim)',
@@ -295,10 +330,10 @@ export default function AgentPage() {
 
           <div style={panel}>
             <label style={{ display: 'block', marginBottom: 8, fontSize: 14, fontWeight: 700, letterSpacing: 1 }}>PROMPT</label>
-            <textarea className="cy-input" value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runAgent() }} placeholder="▸ task the agent…  (⌘/Ctrl+Enter to run)"
+            <textarea className="cy-input" value={message} onChange={e => setMessage(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) runAgent() }} placeholder={mode === 'image' ? '▦ describe an image…  (⌘/Ctrl+Enter to generate)' : '▸ task the agent…  (⌘/Ctrl+Enter to run)'}
               style={{ width: '100%', boxSizing: 'border-box', minHeight: 130, resize: 'vertical', background: 'var(--bg2)', border: '1px solid var(--line)', color: 'var(--ink)', fontSize: 13, padding: '10px 12px', fontFamily: "'Chakra Petch',sans-serif" }} />
             <div style={{ marginTop: 12, display: 'flex', justifyContent: 'flex-end' }}>
-              <button onClick={runAgent} disabled={!message.trim() || loading} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: '9px 18px', background: 'var(--acc)', color: '#000', border: '1px solid var(--acc)', opacity: !message.trim() || loading ? 0.5 : 1 }}>{loading ? 'RUNNING…' : '▸ RUN AGENT'}</button>
+              <button onClick={runAgent} disabled={!message.trim() || loading} className="cy-btn" style={{ all: 'unset', cursor: 'pointer', fontSize: 13, fontWeight: 700, letterSpacing: 1, padding: '9px 18px', background: 'var(--acc)', color: '#000', border: '1px solid var(--acc)', opacity: !message.trim() || loading ? 0.5 : 1 }}>{loading ? (mode === 'image' ? 'DRAWING…' : 'RUNNING…') : (mode === 'image' ? '▦ GENERATE' : '▸ RUN AGENT')}</button>
             </div>
             {error && <p style={{ marginTop: 12, fontSize: 12, color: 'var(--bad)', ...mono }}>{error}</p>}
           </div>
@@ -318,7 +353,16 @@ export default function AgentPage() {
               )}
             </div>
             {reply?.skipped && <p style={{ margin: '0 0 10px', ...mono, fontSize: 10, color: 'var(--warn)' }}>▸ skipped: {reply.skipped.join(' · ')}</p>}
-            {reply ? <ChatMarkdown content={reply.content} /> : <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ awaiting task</p>}
+            {reply?.images && reply.images.length > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: reply.content ? 10 : 0 }}>
+                {reply.images.map((src, k) => (
+                  <a key={k} href={src} target="_blank" rel="noreferrer" title="open full size">
+                    <img src={src} alt="generated" style={{ maxWidth: '100%', maxHeight: 512, border: '1px solid var(--line)', display: 'block' }} />
+                  </a>
+                ))}
+              </div>
+            )}
+            {reply ? (reply.content ? <ChatMarkdown content={reply.content} /> : (reply.images?.length ? null : <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ no content</p>)) : <p style={{ ...mono, fontSize: 12, color: 'var(--dim)' }}>▸ awaiting task</p>}
 
             {reply?.meta && (
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
