@@ -98,6 +98,16 @@ const PRICING_UNRELIABLE = new Set<string>(['gmi']);
 // here only if Adam puts a billed Google key in and wants paid image gen.
 const SPECIALIST_ADAPTERS: Record<string, string[]> = { image_gen: ['cloudflare'] };
 
+// Free specialist models a routable-in-principle platform lists but the current
+// adapter CANNOT serve, so they must NOT be enabled (they'd 400 every call and
+// pollute the picker). Cloudflare's flux-2 family requires a multipart/form-data
+// request, not the JSON {prompt} the adapter sends (measured 2026-09-12:
+// "required properties at '/' are 'multipart'"); the JSON models (flux-1-schnell,
+// SDXL, deepgram/flux) work. Revisit if a multipart adapter is added.
+const SPECIALIST_UNSUPPORTED: Array<{ platform: string; pattern: RegExp; reason: string }> = [
+  { platform: 'cloudflare', pattern: /flux-2/i, reason: 'needs-multipart-adapter' },
+];
+
 let running = false;
 
 function titleCase(id: string): string {
@@ -337,6 +347,17 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
           AND EXISTS (SELECT 1 FROM api_keys key WHERE key.platform = models.platform AND key.enabled = true AND key.status != 'invalid')
       `, [k, plats]);
       if (se.changes > 0) { summary.enabled += se.changes; log(`enabled ${se.changes} free ${k} model(s) on ${plats.join('/')} (specialist)`); }
+    }
+    // 3h. Disable specialist models the adapter can't serve (e.g. cloudflare
+    //     flux-2 needs multipart, not JSON) — they'd 400 every call.
+    for (const u of SPECIALIST_UNSUPPORTED) {
+      const rows = await all<{ id: number; model_id: string }>(pool,
+        `SELECT id, model_id FROM models WHERE platform = ? AND enabled = true`, [u.platform]);
+      for (const row of rows) {
+        if (!u.pattern.test(row.model_id)) continue;
+        const d = await run(pool, `UPDATE models SET enabled = false, disabled_reason = ? WHERE id = ? AND enabled = true`, [u.reason, row.id]);
+        if (d.changes > 0) log(`${u.platform}/${row.model_id} → disabled (${u.reason})`);
+      }
     }
 
     // 4. MATCH new rows to canonicals; create a wiki entry for each new CHAT

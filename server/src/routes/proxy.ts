@@ -333,7 +333,13 @@ proxyRouter.post('/images/generations', async (req: Request, res: Response) => {
     }
   }
   void started;
-  res.status(502).json({ error: { message: `Image generation failed: ${lastErr}`, type: 'api_error' } });
+  // A friendlier message when the failure is the free daily quota (Cloudflare's
+  // 10k-neuron/day cap, shared across all its AI) rather than a real fault.
+  const quotaHit = /daily free allocation|neurons|quota|429|exhausted|rate.?limit/i.test(lastErr);
+  const msg = quotaHit
+    ? "Free image models are out of quota right now — Cloudflare's free tier is a small daily budget (shared with chat). Try again later; it resets daily."
+    : `Image generation failed: ${lastErr}`;
+  res.status(quotaHit ? 429 : 502).json({ error: { message: msg, type: quotaHit ? 'rate_limit_error' : 'api_error', code: quotaHit ? 'image_quota_exhausted' : undefined } });
 });
 
 const DEFAULT_MAX_RETRIES = 20;
