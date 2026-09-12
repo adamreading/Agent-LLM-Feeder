@@ -107,6 +107,10 @@ export interface RouteOptions {
    *  option) rather than a silent small substitute. Scoring stays 'overall'
    *  (best-brain-first). Added 2026-08-16 for Adam's Codex-outage main-brain band. */
   bigOnly?: boolean;
+  /** modality to route: 'chat' (default) or a specialist kind ('image_gen', …).
+   *  Filters the candidate pool to that `models.kind` and requires the provider
+   *  to implement the modality's method. The composite scorer is unchanged. */
+  kind?: string;
 }
 
 /** big100 band floor: a model needs a verified total param count at or above this
@@ -555,6 +559,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     latencyCeilingMs,
     taskClass,
     bigOnly,
+    kind = 'chat',
   } = options;
 
   const pool = getPool();
@@ -582,9 +587,9 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     SELECT fc.model_db_id, fc.enabled, m.intelligence_rank, m.size_label, m.platform, m.model_id
     FROM fallback_config fc
     JOIN models m ON m.id = fc.model_db_id
-    WHERE m.kind = 'chat' AND m.enabled = true
+    WHERE m.kind = ? AND m.enabled = true
     ORDER BY m.intelligence_rank ASC
-  `);
+  `, [kind]);
 
   // Preload the arena task score for THIS request's task (one query, keyed by
   // model_db_id via the model's canonical grouping). taskType defaults to
@@ -717,7 +722,7 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // Get model details — fresh per candidate, per call (L9). kind='chat' is the
     // hard modality gate: a non-chat row (embedding/tts/rerank/ner/image-gen)
     // can never serve a chat completion even with an empty needs[] filter.
-    const model = await get<ModelRow>(pool, "SELECT * FROM models WHERE id = ? AND enabled = true AND kind = 'chat'", [entry.model_db_id]);
+    const model = await get<ModelRow>(pool, "SELECT * FROM models WHERE id = ? AND enabled = true AND kind = ?", [entry.model_db_id, kind]);
     if (!model) continue;
 
     // big100 size band (auto/big100): hard structural filter — only a verified
@@ -734,6 +739,12 @@ export async function routeRequest(options: RouteOptions = {}): Promise<RouteRes
     // Check if we have a provider for this platform
     const provider = getProvider(model.platform as any);
     if (!provider) continue;
+
+    // Modality-method gate: a specialist (non-chat) kind is only routable to a
+    // provider that actually implements that modality's method — so an image_gen
+    // model on a provider with no generateImage adapter is skipped, never a
+    // failed call. (chat is the abstract path every provider implements.)
+    if (kind === 'image_gen' && typeof provider.generateImage !== 'function') continue;
 
     // Capability/dialect gate: never send a field a provider can't honor.
     // json_mode/reasoning_control are the two feeder-NATIVE concepts — they

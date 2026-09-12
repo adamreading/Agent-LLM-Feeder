@@ -3,7 +3,7 @@ import type {
   ChatCompletionResponse,
   ChatCompletionChunk,
 } from '@freellmapi/shared/types.js';
-import { BaseProvider, type CompletionOptions, type DialectConfig } from './base.js';
+import { BaseProvider, type CompletionOptions, type DialectConfig, type ImageGenOptions, type ImageResult } from './base.js';
 
 /**
  * Cloudflare Workers AI provider.
@@ -144,5 +144,44 @@ export class CloudflareProvider extends BaseProvider {
     if (!res.ok) return true; // unexpected non-2xx that isn't auth — don't disable
     const data = await res.json() as any;
     return data.success === true && data.result?.status === 'active';
+  }
+
+  // Image generation via Workers AI `/ai/run/<model>`. Cloudflare's image models
+  // are heterogeneous in their RESPONSE shape: flux returns JSON
+  // {result:{image:"<base64>"}}, the Stable Diffusion models stream raw PNG
+  // bytes. We normalise both to b64_json. Parsed dimensions ("1024x1024") are
+  // passed as width/height where the model accepts them (ignored otherwise).
+  async generateImage(apiKey: string, modelId: string, options: ImageGenOptions): Promise<ImageResult> {
+    const { accountId, token } = this.parseKey(apiKey);
+    const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${modelId}`;
+    const body: Record<string, unknown> = { prompt: options.prompt };
+    if (options.negativePrompt) body.negative_prompt = options.negativePrompt;
+    const dim = /^(\d+)x(\d+)$/.exec(options.size ?? '');
+    if (dim) { body.width = Number(dim[1]); body.height = Number(dim[2]); }
+
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }, 60000);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Cloudflare image error ${res.status}: ${text.slice(0, 200)}`);
+    }
+    const ct = res.headers.get('content-type') ?? '';
+    let b64: string;
+    if (ct.includes('application/json')) {
+      const data = await res.json() as any;
+      const img = data?.result?.image ?? data?.result?.images?.[0] ?? data?.image;
+      if (typeof img !== 'string' || !img) throw new Error('Cloudflare image response had no image field');
+      b64 = img;
+    } else {
+      // Raw image bytes (image/png etc.) → base64.
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length === 0) throw new Error('Cloudflare image response was empty');
+      b64 = buf.toString('base64');
+    }
+    return { images: [{ b64_json: b64 }] };
   }
 }

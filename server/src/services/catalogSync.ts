@@ -85,6 +85,13 @@ const ENABLE_PROBE_FIRST = new Set<string>(['gmi', 'hetzner']);
 // platforms, or it marks the genuinely-free models paid before the probe ever runs.
 const PRICING_UNRELIABLE = new Set<string>(['gmi']);
 
+// Specialist (non-chat) modalities feeder can actually SERVE, mapped to the
+// platforms with a working adapter (a provider method — see providers/*.ts).
+// A free model of such a kind on such a platform is enabled and routable via
+// that modality's endpoint ONLY (never chat). image_gen on cloudflare is first
+// (2026-09-12). Add a platform here only once its adapter is implemented.
+const SPECIALIST_ADAPTERS: Record<string, string[]> = { image_gen: ['cloudflare'] };
+
 let running = false;
 
 function titleCase(id: string): string {
@@ -299,6 +306,23 @@ export async function runCatalogSync(pool: pg.Pool, opts: CatalogSyncOptions = {
       log(`kind: ${r.model_id} → ${k} (was chat)`);
     }
     summary.reclassifiedNonChat += kindFlips;
+
+    // 3g. SPECIALIST ENABLE (after the kind reclassify, so a model just moved to
+    //     image_gen is picked up the SAME run). A free specialist model on a
+    //     platform with a working adapter becomes enabled + routable in its
+    //     modality — reachable ONLY via that modality's endpoint, never chat
+    //     (the router filters by kind and requires the provider's modality
+    //     method). Skips paid/no-key/manual rows (their reason isn't non-chat/
+    //     pending). Needs a fallback_config row (3e created any missing ones).
+    for (const [k, plats] of Object.entries(SPECIALIST_ADAPTERS)) {
+      const se = await run(pool, `
+        UPDATE models SET enabled = true, disabled_reason = NULL
+        WHERE kind = ? AND cost_tier = 'free' AND platform = ANY(?::text[])
+          AND (disabled_reason IS NULL OR disabled_reason LIKE 'non-chat%' OR disabled_reason LIKE 'pending-liveness%')
+          AND EXISTS (SELECT 1 FROM api_keys key WHERE key.platform = models.platform AND key.enabled = true AND key.status != 'invalid')
+      `, [k, plats]);
+      if (se.changes > 0) { summary.enabled += se.changes; log(`enabled ${se.changes} free ${k} model(s) on ${plats.join('/')} (specialist)`); }
+    }
 
     // 4. MATCH new rows to canonicals; create a wiki entry for each new CHAT
     //    model still unmatched (leaves the existing manual review queue alone —

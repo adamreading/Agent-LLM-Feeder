@@ -181,6 +181,20 @@ curl http://localhost:3001/v1/chat/completions \
 - **Model list:** `GET /v1/models` — each entry includes `supported_parameters`, the sampling/generation params that model's provider will actually honour.
 - **Response attribution:** the resolved model is returned as the `X-Routed-Via` header and stamped into the body (`model` / `_routed_via`); on streams it's on each `chunk.model`. The classified task class is returned as the `X-Task-Class` header and `_task_class` body field (and `chunk._task_class` on streams) — `overall` / `null` when unclassified. **`X-Fallback-Attempts`** carries the number of failover hops **only when it's non-zero** — a clean single-hop call omits the header entirely, so **absent means 0 hops** (a pinned model that fell back once returns `X-Fallback-Attempts: 1` alongside the substitute in `X-Routed-Via`). When web-search grounding was injected, `X-Augmented: web-search` is set.
 
+### Image generation (specialist modality)
+
+Feeder also serves **`POST /v1/images/generations`** (the OpenAI images shape) for the free image-gen models, routed by the same composite scorer as chat but over `kind='image_gen'` only — **image models are never reachable on a chat call, and chat models never on this one**. First provider live: **Cloudflare Workers AI** (8 free flux / Stable Diffusion models, no card). Always returns base64.
+
+```bash
+curl http://localhost:3001/v1/images/generations \
+  -H "Authorization: Bearer <your unified key>" \
+  -H "Content-Type: application/json" \
+  -d '{ "prompt": "a red cube on a white table, product photo", "size": "1024x1024" }'
+# → { "created": …, "data": [ { "b64_json": "<PNG bytes, base64>" } ] }
+```
+
+Omit `model` (or send `"auto"`) to route across the free image models; or pin one (`"@cf/black-forest-labs/flux-1-schnell"`). `X-Routed-Via` names the model that served it, and it fails over across image models on error. This is the first of the specialist categories (TTS / STT / OCR / music follow the same pattern — see `BACKLOG.md`); a model whose **primary** purpose is a specialist modality is classified to that `kind` and answers only its own endpoint, even if it can also chat.
+
 ### Sampling / generation params
 
 Standard OpenAI params are passed through when set (unset ones are never sent, so the default request is unchanged): `temperature`, `top_p`, `max_tokens`, `max_completion_tokens`, `frequency_penalty`, `presence_penalty`, `seed`, `stop`, `n`, `logit_bias`, `logprobs`, `top_logprobs`. Vendor params (`top_k`, `min_p`, `repetition_penalty`) are forwarded only to providers documented to accept them (e.g. OpenRouter); other providers omit them rather than error. A provider known to reject a specific param has it stripped (`dropParams`).

@@ -27,6 +27,15 @@ weight already exists (`REALTIME_QUALITY_BLEND=0.4`); it just has almost no data
 
 ## 2. Specialist (non-chat) model categories — image / tts / stt / ocr / music
 
+> **Image generation SHIPPED 2026-09-12** — `POST /v1/images/generations` routes across
+> the 8 free Cloudflare flux/SD models (`kind='image_gen'`, `generateImage` adapter, generic
+> `routeRequest({kind})`, catalogSync stage 3g enable-on-adapter). Verified end-to-end (real
+> PNGs, both JSON- and binary-response Cloudflare shapes; a chat call cannot reach an image
+> model and vice-versa). Remaining below: TTS / STT / OCR / music, and an image-quality prior
+> from the LMArena text-to-image board; plus a wiki view for non-chat models (they don't show
+> in the chat wiki today). Next provider for image: Google Gemini image (needs its own adapter).
+
+
 Adam, 2026-09-12: free non-chat models are thrown away today (catalog has, all free, on
 keys we already hold: **image_gen 22, tts 11, stt 7, ocr 7, music 6**). A model whose
 PRIMARY purpose is image-gen (even if it also chats — Firefly-style) must be reachable

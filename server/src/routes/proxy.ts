@@ -262,6 +262,74 @@ proxyRouter.get('/models', async (_req: Request, res: Response) => {
   });
 });
 
+// ── Image generation (specialist modality, 2026-09-12) ──────────────────────
+// OpenAI-compatible POST /v1/images/generations. Routes across free image_gen
+// models by the SAME composite scorer as chat (kind='image_gen'), never touches
+// the chat pool, and only reaches a provider that implements generateImage.
+// Always returns base64 (b64_json). Bounded failover across image models.
+const imageGenSchema = z.object({
+  prompt: z.string().min(1),
+  model: z.string().optional(),
+  n: z.number().int().min(1).max(4).optional(),
+  size: z.string().optional(),
+  negative_prompt: z.string().optional(),
+  response_format: z.enum(['b64_json', 'url']).optional(),
+});
+
+proxyRouter.post('/images/generations', async (req: Request, res: Response) => {
+  const auth = await resolveTrustTier(req);
+  if (!auth.authorized) {
+    res.status(401).json({ error: { message: 'Unauthorized', type: 'invalid_request_error', code: 'invalid_api_key' } });
+    return;
+  }
+  const parsed = imageGenSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: { message: parsed.error.errors.map(e => e.message).join(', '), type: 'invalid_request_error' } });
+    return;
+  }
+  const { prompt, model: requested, n, size, negative_prompt } = parsed.data;
+  const consumer = sanitizeConsumerLabel(req.header('x-consumer')) ?? auth.consumer;
+
+  // Optional explicit pin ("<platform>/<model_id>" or a bare model_id); else auto-route.
+  let preferredModelDbId: number | undefined;
+  if (requested && requested !== 'auto' && requested !== 'image') {
+    const [maybePlat, ...rest] = requested.split('/');
+    const bare = rest.length ? rest.join('/') : requested;
+    const row = await get<{ id: number }>(getPool(),
+      `SELECT id FROM models WHERE kind = 'image_gen' AND enabled = true AND (model_id = ? OR (platform = ? AND model_id = ?)) LIMIT 1`,
+      [requested, maybePlat, bare]);
+    if (row?.id) preferredModelDbId = row.id;
+  }
+
+  const skipKeys = new Set<string>();
+  const started = performance.now();
+  let lastErr = 'no image model available';
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let route: Awaited<ReturnType<typeof routeRequest>>;
+    try {
+      route = await routeRequest({ kind: 'image_gen', estimatedTokens: 1, skipKeys: skipKeys.size ? skipKeys : undefined, preferredModelDbId: attempt === 0 ? preferredModelDbId : undefined });
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e);
+      break; // NO_ELIGIBLE_MODEL / ALL_RATE_LIMITED — nothing left to try
+    }
+    const t0 = performance.now();
+    try {
+      if (typeof route.provider.generateImage !== 'function') throw new Error(`provider ${route.platform} has no image adapter`);
+      const out = await route.provider.generateImage(route.apiKey, route.modelId, { prompt, n, size, negativePrompt: negative_prompt });
+      logRequest(route.platform, route.modelId, 'success', 0, 0, Math.round(performance.now() - t0), null, undefined, 'image', consumer, null, requested ? 'pinned image model' : 'auto image', false, null, null);
+      res.setHeader('X-Routed-Via', `${route.platform}/${route.modelId}`);
+      res.json({ created: Math.floor(Date.now() / 1000), data: out.images.map(im => ({ b64_json: im.b64_json })) });
+      return;
+    } catch (e: any) {
+      lastErr = e?.message ?? String(e);
+      logRequest(route.platform, route.modelId, 'error', 0, 0, Math.round(performance.now() - t0), lastErr, undefined, 'image', consumer, null, 'auto image', false, null, null);
+      skipKeys.add(`${route.platform}:${route.modelId}:${route.keyId}`);
+    }
+  }
+  void started;
+  res.status(502).json({ error: { message: `Image generation failed: ${lastErr}`, type: 'api_error' } });
+});
+
 const DEFAULT_MAX_RETRIES = 20;
 
 const toolCallSchema = z.object({

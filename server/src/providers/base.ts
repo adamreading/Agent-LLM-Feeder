@@ -112,6 +112,20 @@ export interface DialectConfig {
   dropParams?: string[];
 }
 
+// Image generation (OpenAI /v1/images/generations shape). Feeder normalises
+// every provider's image API to this, and always returns base64 (b64_json) so
+// the result is self-contained regardless of whether the upstream returned raw
+// bytes or a URL.
+export interface ImageGenOptions {
+  prompt: string;
+  n?: number;
+  size?: string;          // e.g. "1024x1024" — passed through when the provider honours it
+  negativePrompt?: string;
+}
+export interface ImageResult {
+  images: Array<{ b64_json: string }>;
+}
+
 export abstract class BaseProvider {
   abstract readonly platform: Platform;
   abstract readonly name: string;
@@ -133,6 +147,18 @@ export abstract class BaseProvider {
   ): AsyncGenerator<ChatCompletionChunk>;
 
   abstract validateKey(apiKey: string): Promise<boolean>;
+
+  // ── Specialist (non-chat) modalities ────────────────────────────────────
+  // Optional per-modality methods. A provider implements only the modalities it
+  // can wire; the router excludes a model from a modality's routing unless its
+  // provider implements that modality's method (so an image_gen model on a
+  // provider with no generateImage never routes). Image gen is the first
+  // (2026-09-12); TTS/STT/OCR follow the same shape.
+  generateImage?(
+    apiKey: string,
+    modelId: string,
+    options: ImageGenOptions,
+  ): Promise<ImageResult>;
 
   // P3: several providers (Groq, OpenRouter, Mistral, Cerebras confirmed by
   // prior design research) return these on every response, win-or-lose —
